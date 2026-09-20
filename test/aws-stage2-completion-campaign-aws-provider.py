@@ -25,8 +25,9 @@ def raw(value): return provider.canonical(value)
 
 def approval(plan_digests, account):
     value = {
-        "version": "cogs.stage2-completion-production-approval/v5",
+        "version": "cogs.stage2-completion-production-approval/v6",
         "phrase": production.APPROVAL_PHRASE,
+        "phase_boundary_ordinal": 3, "phase_cycle_counts": (3, 4),
         "implementation_revision": "1" * 40, "control_revision": "2" * 40, "qualification_revision": "3" * 40,
         "source_manifest_sha256": d("source"),
         "source_bindings_sha256": d("source-bindings"),

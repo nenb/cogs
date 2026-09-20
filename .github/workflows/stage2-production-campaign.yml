@@ -18,17 +18,21 @@ env:
   APPROVAL_RUN_ID: ${{ inputs.approval_run_id }}
   APPROVAL_ARTIFACT_ID: ${{ inputs.approval_artifact_id }}
   APPROVAL_ARTIFACT_DIGEST: ${{ inputs.approval_artifact_digest }}
+  AWS_MAX_ATTEMPTS: "1"
+  AWS_RETRY_MODE: standard
 
 jobs:
   cycles_1_3:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     outputs:
+      producer_job_id: ${{ steps.campaign_admission.outputs.producer_job_id }}
       continuation_artifact_id: ${{ steps.continuation_upload.outputs.artifact-id }}
       continuation_artifact_digest: ${{ steps.continuation_metadata.outputs.artifact_digest }}
       continuation_sha256: ${{ steps.continuation_package.outputs.continuation_sha256 }}
     steps:
       - name: Admit one first-created separately authorized campaign before source effects
+        id: campaign_admission
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AUTHORIZATION_PHRASE: ${{ inputs.authorization_phrase }}
@@ -53,6 +57,10 @@ jobs:
           done
           gh api --paginate --slurp "repos/nenb/cogs/actions/workflows/stage2-production-campaign.yml/runs?event=workflow_dispatch&per_page=100&head_sha=$GITHUB_SHA" >"$RUNNER_TEMP/campaign-runs.json"
           jq -e --arg r "$GITHUB_SHA" --argjson current "$GITHUB_RUN_ID" '([.[].total_count] | unique) == [1] and ([.[].workflow_runs[] | select(.head_sha == $r and .path == ".github/workflows/stage2-production-campaign.yml")] | map(.id) == [$current])' "$RUNNER_TEMP/campaign-runs.json" >/dev/null
+          gh api "repos/nenb/cogs/actions/runs/$GITHUB_RUN_ID/attempts/1/jobs?per_page=100" >"$RUNNER_TEMP/campaign-jobs.json"
+          producer=$(jq -er '[.jobs[] | select(.name == "cycles_1_3" and .status == "in_progress")] | select(length == 1) | .[0].id' "$RUNNER_TEMP/campaign-jobs.json")
+          [[ "$producer" =~ ^[1-9][0-9]*$ ]]
+          printf 'producer_job_id=%s\n' "$producer" >>"$GITHUB_OUTPUT"
 
       - name: Authenticate exact completed approval run and immutable artifact
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
@@ -89,12 +97,13 @@ jobs:
           chmod 0555 "$out/cosign"
           "$out/cosign" verify-blob --trusted-root "$out/sigstore-trusted-root.json" --bundle "$out/approval-authentication.bundle.json" --certificate-identity https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com "$out/approval-authentication.json" >/dev/null
           test "$(sha256sum "$out/approval.json" | cut -d' ' -f1)" = "$(jq -er '.approval_sha256 | select(test("^[0-9a-f]{64}$"))' "$out/approval-authentication.json")"
-          jq -e --arg g "$CONTROL_HEAD" '.version == "cogs.stage2-completion-production-approval/v5" and .control_revision == $g and .one_attempt == true and .effect_deadline_ns == 28800000000000 and .cleanup_reserve_ns == 1800000000000 and .maximum_cycle_duration_ns == 9000000000000 and .maximum_cost_micro_usd == 1100000 and (.expires_unix_ns - .not_before_unix_ns) == 36000000000000' "$out/approval.json" >/dev/null
+          jq -e --arg g "$CONTROL_HEAD" '.version == "cogs.stage2-completion-production-approval/v6" and .control_revision == $g and .one_attempt == true and .phrase == "run-seven-sequential-stage2-completion-launches-in-one-fixed-two-phase-campaign" and .phase_boundary_ordinal == 3 and .phase_cycle_counts == [3,4] and .effect_deadline_ns == 28800000000000 and .cleanup_reserve_ns == 1800000000000 and .maximum_cycle_duration_ns == 9000000000000 and .maximum_cost_micro_usd == 1100000 and (.expires_unix_ns - .not_before_unix_ns) == 36000000000000' "$out/approval.json" >/dev/null
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
           remaining=$(( $(jq -er '.expires_unix_ns' "$out/approval.json") / 1000000000 - $(date +%s) - 60 ))
-          duration=$remaining; if test "$duration" -gt 21600; then duration=21600; fi
-          test "$duration" -ge 18000; test "$duration" -le 21600
-          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+          # Preserve the 480m effect + 30m cleanup window and the controller's
+          # 15m first-plan allowance before any approval consumption or OIDC use.
+          test "$remaining" -ge 31500
+          printf 'role_duration_seconds=18000\n' >>"$GITHUB_OUTPUT"
 
       - name: Acquire and stage exact implementation H before credentials
         run: |
@@ -159,14 +168,22 @@ jobs:
           set -euo pipefail
           rm -f "$RUNNER_TEMP/aws-credentials" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/budget-email"
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
-          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\n' >>"$GITHUB_ENV"
+          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\nACTIONS_ID_TOKEN_REQUEST_TOKEN=\nACTIONS_ID_TOKEN_REQUEST_URL=\n' >>"$GITHUB_ENV"
 
       - name: Execute exactly cycles 1 through 3
         id: campaign_segment
         timeout-minutes: 240
         run: |
           set -euo pipefail
-          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC COGS_STAGE2_CAMPAIGN_SEGMENT=cycles-1-3 COGS_STAGE2_GITHUB_RUN_ID="$GITHUB_RUN_ID" COGS_STAGE2_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh
+          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            COGS_STAGE2_WORKFLOW_REVISION="$GITHUB_SHA" \
+            COGS_STAGE2_GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            COGS_STAGE2_PRODUCER_JOB_ID="${{ steps.campaign_admission.outputs.producer_job_id }}" \
+            COGS_STAGE2_APPROVAL_ARTIFACT_RUN_ID="$APPROVAL_RUN_ID" \
+            COGS_STAGE2_APPROVAL_ARTIFACT_ID="$APPROVAL_ARTIFACT_ID" \
+            COGS_STAGE2_APPROVAL_ARTIFACT_DIGEST="$APPROVAL_ARTIFACT_DIGEST" \
+            COGS_STAGE2_APPROVAL_ARTIFACT_NAME="stage2-production-approval-$GITHUB_SHA-$APPROVAL_RUN_ID" \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh
 
       - name: Cleanup after an uncertain segment-one outcome
         if: always() && steps.campaign_segment.outcome != 'success'
@@ -186,16 +203,24 @@ jobs:
           sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
           sign="$RUNNER_TEMP/continuation-sign"; package="$RUNNER_TEMP/continuation-package"
           install -d -m 0700 "$sign" "$package"
-          sudo -n cp --no-preserve=ownership /var/lib/cogs/stage2-aws-production-v2/continuation-publication/campaign-continuation.json "$sign/campaign-continuation.json"
-          sudo -n chown "$(id -u):$(id -g)" "$sign/campaign-continuation.json"; chmod 0400 "$sign/campaign-continuation.json"
+          name=aws-stage2-production-continuation-v1
+          sudo -n cp --no-preserve=ownership "/var/lib/cogs/stage2-aws-production-v2/continuation-publication/$name.json" "$sign/$name.json"
+          sudo -n chown "$(id -u):$(id -g)" "$sign/$name.json"; chmod 0400 "$sign/$name.json"
           test "$(find "$sign" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 1
-          if grep -aEq 'AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|aws_(access_key_id|secret_access_key|session_token)|ASIA[A-Z0-9]{16}' "$sign/campaign-continuation.json"; then exit 2; fi
-          scripts/stage2-cosign-keyless-sign.sh "$sign" https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main campaign-continuation
-          install -m 0400 "$sign/campaign-continuation.json" "$package/campaign-continuation.json"
-          install -m 0400 "$sign/campaign-continuation.bundle.json" "$package/campaign-continuation.bundle.json"
+          NAME="$name" python3 -I -B - <<'PY'
+          import json,os,pathlib,re
+          path=pathlib.Path(os.environ["RUNNER_TEMP"])/"continuation-sign"/(os.environ["NAME"]+".json")
+          raw=path.read_bytes(); value=json.loads(raw)
+          if raw != json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True,allow_nan=False).encode("ascii")+b"\n": raise SystemExit(2)
+          forbidden=(b"AWS_ACCESS_KEY_ID",b"AWS_SECRET_ACCESS_KEY",b"AWS_SESSION_TOKEN",b"aws_access_key_id",b"aws_secret_access_key",b"aws_session_token",b"ACTIONS_ID_TOKEN_REQUEST_TOKEN",b"ACTIONS_ID_TOKEN_REQUEST_URL",b"GITHUB_TOKEN",b"BEGIN PRIVATE KEY",b"BEGIN OPENSSH PRIVATE KEY")
+          if any(token.lower() in raw.lower() for token in forbidden) or re.search(rb"(?:AKIA|ASIA)[A-Z0-9]{16}",raw): raise SystemExit(2)
+          PY
+          scripts/stage2-cosign-keyless-sign.sh "$sign" https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main "$name"
+          install -m 0400 "$sign/$name.json" "$package/$name.json"
+          install -m 0400 "$sign/$name.bundle.json" "$package/$name.bundle.json"
           test "$(find "$package" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 2
           test "$(stat -c '%a:%h' "$package"/* | sort -u)" = 400:1
-          hash=$(sha256sum "$package/campaign-continuation.json" | cut -d' ' -f1)
+          hash=$(sha256sum "$package/$name.json" | cut -d' ' -f1)
           printf 'continuation_sha256=%s\n' "$hash" >>"$GITHUB_OUTPUT"
 
       - name: Upload exact signed continuation artifact
@@ -206,18 +231,27 @@ jobs:
           name: stage2-production-continuation-${{ github.sha }}-${{ github.run_id }}-1
           path: ${{ runner.temp }}/continuation-package
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
           compression-level: 0
 
       - name: Normalize exact continuation artifact metadata
         id: continuation_metadata
         if: steps.continuation_upload.outcome == 'success'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPLOAD_DIGEST: ${{ steps.continuation_upload.outputs.artifact-digest }}
         run: |
           set -euo pipefail
+          id='${{ steps.continuation_upload.outputs.artifact-id }}'
+          [[ "$id" =~ ^[1-9][0-9]*$ ]]
           digest="$UPLOAD_DIGEST"; if [[ "$digest" != sha256:* ]]; then digest="sha256:$digest"; fi
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          gh api "repos/nenb/cogs/actions/artifacts/$id" >"$RUNNER_TEMP/continuation-artifact-created.json"
+          jq -e --arg digest "$digest" --argjson run "$GITHUB_RUN_ID" \
+            --arg name "stage2-production-continuation-$GITHUB_SHA-$GITHUB_RUN_ID-1" \
+            '.expired == false and .digest == $digest and .workflow_run.id == $run and
+             .name == $name and .size_in_bytes > 0 and .size_in_bytes <= 8388608' \
+            "$RUNNER_TEMP/continuation-artifact-created.json" >/dev/null
           printf 'artifact_digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
 
       - name: Exact continuation artifact readback
@@ -242,13 +276,23 @@ jobs:
       CONTINUATION_SHA256: ${{ needs.cycles_1_3.outputs.continuation_sha256 }}
     steps:
       - name: Admit only the successful same-attempt predecessor and exact artifacts before source effects
+        id: handoff_admission
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = nenb/cogs; test "$GITHUB_REF" = refs/heads/main; test "$GITHUB_REF_PROTECTED" = true; test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch; test "$GITHUB_ACTOR" = nenb; test "$GITHUB_TRIGGERING_ACTOR" = nenb
           [[ "$CONTINUATION_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; [[ "$CONTINUATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; [[ "$CONTINUATION_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ '${{ needs.cycles_1_3.outputs.producer_job_id }}' =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/nenb/cogs/actions/runs/$GITHUB_RUN_ID/attempts/1/jobs?per_page=100" >"$RUNNER_TEMP/campaign-jobs.json"
+          jq -e --argjson producer '${{ needs.cycles_1_3.outputs.producer_job_id }}' \
+            '[.jobs[] | select(.name == "cycles_1_3" and .id == $producer and .status == "completed" and .conclusion == "success")] | length == 1' \
+            "$RUNNER_TEMP/campaign-jobs.json" >/dev/null
+          consumer=$(jq -er '[.jobs[] | select(.name == "cycles_4_7" and .status == "in_progress")] | select(length == 1) | .[0].id' "$RUNNER_TEMP/campaign-jobs.json")
+          [[ "$consumer" =~ ^[1-9][0-9]*$ ]]; test "$consumer" != '${{ needs.cycles_1_3.outputs.producer_job_id }}'
+          printf 'consumer_job_id=%s\n' "$consumer" >>"$GITHUB_OUTPUT"
           gh api "repos/nenb/cogs/actions/artifacts/$CONTINUATION_ARTIFACT_ID" >"$RUNNER_TEMP/continuation-artifact.json"
-          jq -e --arg digest "$CONTINUATION_ARTIFACT_DIGEST" --argjson run "$GITHUB_RUN_ID" --arg name "stage2-production-continuation-$GITHUB_SHA-$GITHUB_RUN_ID-1" '.expired == false and .digest == $digest and .workflow_run.id == $run and .name == $name' "$RUNNER_TEMP/continuation-artifact.json" >/dev/null
+          jq -e --arg digest "$CONTINUATION_ARTIFACT_DIGEST" --argjson run "$GITHUB_RUN_ID" --arg name "stage2-production-continuation-$GITHUB_SHA-$GITHUB_RUN_ID-1" '.expired == false and .digest == $digest and .workflow_run.id == $run and .name == $name and .size_in_bytes > 0 and .size_in_bytes <= 8388608' "$RUNNER_TEMP/continuation-artifact.json" >/dev/null
           gh api "repos/nenb/cogs/actions/runs/$APPROVAL_RUN_ID" >"$RUNNER_TEMP/approval-run.json"
           jq -e --arg r "$GITHUB_SHA" '.path == ".github/workflows/stage2-production-approval.yml" and .head_sha == $r and .head_branch == "main" and .event == "workflow_dispatch" and .run_attempt == 1 and .status == "completed" and .conclusion == "success"' "$RUNNER_TEMP/approval-run.json" >/dev/null
           gh api "repos/nenb/cogs/actions/artifacts/$APPROVAL_ARTIFACT_ID" >"$RUNNER_TEMP/approval-artifact.json"
@@ -286,21 +330,40 @@ jobs:
           /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py verify-provider-package "$out"
           chmod 0555 "$out/cosign"; chmod 0700 "$continuation"; chmod 0400 "$continuation"/*
           test "$(find "$continuation" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 2
-          test "$(find "$continuation" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = 'campaign-continuation.bundle.json campaign-continuation.json '
+          name=aws-stage2-production-continuation-v1
+          test "$(find "$continuation" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = 'aws-stage2-production-continuation-v1.bundle.json aws-stage2-production-continuation-v1.json '
           test "$(stat -c '%a:%h' "$continuation"/* | sort -u)" = 400:1
-          test "$(stat -c %s "$continuation/campaign-continuation.json")" -le 16777216
-          test "$(stat -c %s "$continuation/campaign-continuation.bundle.json")" -le 1048576
-          test "$(sha256sum "$continuation/campaign-continuation.json" | cut -d' ' -f1)" = "$CONTINUATION_SHA256"
-          if grep -aEq 'AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|aws_(access_key_id|secret_access_key|session_token)|ASIA[A-Z0-9]{16}' "$continuation/campaign-continuation.json"; then exit 2; fi
-          "$out/cosign" verify-blob --trusted-root "$out/sigstore-trusted-root.json" --bundle "$continuation/campaign-continuation.bundle.json" --certificate-identity https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com "$continuation/campaign-continuation.json" >/dev/null
+          test "$(stat -c %s "$continuation/$name.json")" -le 4194304
+          test "$(stat -c %s "$continuation/$name.bundle.json")" -le 1048576
+          test "$(sha256sum "$continuation/$name.json" | cut -d' ' -f1)" = "$CONTINUATION_SHA256"
+          NAME="$name" python3 -I -B - <<'PY'
+          import json,os,pathlib,re
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"continuation"; path=root/(os.environ["NAME"]+".json")
+          raw=path.read_bytes(); value=json.loads(raw)
+          if raw != json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True,allow_nan=False).encode("ascii")+b"\n": raise SystemExit(2)
+          forbidden=(b"AWS_ACCESS_KEY_ID",b"AWS_SECRET_ACCESS_KEY",b"AWS_SESSION_TOKEN",b"aws_access_key_id",b"aws_secret_access_key",b"aws_session_token",b"ACTIONS_ID_TOKEN_REQUEST_TOKEN",b"ACTIONS_ID_TOKEN_REQUEST_URL",b"GITHUB_TOKEN",b"BEGIN PRIVATE KEY",b"BEGIN OPENSSH PRIVATE KEY")
+          if any(token.lower() in raw.lower() for token in forbidden) or re.search(rb"(?:AKIA|ASIA)[A-Z0-9]{16}",raw): raise SystemExit(2)
+          PY
+          jq -e --arg r "$GITHUB_SHA" --argjson run "$GITHUB_RUN_ID" \
+            --argjson producer '${{ needs.cycles_1_3.outputs.producer_job_id }}' \
+            --arg ad "$APPROVAL_ARTIFACT_DIGEST" --arg an "stage2-production-approval-$GITHUB_SHA-$APPROVAL_RUN_ID" \
+            --argjson ar "$APPROVAL_RUN_ID" --argjson ai "$APPROVAL_ARTIFACT_ID" \
+            '.workflow_revision == $r and .github_run_id == $run and .github_run_attempt == 1 and
+             .producer_job_name == "cycles_1_3" and .producer_job_id == $producer and
+             .approval_artifact_run_id == $ar and .approval_artifact_id == $ai and
+             .approval_artifact_digest == $ad and .approval_artifact_name == $an and
+             .phase_boundary_ordinal == 3 and .active_resource == false and
+             .certain_zero == true and .credentials_retired == true' "$continuation/$name.json" >/dev/null
+          "$out/cosign" verify-blob --trusted-root "$out/sigstore-trusted-root.json" --bundle "$continuation/$name.bundle.json" --certificate-identity https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com "$continuation/$name.json" >/dev/null
           "$out/cosign" verify-blob --trusted-root "$out/sigstore-trusted-root.json" --bundle "$out/approval-authentication.bundle.json" --certificate-identity https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com "$out/approval-authentication.json" >/dev/null
           test "$(sha256sum "$out/approval.json" | cut -d' ' -f1)" = "$(jq -er '.approval_sha256 | select(test("^[0-9a-f]{64}$"))' "$out/approval-authentication.json")"
-          jq -e --arg g "$CONTROL_HEAD" '.version == "cogs.stage2-completion-production-approval/v5" and .control_revision == $g and .one_attempt == true and .effect_deadline_ns == 28800000000000 and .cleanup_reserve_ns == 1800000000000 and .maximum_cycle_duration_ns == 9000000000000 and .maximum_cost_micro_usd == 1100000 and (.expires_unix_ns - .not_before_unix_ns) == 36000000000000' "$out/approval.json" >/dev/null
+          jq -e --arg g "$CONTROL_HEAD" '.version == "cogs.stage2-completion-production-approval/v6" and .control_revision == $g and .one_attempt == true and .phrase == "run-seven-sequential-stage2-completion-launches-in-one-fixed-two-phase-campaign" and .phase_boundary_ordinal == 3 and .phase_cycle_counts == [3,4] and .effect_deadline_ns == 28800000000000 and .cleanup_reserve_ns == 1800000000000 and .maximum_cycle_duration_ns == 9000000000000 and .maximum_cost_micro_usd == 1100000 and (.expires_unix_ns - .not_before_unix_ns) == 36000000000000' "$out/approval.json" >/dev/null
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
-          remaining=$(( $(jq -er '.expires_unix_ns' "$out/approval.json") / 1000000000 - $(date +%s) - 60 ))
-          duration=$remaining; if test "$duration" -gt 23400; then duration=23400; fi
-          test "$duration" -ge 19800; test "$duration" -le 23400
-          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+          approval_remaining=$(( $(jq -er '.expires_unix_ns' "$out/approval.json") / 1000000000 - $(date +%s) - 60 ))
+          handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - $(date +%s) - 60 ))
+          test "$approval_remaining" -ge 19800
+          test "$handoff_remaining" -ge 19800
+          printf 'role_duration_seconds=19800\n' >>"$GITHUB_OUTPUT"
 
       - name: Acquire and stage exact implementation H before credentials
         run: |
@@ -347,7 +410,14 @@ jobs:
           printf '[observer]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >>"$RUNNER_TEMP/aws-credentials"
           printf '%s\n' '${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}' >"$RUNNER_TEMP/budget-email"
           sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
-          sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py stage-continuation "$RUNNER_TEMP/continuation" "$GITHUB_RUN_ID" "$CONTINUATION_SHA256"
+          sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py stage-continuation \
+            "$RUNNER_TEMP/continuation" "$GITHUB_SHA" "$GITHUB_RUN_ID" \
+            '${{ needs.cycles_1_3.outputs.producer_job_id }}' \
+            '${{ steps.handoff_admission.outputs.consumer_job_id }}' \
+            "$CONTINUATION_ARTIFACT_ID" "$CONTINUATION_ARTIFACT_DIGEST" \
+            "stage2-production-continuation-$GITHUB_SHA-$GITHUB_RUN_ID-1" \
+            "$APPROVAL_RUN_ID" "$APPROVAL_ARTIFACT_ID" "$APPROVAL_ARTIFACT_DIGEST" \
+            "stage2-production-approval-$GITHUB_SHA-$APPROVAL_RUN_ID"
 
       - name: Cleanup after failed segment-two staging
         if: always() && steps.production_staging.outcome != 'success'
@@ -367,7 +437,7 @@ jobs:
           set -euo pipefail
           rm -f "$RUNNER_TEMP/aws-credentials" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/budget-email"
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
-          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\n' >>"$GITHUB_ENV"
+          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\nACTIONS_ID_TOKEN_REQUEST_TOKEN=\nACTIONS_ID_TOKEN_REQUEST_URL=\n' >>"$GITHUB_ENV"
 
       - name: Execute exactly cycles 4 through 7 and final zero observation
         id: campaign_segment
@@ -375,7 +445,8 @@ jobs:
         timeout-minutes: 270
         run: |
           set -euo pipefail
-          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC COGS_STAGE2_CAMPAIGN_SEGMENT=cycles-4-7 COGS_STAGE2_GITHUB_RUN_ID="$GITHUB_RUN_ID" COGS_STAGE2_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" COGS_STAGE2_CONTINUATION_SHA256="$CONTINUATION_SHA256" /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh
+          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh
 
       - name: Cleanup after an uncertain segment-two campaign outcome
         if: always() && steps.production_staging.outcome == 'success' && steps.campaign_segment.outcome != 'success'
@@ -393,9 +464,9 @@ jobs:
           sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json; sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
           destination="$RUNNER_TEMP/evidence-publication"; install -d -m 0700 "$destination"
           sudo -n find /var/lib/cogs/stage2-aws-production-v2/evidence-publication -mindepth 1 -maxdepth 1 -type f -exec cp --no-preserve=ownership {} "$destination"/ \;
-          test "$(find "$destination" -mindepth 1 -maxdepth 1 -type f | wc -l)" -ge 2
+          test "$(find "$destination" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = 'aws-stage2-completion-evidence-v4.json aws-stage2-completion-publication-v2.json aws-stage2-completion-report-v4.md aws-stage2-production-continuation-admission-v1.json aws-stage2-production-continuation-v1.bundle.json aws-stage2-production-continuation-v1.json '
           sudo -n chown -R "$(id -u):$(id -g)" "$destination"; chmod 0400 "$destination"/*
-          npx tsx scripts/validate-aws-stage2-completion-evidence-v3.ts "$destination/aws-stage2-completion-evidence-v3.json"
+          npx tsx scripts/validate-aws-stage2-completion-evidence-v4.ts "$destination/aws-stage2-completion-evidence-v4.json"
 
       - name: Upload pass-only canonical evidence after credential retirement
         id: evidence_upload
@@ -417,10 +488,17 @@ jobs:
       - name: Byte-compare exact evidence readback and create upload receipt
         if: steps.evidence_upload.outcome == 'success'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVIDENCE_ARTIFACT_ID: ${{ steps.evidence_upload.outputs.artifact-id }}
           EVIDENCE_ARTIFACT_DIGEST: ${{ steps.evidence_upload.outputs.artifact-digest }}
+          CONSUMER_JOB_ID: ${{ steps.handoff_admission.outputs.consumer_job_id }}
         run: |
           set -euo pipefail
+          final_digest="$EVIDENCE_ARTIFACT_DIGEST"; if [[ "$final_digest" != sha256:* ]]; then final_digest="sha256:$final_digest"; fi
+          [[ "$EVIDENCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; [[ "$final_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          gh api "repos/nenb/cogs/actions/artifacts/$EVIDENCE_ARTIFACT_ID" >"$RUNNER_TEMP/evidence-artifact.json"
+          jq -e --arg d "$final_digest" --argjson r "$GITHUB_RUN_ID" --arg n "stage2-production-evidence-$GITHUB_SHA-$GITHUB_RUN_ID" '.expired == false and .digest == $d and .workflow_run.id == $r and .name == $n and .size_in_bytes > 0' "$RUNNER_TEMP/evidence-artifact.json" >/dev/null
+          export EVIDENCE_ARTIFACT_DIGEST="$final_digest"
           diff -r --no-dereference "$RUNNER_TEMP/evidence-publication" "$RUNNER_TEMP/evidence-readback"
           install -d -m 0700 "$RUNNER_TEMP/evidence-receipt"
           python3 -I -B - <<'PY' >"$RUNNER_TEMP/evidence-receipt/receipt.json"
@@ -429,14 +507,17 @@ jobs:
           for path in sorted(root.iterdir()):
               if not path.is_file() or path.is_symlink(): raise SystemExit(2)
               raw=path.read_bytes(); members.append({"name":path.name,"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()})
-          if [row["name"] for row in members] != ["aws-stage2-completion-evidence-v3.json","aws-stage2-completion-publication-v1.json","aws-stage2-completion-report-v3.md"]: raise SystemExit(2)
+          expected=["aws-stage2-completion-evidence-v4.json","aws-stage2-completion-publication-v2.json","aws-stage2-completion-report-v4.md","aws-stage2-production-continuation-admission-v1.json","aws-stage2-production-continuation-v1.bundle.json","aws-stage2-production-continuation-v1.json"]
+          if [row["name"] for row in members] != expected: raise SystemExit(2)
           digest=os.environ["EVIDENCE_ARTIFACT_DIGEST"]; digest=digest if digest.startswith("sha256:") else "sha256:"+digest
-          value={"version":"cogs.stage2-production-evidence-upload-receipt/v2","result":"pass","control_revision":os.environ["CONTROL_HEAD"],"run_id":int(os.environ["GITHUB_RUN_ID"]),"run_attempt":1,"artifact_id":int(os.environ["EVIDENCE_ARTIFACT_ID"]),"artifact_digest":digest,"members":members,"readback":"byte-equal"}
+          admission=json.loads((root/"aws-stage2-production-continuation-admission-v1.json").read_text("ascii"))
+          if admission["consumer_job_id"] != int(os.environ["CONSUMER_JOB_ID"]): raise SystemExit(2)
+          value={"version":"cogs.stage2-production-evidence-upload-receipt/v3","result":"pass","control_revision":os.environ["CONTROL_HEAD"],"run_id":int(os.environ["GITHUB_RUN_ID"]),"run_attempt":1,"consumer_job_id":admission["consumer_job_id"],"continuation_artifact_id":admission["artifact_id"],"continuation_artifact_digest":admission["artifact_digest"],"continuation_admission_commitment":admission["admission_commitment"],"artifact_id":int(os.environ["EVIDENCE_ARTIFACT_ID"]),"artifact_digest":digest,"members":members,"readback":"byte-equal"}
           print(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True,allow_nan=False))
           PY
           node --input-type=module - "$RUNNER_TEMP/evidence-receipt/receipt.json" <<'JS'
           import fs from "node:fs"; import Ajv2020 from "ajv/dist/2020.js";
-          const schema=JSON.parse(fs.readFileSync("schemas/aws-stage2-production-evidence-upload-receipt-v2.json","utf8")); const value=JSON.parse(fs.readFileSync(process.argv[2],"utf8")); const validate=new Ajv2020({allErrors:true,strict:true}).compile(schema); if(!validate(value)){console.error(validate.errors);process.exit(2)}
+          const schema=JSON.parse(fs.readFileSync("schemas/aws-stage2-production-evidence-upload-receipt-v3.json","utf8")); const value=JSON.parse(fs.readFileSync(process.argv[2],"utf8")); const validate=new Ajv2020({allErrors:true,strict:true}).compile(schema); if(!validate(value)){console.error(validate.errors);process.exit(2)}
           JS
       - name: Upload separate exact-readback evidence receipt
         id: receipt_upload

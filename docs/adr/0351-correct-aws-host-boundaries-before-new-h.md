@@ -7,6 +7,11 @@
 
 ## Context
 
+This accepted text supersedes the earlier unmerged ADR 0351 draft titled
+“Authorize a second Stage 2 R rehearsal.” That draft never became authority,
+is not an additional prerequisite, and must not be interpreted as a separate
+accepted decision or as a reason to create ADR 0352.
+
 Historical implementation H `1ef6aae3506fded805d8277ec4bce02e585c0650`,
 control G `fce64662b39b2a21e9b384eba8408ecd5311047a`, and qualification
 Q `4e16c314b220c59330a1b4fb898c532f9ca6460e` completed their non-AWS
@@ -92,8 +97,9 @@ that exact fresh G as its sole parent. Fresh mixed preflight and seven-runner
 qualification remain mandatory. Historical H/G/Q, diagnostic plans, approvals,
 cycles, artifacts, or passed ordinals cannot supply authority to that chain.
 
-The later authoritative AWS campaign is one generation split into exactly two
-sequential GitHub jobs: cycles 1--3 and cycles 4--7 plus final zero inventory.
+The later authoritative AWS campaign uses only approval v6 and evidence v4 and
+is one generation split into exactly two sequential GitHub jobs: cycles 1--3
+and cycles 4--7 plus final zero inventory.
 The second job may start only after the first succeeds in the same run and first
 attempt. The first job consumes the one-shot approval once, reaches zero after
 cycle 3, retires its independently acquired executor and observer credentials,
@@ -102,11 +108,17 @@ is bound to the exact approval and batch, H/G/Q, run ID and attempt, first-apply
 deadlines, accumulated cost, typed cycle records, approval-consumption record,
 and journal checkpoint. It is signed by keyless Cosign under the exact protected
 campaign workflow identity, uploaded and read back by exact artifact ID and
-archive digest. The second job independently verifies the artifact metadata,
-bytes, signature, and committed trusted root offline under fixed root custody,
-reconstructs consumption and journal continuity without consuming the approval
-again, and independently acquires fresh executor and observer credentials.
-Replay, cross-run or cross-attempt substitution, partial stitching, and an
+archive digest. The second job independently verifies the artifact metadata, producer and
+consumer job identities, original approval artifact metadata, bytes, signature,
+and committed trusted root offline under fixed root custody. Root staging emits
+a canonical handoff-authentication admission receipt bound to all of those
+facts, and only the adapter may exchange that receipt for the private sealed
+phase-two capability. It reconstructs consumption and journal continuity
+without consuming the approval again, and independently acquires fresh executor
+and observer credentials. The final v4 evidence and v2 publication receipt bind
+the continuation, signature-bundle hash, admission commitment, producer and
+consumer jobs, artifact ID/digest, and cycle-3 zero. Replay, cross-run or
+cross-attempt substitution, partial stitching, direct in-memory handoff, and an
 alternate authoritative single-job seven-cycle entry are rejected.
 
 The approval bounds for that one generation are exactly ten hours of validity,
@@ -115,11 +127,25 @@ cleanup reserve, a 150-minute maximum per cycle, and 1,100,000 micro-USD. Job
 bounds are 300 minutes for cycles 1--3 and 330 minutes for cycles 4--7; each
 retains a 30-minute recovery path and derives a separate short-lived role
 session duration from the remaining approval lifetime within the approved AWS
-maximum. Zero inventory after every cycle, global identity distinctness,
+maximum. Before approval consumption, at least the full 480-minute effect
+window, 30-minute cleanup reserve, and fixed 15-minute first-plan allowance
+must remain. Job 1 requests exactly 18,000 seconds and job 2 exactly 19,800
+seconds of role lifetime only after proving the signed absolute and inherited
+first-apply deadlines have that runway; an unsupported role maximum fails before
+effects. Zero inventory after every cycle, global identity distinctness,
 strict cgroup checks, cleanup certainty, and pass-only evidence issuance after
 cycle 7 and final zero are unchanged. Any publication, verification, download,
 admission, campaign, cancellation, or cleanup uncertainty terminates the run;
-no ordinal is reusable.
+no ordinal is reusable. The R diagnostic remains a separate explicitly
+non-authoritative path: it returns only its dedicated diagnostic receipt, never
+constructs a formal campaign candidate, calls the formal evidence issuer, or
+publishes production evidence.
+
+No previously selected H, G, or Q is edited or retroactively reclassified.
+These corrections land before selection of a new H; a new G then controls that
+exact H and a new Q qualifies that exact G. The prerequisite map records this
+ordering and does not make the earlier diagnostic or the earlier unmerged ADR
+into a freeze prerequisite.
 
 ## Accounting
 
@@ -134,7 +160,12 @@ deletion credit: the host correction reallocated 600,000 prospective bytes from
 200,000 prospective bytes for the mandatory refreshed tracked-source inventory,
 making their active highs 3,300,000 and 8,400,000 bytes. No task line high,
 tranche total, global forecast, serialized-inventory limit, or source-byte limit
-changes. Deletions and rewrites provide no credit.
+changes. The 12 additive split-campaign contract, implementation, test, and
+fixture paths raise the tracked-file high from 1,546 to 1,558. No pre-existing
+tracked file is retired for accounting: historical workflows, tests, evidence
+and approval schemas, validators, renderers, and fixtures--including v3
+evidence and v5 approval--remain tracked and byte-compatible. Deletions and
+rewrites provide no line or byte credit.
 
 ## Consequences
 

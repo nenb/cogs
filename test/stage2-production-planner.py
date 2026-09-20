@@ -235,7 +235,9 @@ with tempfile.TemporaryDirectory() as temporary:
     output = root / "output"
     planner.main(tuple(str(path) for path in (package_path, control_path, descriptor_path, tofu, output)))
     draft = json.loads((output / "approval-draft.json").read_bytes())
-    assert draft["version"] == "cogs.stage2-production-approval-draft/v3"
+    assert draft["version"] == "cogs.stage2-production-approval-draft/v4"
+    assert draft["phase_boundary_ordinal"] == 3
+    assert draft["phase_cycle_counts"] == [3, 4]
     assert (draft["implementation_revision"], draft["control_revision"],
             draft["qualification_revision"]) == (h, g, q)
     assert draft["runtime_manifest_sha256"] == bindings["runtime_manifest_sha256"]
@@ -300,7 +302,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert draft["inventory_observer_principal_commitment"] == \
         planner.production.executor_principal_commitment("aws", "000000000000", "observer")
     planned_batch = planner.production.approval_batch_commitment(draft)
-    issued_shape = {**draft, "version": "cogs.stage2-completion-production-approval/v5",
+    issued_shape = {**draft, "version": "cogs.stage2-completion-production-approval/v6",
         "phrase": planner.production.APPROVAL_PHRASE,
         "rate_source_commitment": planner.production.RATE_SOURCE_COMMITMENT,
         "issuer_commitment": d("issuer"), "one_attempt": True}
@@ -310,7 +312,8 @@ with tempfile.TemporaryDirectory() as temporary:
     # archive; no obsolete root-level provider path participates in admission.
     approval_raw = planner.canonical({**issued_shape, "plan_sha256s": list(issued_shape["plan_sha256s"])})
     approval_value = planner.production.ProductionApproval(**{
-        **issued_shape, "plan_sha256s": tuple(issued_shape["plan_sha256s"])})
+        **issued_shape, "plan_sha256s": tuple(issued_shape["plan_sha256s"]),
+        "phase_cycle_counts": tuple(issued_shape["phase_cycle_counts"])})
     authentication = {"version": "cogs.stage2-production-approval-authentication/v1", "result": "pass",
         "approval_sha256": hashlib.sha256(approval_raw).hexdigest(),
         "issuer_commitment": approval_value.issuer_commitment, "workflow_sha256": d("workflow"),

@@ -98,7 +98,7 @@ def qualification_package(bindings, control_sha256):
 def draft_for(package):
     bindings = package["source_bindings"]
     value = {
-        "version": "cogs.stage2-production-approval-draft/v3",
+        "version": "cogs.stage2-production-approval-draft/v4",
         **{name: package[name] for name in ("implementation_revision", "control_revision",
             "qualification_revision", "source_manifest_sha256", "static_control_sha256",
             "rootfs_descriptor_sha256", "runtime_manifest_sha256", "fixture_commitment")},
@@ -118,6 +118,7 @@ def draft_for(package):
         "expires_unix_ns": 1 + 10 * 60 * 60 * 10**9,
         "maximum_cycle_duration_ns": 150 * 60 * 10**9,
         "maximum_cost_micro_usd": 1_100_000,
+        "phase_boundary_ordinal": 3, "phase_cycle_counts": [3, 4],
         "executor_principal_commitment": d("executor"),
         "inventory_observer_principal_commitment": d("observer"),
     }
@@ -219,6 +220,7 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
         fixtures = runpy.run_path(str(ROOT / "test/aws-stage2-completion-campaign-production.py"))
     value = json.loads(approval_raw)
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
+    value["phase_cycle_counts"] = tuple(value["phase_cycle_counts"])
     approval = production.ProductionApproval(**value)
     package = json.loads(package_raw)
     production.validate_approval_package(approval, package, hashlib.sha256(package_raw).hexdigest())
@@ -397,11 +399,14 @@ def main():
             rejected(action)
         issued_raw = capture(issuer.issue, draft); issued = json.loads(issued_raw)
         issued["plan_sha256s"] = tuple(issued["plan_sha256s"])
+        issued["phase_cycle_counts"] = tuple(issued["phase_cycle_counts"])
         approval = production.ProductionApproval(**issued)
-        assert approval.version == "cogs.stage2-completion-production-approval/v5"
+        assert approval.version == "cogs.stage2-completion-production-approval/v6"
+        assert approval.phase_boundary_ordinal == 3
+        assert approval.phase_cycle_counts == (3, 4)
         assert approval.batch_commitment == production.approval_batch_commitment(value)
         assert approval.batch_commitment != production._commit(
-            b"cogs.stage2-production-approved-batch/v4", production._approval_fields(value))
+            b"cogs.stage2-production-approved-batch/v5", production._approval_fields(value))
         for field, impostor in (("maximum_cost_micro_usd", 499_999.5),
                                 ("not_before_unix_ns", 0), ("not_before_unix_ns", -1)):
             hostile = {**issued, field: impostor}

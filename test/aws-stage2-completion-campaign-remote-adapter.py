@@ -47,8 +47,9 @@ SOURCE_BINDINGS = {
 
 def approval():
     value = {
-        "version": "cogs.stage2-completion-production-approval/v5",
+        "version": "cogs.stage2-completion-production-approval/v6",
         "phrase": production.APPROVAL_PHRASE,
+        "phase_boundary_ordinal": 3, "phase_cycle_counts": (3, 4),
         "implementation_revision": SOURCE_BINDINGS["source_head"],
         "control_revision": "2" * 40, "qualification_revision": "3" * 40,
         "source_manifest_sha256": SOURCE_BINDINGS["source_manifest_sha256"],

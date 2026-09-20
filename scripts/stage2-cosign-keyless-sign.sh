@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+PATH=/usr/bin:/bin
+export PATH
 umask 077
 
 fail() {
@@ -21,12 +23,13 @@ case "$identity" in
     'https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/main')
       [ "$payload_base" = approval-authentication ] || fail ;;
   'https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main')
-      [ "$payload_base" = campaign-continuation ] || fail ;;
+      [ "$payload_base" = aws-stage2-production-continuation-v1 ] || fail ;;
   *) fail ;;
 esac
 
-for command in chmod cut docker find id install mktemp realpath sha256sum stat; do
-  command -v "$command" >/dev/null || fail
+for command in /usr/bin/chmod /usr/bin/cut /usr/bin/docker /usr/bin/find /usr/bin/id \
+  /usr/bin/install /usr/bin/mktemp /usr/bin/realpath /usr/bin/sha256sum /usr/bin/stat; do
+  [ -x "$command" ] || fail
 done
 [ -n "${RUNNER_TEMP:-}" ] || fail
 [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || fail
@@ -47,9 +50,9 @@ if [ "$payload_base" = approval-authentication ]; then
   bundle="$out/approval-authentication.bundle.json"
   payload_maximum=65536
 else
-  payload="$out/campaign-continuation.json"
-  bundle="$out/campaign-continuation.bundle.json"
-  payload_maximum=16777216
+  payload="$out/aws-stage2-production-continuation-v1.json"
+  bundle="$out/aws-stage2-production-continuation-v1.bundle.json"
+  payload_maximum=4194304
 fi
 [ -f "$payload" ] && [ ! -L "$payload" ] || fail
 [ "$(stat -c '%F:%u:%g:%h' -- "$payload")" = \

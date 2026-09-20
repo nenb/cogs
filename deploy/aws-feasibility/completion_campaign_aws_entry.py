@@ -33,23 +33,25 @@ def main():
     if not _MODULE_ROOT.is_dir(): raise ImportError("fixed campaign module root unavailable")
     sys.path.insert(0, str(_MODULE_ROOT))
     import completion_campaign_aws_adapter as adapter
-    segment = os.environ.get("COGS_STAGE2_CAMPAIGN_SEGMENT")
-    run_id_text = os.environ.get("COGS_STAGE2_GITHUB_RUN_ID", "")
-    attempt_text = os.environ.get("COGS_STAGE2_GITHUB_RUN_ATTEMPT", "")
-    if not run_id_text.isdigit() or str(int(run_id_text)) != run_id_text:
-        raise RuntimeError("invalid run id")
-    if attempt_text != "1": raise RuntimeError("only first attempt is admissible")
-    run_id, attempt = int(run_id_text), int(attempt_text)
     if os.environ.get("COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC") == "1":
-        if segment != "diagnostic": raise RuntimeError("invalid diagnostic segment")
-        receipt = adapter.run_fixed_diagnostic_campaign(run_id, attempt)
-    elif segment == "cycles-1-3":
-        receipt = adapter.run_fixed_first_segment(run_id, attempt)
-    elif segment == "cycles-4-7":
-        expected = os.environ.get("COGS_STAGE2_CONTINUATION_SHA256", "")
-        receipt = adapter.run_fixed_second_segment(run_id, attempt, expected)
+        receipt = adapter.run_fixed_diagnostic_campaign()
+    elif adapter.CONTINUATION_ADMISSION.exists():
+        # Phase two is selected only by the root-staged authenticated capability.
+        receipt = adapter.run_fixed_second_segment()
     else:
-        raise RuntimeError("invalid campaign segment")
+        names = (
+            "COGS_STAGE2_WORKFLOW_REVISION", "COGS_STAGE2_GITHUB_RUN_ID",
+            "COGS_STAGE2_PRODUCER_JOB_ID", "COGS_STAGE2_APPROVAL_ARTIFACT_RUN_ID",
+            "COGS_STAGE2_APPROVAL_ARTIFACT_ID", "COGS_STAGE2_APPROVAL_ARTIFACT_DIGEST",
+            "COGS_STAGE2_APPROVAL_ARTIFACT_NAME")
+        values = {name: os.environ.get(name, "") for name in names}
+        numeric = [values[name] for name in names[1:5]]
+        if any(not item.isdigit() or str(int(item)) != item or int(item) <= 0
+               for item in numeric):
+            raise RuntimeError("invalid phase-one provenance")
+        receipt = adapter.run_fixed_first_segment(
+            values[names[0]], *(int(item) for item in numeric),
+            values[names[5]], values[names[6]])
     _write(receipt)
 
 

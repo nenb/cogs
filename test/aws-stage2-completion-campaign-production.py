@@ -14,6 +14,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy/aws-feasibility"))
 import completion_campaign_production as production
+import completion_campaign_aws_adapter as aws_adapter
 
 
 def d(value): return hashlib.sha256(value.encode()).hexdigest()
@@ -37,8 +38,9 @@ def source_bindings():
 
 def approval():
     values = dict(
-        version="cogs.stage2-completion-production-approval/v5",
+        version="cogs.stage2-completion-production-approval/v6",
         phrase=production.APPROVAL_PHRASE,
+        phase_boundary_ordinal=3, phase_cycle_counts=(3, 4),
         implementation_revision="1" * 40,
         control_revision="2" * 40,
         qualification_revision="3" * 40,
@@ -290,17 +292,66 @@ class Harness:
             self.inventory, self.cost, self.recover, self.journal, self.journal_state)
 
 
+def close_phase(result, approved, run_id):
+    revision = "4" * 40
+    continuation = production.continuation_for_phase_one(
+        result, approved, "test-only", revision, run_id, 20, 10, 11,
+        "sha256:" + "5" * 64,
+        f"stage2-production-approval-{revision}-10")
+    fields = {
+        "version": production.CONTINUATION_ADMISSION_VERSION,
+        "repository": "nenb/cogs",
+        "workflow_path": ".github/workflows/stage2-production-campaign.yml",
+        "workflow_revision": revision, "ref": "refs/heads/main",
+        "run_id": run_id, "run_attempt": 1,
+        "producer_job_name": "cycles_1_3", "producer_job_id": 20,
+        "consumer_job_name": "cycles_4_7", "consumer_job_id": 21,
+        "continuation_sha256": hashlib.sha256(
+            continuation.canonical_bytes()).hexdigest(),
+        "continuation_commitment": continuation.continuation_commitment,
+        "bundle_sha256": d("bundle"), "trusted_root_sha256": d("root"),
+        "signer_identity": "https://github.com/nenb/cogs/.github/workflows/"
+            "stage2-production-campaign.yml@refs/heads/main",
+        "artifact_id": 22, "artifact_digest": "sha256:" + d("archive"),
+        "artifact_name": f"stage2-production-continuation-{revision}-{run_id}-1",
+        "approval_commitment": continuation.approval_commitment,
+        "authentication_receipt_sha256":
+            continuation.consumption.authentication_receipt_sha256,
+        "batch_commitment": continuation.batch_commitment,
+        "implementation_revision": continuation.implementation_revision,
+        "control_revision": continuation.control_revision,
+        "qualification_revision": continuation.qualification_revision,
+        "journal_sequence": continuation.journal_sequence,
+        "journal_tip_sha256": continuation.journal_tip_sha256,
+        "cycle3_zero_commitment": continuation.inventories[-1].zero_commitment,
+    }
+    admission = production.ContinuationAdmission(
+        **fields, admission_commitment=production._commit(
+            b"cogs.stage2-production-handoff-authentication/v1", fields))
+    return continuation, admission
+
+
+def authenticate(continuation, admission, approved):
+    return production._issue_test_authenticated_phase_one(
+        continuation, admission, approved)
+
+
 h = Harness(); controller = production.ProductionCampaignController(h.ports())
-continuation = controller.run_first_segment(101, 1)
+phase = controller.run_phase_one()
+continuation, admission = close_phase(phase, h.approval, 101)
 assert tuple(item.ordinal for item in continuation.grants) == (1, 2, 3)
 assert [row[1] for row in h.calls if row[0] == "remote"] == [1, 2, 3]
 raw = continuation.canonical_bytes()
 assert production.continuation_from_bytes(raw, h.approval, 101, 1, "test-only") == continuation
-for hostile in (raw[:-2] + b"x\n", raw.replace(b'\"github_run_id\":101', b'\"github_run_id\":102')):
+for hostile in (raw[:-2] + b"x\n", raw.replace(b'"github_run_id":101', b'"github_run_id":102')):
     try: production.continuation_from_bytes(hostile, h.approval, 101, 1, "test-only")
     except production.ProductionCampaignError: pass
     else: raise AssertionError("hostile continuation accepted")
-candidate = controller.run_second_segment(continuation, 101, 1)
+try: controller.run_phase_two(authenticate(continuation, admission, h.approval))
+except production.ProductionCampaignError: pass
+else: raise AssertionError("same controller accepted direct in-memory handoff")
+candidate = production.ProductionCampaignController(h.ports()).run_phase_two(
+    authenticate(continuation, admission, h.approval))
 assert candidate.actual_duration_ns == candidate.final_zero_unix_ns - candidate.first_apply_unix_ns
 assert candidate.total_cost_micro_usd == 7 and len(candidate.cycle_commitments) == 7
 assert len(candidate.launch_ready_samples_ns) == len(candidate.ssh_ready_samples_ns) == 7
@@ -316,24 +367,80 @@ assert [row[2] for row in h.calls if row[0] == "remote"] == list(production.CYCL
 # A fresh second-job controller resumes without consuming the approval again;
 # run/attempt substitution, stale admission, and canonical-byte tampering fail.
 first_job = Harness(); first_controller = production.ProductionCampaignController(first_job.ports())
-resume = first_controller.run_first_segment(202, 1)
+resume, resume_admission = close_phase(first_controller.run_phase_one(), first_job.approval, 202)
 second_job = Harness(approval_value=first_job.approval)
 second_job.time = resume.inventories[-1].observed_ended_unix_ns + 10
-resumed = production.ProductionCampaignController(second_job.ports()).run_second_segment(resume, 202, 1)
+resumed = production.ProductionCampaignController(second_job.ports()).run_phase_two(
+    authenticate(resume, resume_admission, first_job.approval))
 assert first_job.consumed and not second_job.consumed
 assert first_job.inventory_count == 3 and second_job.inventory_count == 5
 assert tuple(item.ordinal for item in resumed.grants) == tuple(range(1, 8))
-for run_id, attempt in ((203, 1), (202, 2)):
+for field, value in (("run_id", 203), ("run_attempt", 2),
+                     ("producer_job_id", 99), ("artifact_id", 99)):
     fresh = Harness(approval_value=first_job.approval)
-    try: production.ProductionCampaignController(fresh.ports()).run_second_segment(
-        resume, run_id, attempt)
+    try:
+        hostile = replace(resume_admission, **{field: value})
+        authenticated = authenticate(resume, hostile, first_job.approval)
+        production.ProductionCampaignController(fresh.ports()).run_phase_two(authenticated)
     except production.ProductionCampaignError: pass
-    else: raise AssertionError("cross-run/attempt continuation accepted")
+    else: raise AssertionError(f"cross-run handoff field accepted: {field}")
 stale = Harness(approval_value=first_job.approval)
 stale.time = resume.effect_deadline_unix_ns
-try: production.ProductionCampaignController(stale.ports()).run_second_segment(resume, 202, 1)
+try: production.ProductionCampaignController(stale.ports()).run_phase_two(
+    authenticate(resume, resume_admission, first_job.approval))
 except production.ProductionCampaignError: pass
 else: raise AssertionError("expired continuation accepted")
+
+# Every durable phase-two import boundary is cleanup-recoverable without
+# consuming the approval again or executing a cycle.
+class ImportCustodian:
+    def __init__(self, approval):
+        self.approval = approval; self.first_apply_started = None
+    def _append(self, category, event, ordinal, mode, commitment):
+        anchor = json.loads(aws_adapter.CONTINUATION_ANCHOR.read_bytes())
+        row = {"version": "cogs.stage2-production-campaign-journal/v1",
+               "sequence": anchor["sequence"], "previous_sha256": anchor["tip_sha256"],
+               "category": category, "event": event, "ordinal": ordinal,
+               "mode": mode, "commitment": commitment}
+        aws_adapter.JOURNAL.write_bytes(aws_adapter._canonical(row))
+        os.chmod(aws_adapter.JOURNAL, 0o600)
+    def _journal_state(self, _descriptor, _repair_tail=False): return (1, d("tip"))
+
+original_imports = tuple(getattr(aws_adapter, name) for name in (
+    "CONSUMED", "JOURNAL", "ACTIVE", "CLEANUP_COMPLETE", "SEGMENT_COMPLETE",
+    "CONTINUATION_ANCHOR", "_continuation", "_read_fixed", "_import_checkpoint"))
+try:
+    for crashed_at in ("consumption", "anchor", "continued"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, leaf in (("CONSUMED", "consumed"), ("JOURNAL", "journal"),
+                               ("ACTIVE", "active"), ("CLEANUP_COMPLETE", "cleanup"),
+                               ("SEGMENT_COMPLETE", "segment"),
+                               ("CONTINUATION_ANCHOR", "anchor")):
+                setattr(aws_adapter, name, root / leaf)
+            aws_adapter._continuation = lambda *_args: (resume, resume_admission)
+            aws_adapter._read_fixed = lambda path, *_args: path.read_bytes()
+            aws_adapter._import_checkpoint = lambda name: (_ for _ in ()).throw(
+                RuntimeError("crash")) if name == crashed_at else None
+            custodian = ImportCustodian(first_job.approval)
+            try: aws_adapter._import_continuation(custodian, resume, resume_admission)
+            except RuntimeError: pass
+            else: raise AssertionError(f"missing injected crash at {crashed_at}")
+            aws_adapter._import_checkpoint = lambda _name: None
+            aws_adapter._repair_continuation_import(
+                custodian, first_job.approval,
+                resume.consumption.authentication_receipt_sha256)
+            assert all(path.exists() for path in (
+                aws_adapter.CONSUMED, aws_adapter.CONTINUATION_ANCHOR,
+                aws_adapter.JOURNAL))
+            assert custodian.first_apply_started == resume.first_apply_unix_ns
+finally:
+    for name, value in zip((
+            "CONSUMED", "JOURNAL", "ACTIVE", "CLEANUP_COMPLETE", "SEGMENT_COMPLETE",
+            "CONTINUATION_ANCHOR", "_continuation", "_read_fixed", "_import_checkpoint"),
+            original_imports, strict=True):
+        setattr(aws_adapter, name, value)
+
 for field, hostile in (("ordinal", True), ("ordinal", 1.0),
                        ("observed_started_unix_ns", 0),
                        ("observed_ended_unix_ns", 2.5),
@@ -361,7 +468,8 @@ with tempfile.TemporaryDirectory() as directory:
         evidence_raw, report_raw = issuer._project_test_candidate(candidate)
         evidence = json.loads(evidence_raw)
         assert evidence_raw.endswith(b"\n") and evidence["result"] == "pass"
-        assert evidence["version"] == "cogs.aws-stage2-completion-evidence/v3"
+        assert evidence["version"] == "cogs.aws-stage2-completion-evidence/v4"
+        assert evidence["custody"]["handoff"]["phase_boundary_ordinal"] == 3
         assert evidence["bindings"]["runtime_manifest_sha256"] == candidate.approval.runtime_manifest_sha256
         assert "runtime_commitment" not in evidence["bindings"]
         assert evidence["deadlines"]["actual_campaign_duration_ns"] == candidate.actual_duration_ns

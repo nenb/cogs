@@ -353,6 +353,7 @@ class FixedProvider:
     def _approval(self) -> production.ProductionApproval:
         value = decode(_read(APPROVAL, 64 * 1024), 64 * 1024)
         value["plan_sha256s"] = tuple(value["plan_sha256s"])
+        value["phase_cycle_counts"] = tuple(value["phase_cycle_counts"])
         approval = production.ProductionApproval(**value)
         resolved = AWS.resolve(); seen = resolved.stat()
         _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == os.geteuid()

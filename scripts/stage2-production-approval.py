@@ -110,6 +110,7 @@ def eligibility(path):
     eligible((value.get("implementation_revision"), value.get("control_revision"),
               value.get("qualification_revision")))
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
+    value["phase_cycle_counts"] = tuple(value["phase_cycle_counts"])
     validate_package(path, production.ProductionApproval(**value))
 
 
@@ -133,7 +134,7 @@ def issue(path):
     _raw, draft = read(path)
     eligible((draft.get("implementation_revision"), draft.get("control_revision"),
               draft.get("qualification_revision")))
-    require(draft.pop("version", None) == "cogs.stage2-production-approval-draft/v3")
+    require(draft.pop("version", None) == "cogs.stage2-production-approval-draft/v4")
     allowed = {item.name for item in fields(production.ProductionApproval)} - {
         "version", "phrase", "batch_commitment", "issuer_commitment",
         "rate_source_commitment", "one_attempt"}
@@ -143,17 +144,20 @@ def issue(path):
         "workflow_revision": revision, "control_revision": control,
         "run_id": run_id, "actor": actor})
     value = {
-        "version": "cogs.stage2-completion-production-approval/v5",
+        "version": "cogs.stage2-completion-production-approval/v6",
         "phrase": production.APPROVAL_PHRASE,
         **draft,
         "rate_source_commitment": production.RATE_SOURCE_COMMITMENT,
         "issuer_commitment": issuer, "one_attempt": True,
     }
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
+    value["phase_cycle_counts"] = tuple(value["phase_cycle_counts"])
     value["batch_commitment"] = production.approval_batch_commitment(value)
     approval = production.ProductionApproval(**value)
     validate_package(path, approval)
-    output = approval.__dict__.copy(); output["plan_sha256s"] = list(approval.plan_sha256s)
+    output = approval.__dict__.copy()
+    output["plan_sha256s"] = list(approval.plan_sha256s)
+    output["phase_cycle_counts"] = list(approval.phase_cycle_counts)
     emit(canonical(output))
 
 
@@ -163,6 +167,7 @@ def authenticate(approval_path):
     eligible((approval_value.get("implementation_revision"), approval_value.get("control_revision"),
               approval_value.get("qualification_revision")))
     approval_value["plan_sha256s"] = tuple(approval_value["plan_sha256s"])
+    approval_value["phase_cycle_counts"] = tuple(approval_value["phase_cycle_counts"])
     approval = production.ProductionApproval(**approval_value)
     validate_package(approval_path, approval)
     require(approval.control_revision == control)

@@ -49,8 +49,13 @@ LOCK = ROOT / "campaign.lock"
 ACTIVE = ROOT / "cleanup-active.json"
 CLEANUP_COMPLETE = ROOT / "cleanup-complete.json"
 SEGMENT_COMPLETE = ROOT / "segment-one-zero-complete.json"
-CONTINUATION = ROOT / "campaign-continuation.json"
-CONTINUATION_BUNDLE = ROOT / "campaign-continuation.bundle.json"
+DIAGNOSTIC_RESULT = ROOT / "stage2-r-diagnostic-result.json"
+CONTINUATION_NAME = "aws-stage2-production-continuation-v1.json"
+CONTINUATION_BUNDLE_NAME = "aws-stage2-production-continuation-v1.bundle.json"
+CONTINUATION_ADMISSION_NAME = "aws-stage2-production-continuation-admission-v1.json"
+CONTINUATION = ROOT / CONTINUATION_NAME
+CONTINUATION_BUNDLE = ROOT / CONTINUATION_BUNDLE_NAME
+CONTINUATION_ADMISSION = ROOT / CONTINUATION_ADMISSION_NAME
 CONTINUATION_ANCHOR = ROOT / "continuation-journal-anchor.json"
 CONTINUATION_PUBLICATION = ROOT / "continuation-publication"
 CAMPAIGN_IDENTITY = (
@@ -303,6 +308,7 @@ def _approval():
              and authentication["workflow_run_id"] > 0)
     production._sha1(authentication["control_revision"])
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
+    value["phase_cycle_counts"] = tuple(value["phase_cycle_counts"])
     approval = production.ProductionApproval(**value)
     _require(hashlib.sha256(provider_raw).hexdigest() == approval.provider_binary_sha256)
     _require(approval.issuer_commitment == authentication["issuer_commitment"]
@@ -336,6 +342,17 @@ def _issue_port_authority(owner, seal):
 
 
 def _validate_port_authority(value):
+    return (type(value) is _Authority and type(value.owner) is AwsCampaignCustodian
+            and _ISSUED.pop(id(value), None) is value)
+
+
+def _issue_handoff_authority(owner):
+    _require(type(owner) is AwsCampaignCustodian)
+    value = _Authority(owner); _ISSUED[id(value)] = value
+    return value
+
+
+def _validate_handoff_authority(value):
     return (type(value) is _Authority and type(value.owner) is AwsCampaignCustodian
             and _ISSUED.pop(id(value), None) is value)
 
@@ -385,12 +402,14 @@ class AwsCampaignCustodian:
             anchor = _decode(_read_fixed(CONTINUATION_ANCHOR, 64 * 1024, (0o600,)),
                              64 * 1024)
             _require(set(anchor) == {"version", "sequence", "tip_sha256",
-                                     "continuation_commitment"}
+                                     "continuation_commitment",
+                                     "admission_commitment"}
                      and anchor["version"] ==
                         "cogs.stage2-production-continuation-journal-anchor/v1"
                      and type(anchor["sequence"]) is int and anchor["sequence"] > 0)
             production._digest(anchor["tip_sha256"])
             production._digest(anchor["continuation_commitment"])
+            production._digest(anchor["admission_commitment"])
             sequence, tip = anchor["sequence"], anchor["tip_sha256"]
         for line in raw.splitlines(keepends=True):
             row = _decode(line, 64 * 1024)
@@ -606,12 +625,13 @@ class AwsCampaignCustodian:
         parsed = None if inventory is None else _decode_inventory(inventory)
         return production.CleanupReceipt(**value, inventory=parsed)
 
-    def ports(self, seal):
+    def ports(self, seal, classification="authenticated-aws-adapter"):
+        _require(classification in {"authenticated-aws-adapter", "diagnostic-only"})
         authority = _issue_port_authority(self, seal)
         return production._issue_adapter_ports(
-            authority, self.approval, self.now, self.consume, self.effect,
-            self.remote, self.inventory, self.cost, self.recover, self.journal,
-            self.journal_state)
+            authority, classification, self.approval, self.now, self.consume,
+            self.effect, self.remote, self.inventory, self.cost, self.recover,
+            self.journal, self.journal_state)
 
     def journal_state(self):
         descriptor = os.open(JOURNAL, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -670,22 +690,32 @@ def _admit_root():
                  "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "TF_VAR_credentials", "GOOGLE_APPLICATION_CREDENTIALS"}))
 
 
-def _continuation(approval, authentication_sha256, run_id, run_attempt, expected_sha256):
-    raw = _read_fixed(CONTINUATION, 16 * 1024 * 1024)
-    _read_fixed(CONTINUATION_BUNDLE, 1024 * 1024)
-    production._digest(expected_sha256)
-    _require(hashlib.sha256(raw).hexdigest() == expected_sha256)
+def _continuation(approval, authentication_sha256):
+    raw = _read_fixed(CONTINUATION, 4 * 1024 * 1024)
+    bundle_raw = _read_fixed(CONTINUATION_BUNDLE, 1024 * 1024)
+    admission_raw = _read_fixed(CONTINUATION_ADMISSION, 64 * 1024)
     _verify_blob(CONTINUATION, CONTINUATION_BUNDLE, CAMPAIGN_IDENTITY)
+    preliminary = _decode(admission_raw, 64 * 1024)
+    run_id = preliminary.get("run_id"); run_attempt = preliminary.get("run_attempt")
     value = production.continuation_from_bytes(
         raw, approval, run_id, run_attempt, "authenticated-aws-adapter")
-    _require(value.consumption.authentication_receipt_sha256 == authentication_sha256)
-    return value
+    admission = production.admission_from_bytes(admission_raw, value, approval)
+    _require(value.consumption.authentication_receipt_sha256 == authentication_sha256
+             and admission.continuation_sha256 == hashlib.sha256(raw).hexdigest()
+             and admission.bundle_sha256 == hashlib.sha256(bundle_raw).hexdigest()
+             and admission.trusted_root_sha256 == TRUSTED_ROOT_SHA256)
+    return value, admission
 
 
-def _import_continuation(custodian, value):
+def _import_checkpoint(_name):
+    """Test fault seam; production leaves every durable checkpoint uninterrupted."""
+
+
+def _import_continuation(custodian, value, admission):
     _require(not CONSUMED.exists() and not JOURNAL.exists() and not ACTIVE.exists()
              and not CLEANUP_COMPLETE.exists() and not SEGMENT_COMPLETE.exists()
              and not CONTINUATION_ANCHOR.exists())
+    production._validate_admission(admission, value, custodian.approval)
     consumed = {"version": "cogs.stage2-production-approval-consumption/v1",
                 "approval_commitment": value.approval_commitment,
                 "batch_commitment": value.batch_commitment,
@@ -697,12 +727,14 @@ def _import_continuation(custodian, value):
     anchor = {"version": "cogs.stage2-production-continuation-journal-anchor/v1",
               "sequence": value.journal_sequence,
               "tip_sha256": value.journal_tip_sha256,
-              "continuation_commitment": value.continuation_commitment}
-    _write_once(CONSUMED, consumed_raw)
-    _write_once(CONTINUATION_ANCHOR, _canonical(anchor))
+              "continuation_commitment": value.continuation_commitment,
+              "admission_commitment": admission.admission_commitment}
+    _write_once(CONSUMED, consumed_raw); _import_checkpoint("consumption")
+    _write_once(CONTINUATION_ANCHOR, _canonical(anchor)); _import_checkpoint("anchor")
     custodian.first_apply_started = value.first_apply_unix_ns
     custodian._append("batch", "continued", None, None,
-                      value.continuation_commitment)
+                      admission.admission_commitment)
+    _import_checkpoint("continued")
 
 
 def _publish_evidence(candidate):
@@ -719,88 +751,102 @@ def _publish_evidence(candidate):
                         os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         custody = evidence_issuer.open_publication_custody(parent_fd, 0)
-        return evidence_issuer.issue_completion_evidence(candidate, custody)
+        issued = evidence_issuer.issue_completion_evidence(candidate, custody)
+        for source, name, maximum in (
+            (CONTINUATION, CONTINUATION_NAME, 4 * 1024 * 1024),
+            (CONTINUATION_BUNDLE, CONTINUATION_BUNDLE_NAME, 1024 * 1024),
+            (CONTINUATION_ADMISSION, CONTINUATION_ADMISSION_NAME, 64 * 1024)):
+            _write_once(evidence_root / name, _read_fixed(source, maximum), 0o400)
+        return issued
     finally:
         os.close(parent_fd)
 
 
-def run_fixed_first_segment(run_id, run_attempt):
+def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
+                            approval_artifact_run_id, approval_artifact_id,
+                            approval_artifact_digest, approval_artifact_name):
     """Consume one approval, execute exactly cycles 1--3, and retire credentials."""
     _admit_root()
-    _require(type(run_id) is int and run_id > 0
-             and type(run_attempt) is int and run_attempt == 1)
+    production._sha1(workflow_revision)
+    _require(all(type(item) is int and item > 0 for item in (
+                run_id, producer_job_id, approval_artifact_run_id,
+                approval_artifact_id))
+             and type(approval_artifact_digest) is str
+             and re.fullmatch(r"sha256:[0-9a-f]{64}", approval_artifact_digest)
+             and type(approval_artifact_name) is str)
     lock = _root_lock()
     try:
         _require(not any(path.exists() for path in (
             CONSUMED, JOURNAL, ACTIVE, CLEANUP_COMPLETE, SEGMENT_COMPLETE,
-            CONTINUATION, CONTINUATION_BUNDLE, CONTINUATION_ANCHOR,
-            CONTINUATION_PUBLICATION)))
+            CONTINUATION, CONTINUATION_BUNDLE, CONTINUATION_ADMISSION,
+            CONTINUATION_ANCHOR, CONTINUATION_PUBLICATION)))
         approval, authentication_sha256 = _approval()
         custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval, authentication_sha256)
-        continuation = production.ProductionCampaignController(
-            custodian.ports(_ADAPTER_SEAL)).run_first_segment(run_id, run_attempt)
+        phase = production.ProductionCampaignController(
+            custodian.ports(_ADAPTER_SEAL)).run_phase_one()
+        _require(not ACTIVE.exists())
+        _retire_credentials()
+        continuation = production.continuation_for_phase_one(
+            phase, approval, "authenticated-aws-adapter", workflow_revision,
+            run_id, producer_job_id, approval_artifact_run_id,
+            approval_artifact_id, approval_artifact_digest,
+            approval_artifact_name)
         _write_once(SEGMENT_COMPLETE, _canonical({
             "version": "cogs.stage2-segment-one-zero-complete/v1",
             "zero_commitment": continuation.inventories[-1].zero_commitment,
             "continuation_commitment": continuation.continuation_commitment,
             "certain_zero": True}))
-        _retire_credentials()
         CONTINUATION_PUBLICATION.mkdir(mode=0o700, exist_ok=False)
         os.chown(CONTINUATION_PUBLICATION, 0, 0)
         os.chmod(CONTINUATION_PUBLICATION, 0o700)
         raw = continuation.canonical_bytes()
-        _write_once(CONTINUATION_PUBLICATION / "campaign-continuation.json", raw, 0o400)
+        _write_once(CONTINUATION_PUBLICATION / CONTINUATION_NAME, raw, 0o400)
         return ContinuationPublicationReceipt(
             "cogs.stage2-continuation-publication/v1",
             hashlib.sha256(raw).hexdigest(), continuation.continuation_commitment, 3)
     except BaseException:
-        if not CONSUMED.exists() and not ACTIVE.exists() and AWS_CREDENTIALS.exists():
+        if not ACTIVE.exists() and AWS_CREDENTIALS.exists():
             if not CLEANUP_COMPLETE.exists():
                 _write_once(CLEANUP_COMPLETE, _canonical({
                     "version": "cogs.stage2-cleanup-complete/v1",
                     "reconciliation_commitment": production._commit(
-                        b"cogs.stage2-unadmitted-root-retirement/v1", {"root": str(ROOT)}),
+                        b"cogs.stage2-inactive-root-retirement/v1", {"root": str(ROOT)}),
                     "certain_zero": True}))
-            _retire_credentials()
-        elif (SEGMENT_COMPLETE.exists() or CLEANUP_COMPLETE.exists()) and \
-                AWS_CREDENTIALS.exists() and not ACTIVE.exists():
             _retire_credentials()
         raise
     finally:
         os.close(lock)
 
 
-def run_fixed_second_segment(run_id, run_attempt, expected_sha256):
-    """Admit one signed run-bound continuation and execute exactly cycles 4--7."""
+def run_fixed_second_segment():
+    """Admit the root-authenticated continuation and execute exactly cycles 4--7."""
     _admit_root()
-    _require(type(run_id) is int and run_id > 0
-             and type(run_attempt) is int and run_attempt == 1)
     lock = _root_lock()
     try:
         _require(not CONSUMED.exists() and not JOURNAL.exists() and not ACTIVE.exists()
                  and not CLEANUP_COMPLETE.exists() and not SEGMENT_COMPLETE.exists()
                  and not CONTINUATION_ANCHOR.exists())
         approval, authentication_sha256 = _approval()
-        continuation = _continuation(
-            approval, authentication_sha256, run_id, run_attempt, expected_sha256)
+        continuation, admission = _continuation(approval, authentication_sha256)
         custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval, authentication_sha256)
-        _import_continuation(custodian, continuation)
+        _import_continuation(custodian, continuation, admission)
+        authenticated = production._issue_adapter_authenticated_phase_one(
+            _issue_handoff_authority(custodian), continuation, admission, approval)
         try:
             candidate = production.ProductionCampaignController(
-                custodian.ports(_ADAPTER_SEAL)).run_second_segment(
-                    continuation, run_id, run_attempt)
+                custodian.ports(_ADAPTER_SEAL)).run_phase_two(authenticated)
         except BaseException:
             if CLEANUP_COMPLETE.exists() and not ACTIVE.exists() and AWS_CREDENTIALS.exists():
                 _retire_credentials()
             raise
         return _publish_evidence(candidate)
     except BaseException:
-        if not CONSUMED.exists() and AWS_CREDENTIALS.exists():
+        if not ACTIVE.exists() and AWS_CREDENTIALS.exists():
             if not CLEANUP_COMPLETE.exists():
                 _write_once(CLEANUP_COMPLETE, _canonical({
                     "version": "cogs.stage2-cleanup-complete/v1",
                     "reconciliation_commitment": production._commit(
-                        b"cogs.stage2-unadmitted-root-retirement/v1", {"root": str(ROOT)}),
+                        b"cogs.stage2-inactive-root-retirement/v1", {"root": str(ROOT)}),
                     "certain_zero": True}))
             _retire_credentials()
         raise
@@ -808,19 +854,78 @@ def run_fixed_second_segment(run_id, run_attempt, expected_sha256):
         os.close(lock)
 
 
-def run_fixed_diagnostic_campaign(run_id, run_attempt):
-    """Explicitly non-authoritative compatibility path; never callable in production."""
+def run_fixed_diagnostic_campaign():
+    """Emit only the explicit non-authoritative diagnostic result contract."""
     _require(os.environ.get(DIAGNOSTIC_ENVIRONMENT) == "1")
     _admit_root(); lock = _root_lock()
     try:
+        _require(not DIAGNOSTIC_RESULT.exists())
         approval, authentication_sha256 = _approval()
         custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval, authentication_sha256)
-        controller = production.ProductionCampaignController(custodian.ports(_ADAPTER_SEAL))
-        continuation = controller.run_first_segment(run_id, run_attempt)
-        candidate = controller.run_second_segment(continuation, run_id, run_attempt)
-        return _publish_evidence(candidate)
+        receipt = production.ProductionCampaignController(
+            custodian.ports(_ADAPTER_SEAL, "diagnostic-only")
+        ).run_diagnostic_campaign()
+        _require(not ACTIVE.exists())
+        _write_once(CLEANUP_COMPLETE, _canonical({
+            "version": "cogs.stage2-cleanup-complete/v1",
+            "reconciliation_commitment": receipt.final_zero_commitment,
+            "certain_zero": True}))
+        _retire_credentials()
+        _write_once(DIAGNOSTIC_RESULT, _canonical(asdict(receipt)), 0o400)
+        _require(not (ROOT / "evidence-publication").exists())
+        return receipt
+    except BaseException:
+        if not ACTIVE.exists() and AWS_CREDENTIALS.exists():
+            if not CLEANUP_COMPLETE.exists():
+                _write_once(CLEANUP_COMPLETE, _canonical({
+                    "version": "cogs.stage2-cleanup-complete/v1",
+                    "reconciliation_commitment": production._commit(
+                        b"cogs.stage2-diagnostic-inactive-retirement/v1",
+                        {"root": str(ROOT)}), "certain_zero": True}))
+            _retire_credentials()
+        raise
     finally:
         os.close(lock)
+
+
+def _repair_continuation_import(custodian, approval, authentication_sha256):
+    """Finish an interrupted phase-2 import without resuming any campaign cycle."""
+    value, admission = _continuation(approval, authentication_sha256)
+    expected_consumed = _canonical({
+        "version": "cogs.stage2-production-approval-consumption/v1",
+        "approval_commitment": value.approval_commitment,
+        "batch_commitment": value.batch_commitment,
+        "consumed_unix_ns": value.consumption.consumed_unix_ns,
+        "first_created": True})
+    _require(_read_fixed(CONSUMED, 64 * 1024, (0o600,)) == expected_consumed)
+    expected_anchor = _canonical({
+        "version": "cogs.stage2-production-continuation-journal-anchor/v1",
+        "sequence": value.journal_sequence,
+        "tip_sha256": value.journal_tip_sha256,
+        "continuation_commitment": value.continuation_commitment,
+        "admission_commitment": admission.admission_commitment})
+    if CONTINUATION_ANCHOR.exists():
+        _require(_read_fixed(CONTINUATION_ANCHOR, 64 * 1024, (0o600,)) == expected_anchor)
+    else:
+        _require(not JOURNAL.exists()); _write_once(CONTINUATION_ANCHOR, expected_anchor)
+    custodian.first_apply_started = value.first_apply_unix_ns
+    if not JOURNAL.exists():
+        custodian._append("batch", "continued", None, None,
+                          admission.admission_commitment)
+    else:
+        descriptor = os.open(JOURNAL, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            custodian._journal_state(descriptor, True)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            rows = os.read(descriptor, MAX_JOURNAL_BYTES).splitlines(keepends=True)
+            _require(rows)
+            first = _decode(rows[0], 64 * 1024)
+            _require(first["category"] == "batch" and first["event"] == "continued"
+                     and first["commitment"] == admission.admission_commitment)
+        finally:
+            os.close(descriptor)
+
 
 def recover_fixed_campaign():
     """Cleanup-only crash entry; it cannot resume cycles or mint a candidate."""
@@ -843,6 +948,12 @@ def recover_fixed_campaign():
             _retire_credentials(); return NoActiveCleanupReceipt(**_decode(complete_raw))
         custodian = AwsCampaignCustodian(
             _ADAPTER_SEAL, approval, authentication_sha256)
+        if CONTINUATION.exists() or CONTINUATION_BUNDLE.exists() or \
+                CONTINUATION_ADMISSION.exists() or CONTINUATION_ANCHOR.exists():
+            _require(CONTINUATION.exists() and CONTINUATION_BUNDLE.exists()
+                     and CONTINUATION_ADMISSION.exists())
+            _repair_continuation_import(
+                custodian, approval, authentication_sha256)
         if not ACTIVE.exists():
             if JOURNAL.exists():
                 descriptor = os.open(JOURNAL, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -854,8 +965,8 @@ def recover_fixed_campaign():
                     if rows:
                         last = _decode(rows[-1], 64 * 1024)
                         _require((last["category"], last["event"]) in {
-                            ("batch", "consumed"), ("batch", "candidate"),
-                            ("campaign", "opened"),
+                            ("batch", "consumed"), ("batch", "continued"),
+                            ("batch", "candidate"), ("campaign", "opened"),
                             ("cycle", "opened"), ("cycle", "sealed"),
                             ("cleanup", "settled")})
                 finally:

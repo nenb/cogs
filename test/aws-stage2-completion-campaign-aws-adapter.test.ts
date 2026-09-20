@@ -51,6 +51,7 @@ test("diagnostic normal and recovery entries preserve only the clean selector en
       join(root, "completion_campaign_aws_adapter.py"),
       [
         "import os",
+        "from pathlib import Path",
         "from dataclasses import dataclass",
         "@dataclass(frozen=True)",
         "class Receipt: result: str",
@@ -59,9 +60,8 @@ test("diagnostic normal and recovery entries preserve only the clean selector en
         "    assert all(os.environ.get(key)==value for key,value in expected.items())",
         "    assert not any(key.startswith('AWS_') for key in os.environ)",
         "    return Receipt('pass')",
-        "def run_fixed_diagnostic_campaign(run_id,run_attempt):",
-        "    assert (run_id,run_attempt)==(123,1)",
-        "    return check()",
+        "CONTINUATION_ADMISSION=Path('/definitely-absent')",
+        "def run_fixed_diagnostic_campaign(): return check()",
         "def recover_fixed_campaign(): return check()",
         "",
       ].join("\n"),
@@ -78,9 +78,7 @@ test("diagnostic normal and recovery entries preserve only the clean selector en
           "PATH=/usr/bin:/bin",
           "TZ=UTC",
           "COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1",
-          "COGS_STAGE2_CAMPAIGN_SEGMENT=diagnostic",
-          "COGS_STAGE2_GITHUB_RUN_ID=123",
-          "COGS_STAGE2_GITHUB_RUN_ATTEMPT=1",
+
           "/usr/bin/python3",
           "-I",
           "-B",
@@ -97,15 +95,13 @@ test("diagnostic normal and recovery entries preserve only the clean selector en
   }
 });
 
-test("split launcher passes only the selector admitted for its exact segment", () => {
-  assert.match(launcher, /cycles-1-3\)/u);
-  assert.match(launcher, /cycles-4-7\)/u);
-  assert.match(launcher, /diagnostic\)/u);
-  assert.match(launcher, /\^\[0-9a-f\]\{64\}\$/u);
-  assert.match(launcher, /clean\+=\(COGS_STAGE2_CONTINUATION_SHA256=/u);
+test("split launcher admits phase two only through the staged capability", () => {
+  assert.match(launcher, /aws-stage2-production-continuation-admission-v1\.json/u);
+  assert.match(launcher, /COGS_STAGE2_WORKFLOW_REVISION/u);
+  assert.match(launcher, /COGS_STAGE2_APPROVAL_ARTIFACT_DIGEST/u);
   assert.match(launcher, /clean\+=\(COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1\)/u);
-  assert.doesNotMatch(launcher, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC="\$\{/u);
-  assert.doesNotMatch(launcher, /COGS_STAGE2_CONTINUATION_SHA256="\$\{[^}]+:-\}"/u);
+  assert.doesNotMatch(launcher, /case "\$\{COGS_STAGE2_CAMPAIGN_SEGMENT/u);
+  assert.doesNotMatch(launcher, /COGS_STAGE2_CONTINUATION_SHA256=/u);
 });
 
 test("adapter commands and custody paths are fixed with one closed diagnostic identity selector", () => {
@@ -147,7 +143,8 @@ test("adapter commands and custody paths are fixed with one closed diagnostic id
   assert.match(source, /def run_fixed_first_segment/u);
   assert.match(source, /def run_fixed_second_segment/u);
   assert.doesNotMatch(source, /def run_fixed_campaign/u);
-  assert.match(source, /campaign-continuation\.json/u);
+  assert.match(source, /aws-stage2-production-continuation-v1\.json/u);
+  assert.match(source, /aws-stage2-production-continuation-admission-v1\.json/u);
   assert.match(source, /continuation_from_bytes/u);
   assert.match(source, /CAMPAIGN_IDENTITY/u);
   assert.match(source, /issue_completion_evidence\(candidate, custody\)/u);

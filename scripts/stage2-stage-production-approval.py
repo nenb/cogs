@@ -196,13 +196,25 @@ def remove_partial(expected):
     require(not any(STAGING.iterdir())); STAGING.rmdir(); sync(STAGING.parent)
 
 
-def stage_continuation(source, run_id_text, expected_sha256):
+def stage_continuation(source, workflow_revision, run_id_text, producer_job_id_text,
+                       consumer_job_id_text, artifact_id_text, artifact_digest,
+                       artifact_name, approval_run_id_text, approval_artifact_id_text,
+                       approval_artifact_digest, approval_artifact_name):
     require(os.geteuid() == os.getegid() == 0 and DESTINATION.is_dir()
             and not adapter.CONSUMED.exists() and not adapter.JOURNAL.exists()
             and not adapter.CONTINUATION.exists()
             and not adapter.CONTINUATION_BUNDLE.exists()
-            and re.fullmatch(r"[1-9][0-9]*", run_id_text) is not None
-            and re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is not None)
+            and not adapter.CONTINUATION_ADMISSION.exists()
+            and re.fullmatch(r"[0-9a-f]{40}", workflow_revision) is not None
+            and all(re.fullmatch(r"[1-9][0-9]*", item) is not None for item in (
+                run_id_text, producer_job_id_text, consumer_job_id_text,
+                artifact_id_text, approval_run_id_text, approval_artifact_id_text))
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", artifact_digest) is not None
+            and re.fullmatch(r"sha256:[0-9a-f]{64}",
+                             approval_artifact_digest) is not None
+            and producer_job_id_text != consumer_job_id_text
+            and artifact_name ==
+                f"stage2-production-continuation-{workflow_revision}-{run_id_text}-1")
     caller_uid = os.environ.get("SUDO_UID"); caller_gid = os.environ.get("SUDO_GID")
     require(caller_uid is not None and caller_gid is not None
             and re.fullmatch(r"[1-9][0-9]*", caller_uid) is not None
@@ -214,23 +226,66 @@ def stage_continuation(source, run_id_text, expected_sha256):
             and stat.S_IMODE(seen.st_mode) == 0o700)
     entries = tuple(source.iterdir())
     require({item.name for item in entries} == {
-        "campaign-continuation.json", "campaign-continuation.bundle.json"}
+                adapter.CONTINUATION_NAME, adapter.CONTINUATION_BUNDLE_NAME}
             and all(item.is_file() and not item.is_symlink() and item.lstat().st_nlink == 1
                     and (item.lstat().st_uid, item.lstat().st_gid) == caller
                     and stat.S_IMODE(item.lstat().st_mode) == 0o400 for item in entries))
-    continuation = read(source / "campaign-continuation.json", 16 * 1024 * 1024)
-    bundle = read(source / "campaign-continuation.bundle.json", 1024 * 1024)
-    require(hashlib.sha256(continuation).hexdigest() == expected_sha256)
+    continuation_path = source / adapter.CONTINUATION_NAME
+    bundle_path = source / adapter.CONTINUATION_BUNDLE_NAME
+    continuation = read(continuation_path, 4 * 1024 * 1024)
+    bundle = read(bundle_path, 1024 * 1024)
+    approval, authentication_sha256 = adapter._approval()
+    adapter._verify_blob(continuation_path, bundle_path, adapter.CAMPAIGN_IDENTITY)
+    parsed = production.continuation_from_bytes(
+        continuation, approval, int(run_id_text), 1, "authenticated-aws-adapter")
+    require(parsed.consumption.authentication_receipt_sha256 == authentication_sha256
+            and parsed.repository == "nenb/cogs"
+            and parsed.workflow_path ==
+                ".github/workflows/stage2-production-campaign.yml"
+            and parsed.workflow_revision == workflow_revision
+            and parsed.producer_job_name == "cycles_1_3"
+            and parsed.producer_job_id == int(producer_job_id_text)
+            and parsed.approval_artifact_run_id == int(approval_run_id_text)
+            and parsed.approval_artifact_id == int(approval_artifact_id_text)
+            and parsed.approval_artifact_digest == approval_artifact_digest
+            and parsed.approval_artifact_name == approval_artifact_name
+            and parsed.active_resource is False and parsed.certain_zero is True
+            and parsed.credentials_retired is True)
+    fields = {
+        "version": production.CONTINUATION_ADMISSION_VERSION,
+        "repository": "nenb/cogs",
+        "workflow_path": ".github/workflows/stage2-production-campaign.yml",
+        "workflow_revision": workflow_revision, "ref": "refs/heads/main",
+        "run_id": int(run_id_text), "run_attempt": 1,
+        "producer_job_name": "cycles_1_3",
+        "producer_job_id": int(producer_job_id_text),
+        "consumer_job_name": "cycles_4_7",
+        "consumer_job_id": int(consumer_job_id_text),
+        "continuation_sha256": hashlib.sha256(continuation).hexdigest(),
+        "continuation_commitment": parsed.continuation_commitment,
+        "bundle_sha256": hashlib.sha256(bundle).hexdigest(),
+        "trusted_root_sha256": adapter.TRUSTED_ROOT_SHA256,
+        "signer_identity": adapter.CAMPAIGN_IDENTITY,
+        "artifact_id": int(artifact_id_text), "artifact_digest": artifact_digest,
+        "artifact_name": artifact_name,
+        "approval_commitment": parsed.approval_commitment,
+        "authentication_receipt_sha256": authentication_sha256,
+        "batch_commitment": parsed.batch_commitment,
+        "implementation_revision": parsed.implementation_revision,
+        "control_revision": parsed.control_revision,
+        "qualification_revision": parsed.qualification_revision,
+        "journal_sequence": parsed.journal_sequence,
+        "journal_tip_sha256": parsed.journal_tip_sha256,
+        "cycle3_zero_commitment": parsed.inventories[-1].zero_commitment,
+    }
+    admission = production.ContinuationAdmission(
+        **fields, admission_commitment=production._commit(
+            b"cogs.stage2-production-handoff-authentication/v1", fields))
+    production._validate_admission(admission, parsed, approval)
     write(adapter.CONTINUATION, continuation)
     write(adapter.CONTINUATION_BUNDLE, bundle)
-    approval, authentication_sha256 = adapter._approval()
-    adapter._verify_blob(adapter.CONTINUATION, adapter.CONTINUATION_BUNDLE,
-                         adapter.CAMPAIGN_IDENTITY)
-    parsed = production.continuation_from_bytes(
-        adapter._read_fixed(adapter.CONTINUATION, 16 * 1024 * 1024), approval,
-        int(run_id_text), 1, "authenticated-aws-adapter")
-    require(parsed.consumption.authentication_receipt_sha256 == authentication_sha256)
-    return parsed.continuation_commitment
+    write(adapter.CONTINUATION_ADMISSION, admission.canonical_bytes())
+    return admission.admission_commitment
 
 
 def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
@@ -244,6 +299,7 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
     eligible((value.get("implementation_revision"), value.get("control_revision"),
               value.get("qualification_revision")))
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
+    value["phase_cycle_counts"] = tuple(value["phase_cycle_counts"])
     approval = production.ProductionApproval(**value)
     package_raw = read(source / production.QUALIFICATION_PACKAGE_NAME, 256 * 1024)
     try: package = json.loads(package_raw)
@@ -428,8 +484,8 @@ if __name__ == "__main__":
                                ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n" == raw)
             provider_package_archive(sys.argv[2], manifest)
             result = "verified"
-        elif len(sys.argv) == 5 and sys.argv[1] == "stage-continuation":
-            result = stage_continuation(sys.argv[2], sys.argv[3], sys.argv[4])
+        elif len(sys.argv) == 14 and sys.argv[1] == "stage-continuation":
+            result = stage_continuation(*sys.argv[2:])
         else:
             require(len(sys.argv) == 5)
             result = stage(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])

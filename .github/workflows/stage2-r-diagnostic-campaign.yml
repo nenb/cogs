@@ -146,8 +146,9 @@ jobs:
           test "$(sha256sum "$out/approval.json" | cut -d' ' -f1)" = \
             "$(jq -er '.approval_sha256 | select(test("^[0-9a-f]{64}$"))' "$out/approval-authentication.json")"
           jq -e --arg g "$CONTROL_HEAD" \
-            '.version == "cogs.stage2-completion-production-approval/v5" and
-             .control_revision == $g and .one_attempt == true' "$out/approval.json" >/dev/null
+            '.version == "cogs.stage2-completion-production-approval/v6" and
+             .control_revision == $g and .one_attempt == true and
+             .phase_boundary_ordinal == 3 and .phase_cycle_counts == [3,4]'  "$out/approval.json" >/dev/null
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
           expires_ns=$(jq -er '.expires_unix_ns' "$out/approval.json")
           now_s=$(date +%s); duration=$((expires_ns / 1000000000 - now_s - 60))
@@ -241,7 +242,8 @@ jobs:
         run: |
           set -euo pipefail
           root=/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility
-          for name in completion_campaign_aws_adapter.py completion_campaign_aws_provider.py; do
+          for name in completion_campaign_production.py completion_campaign_aws_adapter.py \
+              completion_campaign_aws_provider.py completion_campaign_aws_entry.py; do
             source="deploy/aws-feasibility/$name"; target="$root/$name"
             candidate_sha=$(sha256sum "$source" | cut -d' ' -f1)
             fixture_sha=$(sudo -n sha256sum "$target" | cut -d' ' -f1)
@@ -276,7 +278,7 @@ jobs:
           set -euo pipefail
           rm -f "$RUNNER_TEMP/aws-credentials" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/budget-email"
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
-          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\n' >>"$GITHUB_ENV"
+          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\nACTIONS_ID_TOKEN_REQUEST_TOKEN=\nACTIONS_ID_TOKEN_REQUEST_URL=\n' >>"$GITHUB_ENV"
 
       - name: Execute seven cycles with the candidate provider overlay
         id: campaign
@@ -284,9 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-            COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 COGS_STAGE2_CAMPAIGN_SEGMENT=diagnostic \
-            COGS_STAGE2_GITHUB_RUN_ID="$GITHUB_RUN_ID" \
-            COGS_STAGE2_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
             /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_entry.py
 
       - name: Invoke cleanup-only recovery after any uncertain diagnostic outcome
@@ -302,38 +302,21 @@ jobs:
           sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json
           sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
 
-      - name: Validate generated evidence but publish only a non-authoritative digest manifest
+      - name: Publish only the dedicated non-authoritative diagnostic receipt
         if: steps.campaign.outcome == 'success'
         run: |
           set -euo pipefail
-          private="$RUNNER_TEMP/evidence-private"; install -d -m 0700 "$private"
-          sudo -n find /var/lib/cogs/stage2-aws-production-v2/evidence-publication \
-            -mindepth 1 -maxdepth 1 -type f -exec cp --no-preserve=ownership {} "$private"/ \;
-          sudo -n chown -R "$(id -u):$(id -g)" "$private"
-          chmod 0400 "$private"/*
-          npx tsx scripts/validate-aws-stage2-completion-evidence-v3.ts \
-            "$private/aws-stage2-completion-evidence-v3.json"
+          sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/evidence-publication
           public="$RUNNER_TEMP/diagnostic-publication"; install -d -m 0700 "$public"
-          python3 -I -B - "$private" "$public/diagnostic-result.json" <<'PY'
-          import hashlib,json,os,pathlib,sys
-          root=pathlib.Path(sys.argv[1]); members=[]
-          for path in sorted(root.iterdir()):
-              raw=path.read_bytes(); members.append({"name":path.name,"bytes":len(raw),
-                  "sha256":hashlib.sha256(raw).hexdigest()})
-          expected=["aws-stage2-completion-evidence-v3.json",
-              "aws-stage2-completion-publication-v1.json","aws-stage2-completion-report-v3.md"]
-          if [row["name"] for row in members] != expected: raise SystemExit(2)
-          evidence=json.loads((root/expected[0]).read_bytes())
-          if len(evidence.get("cycles",[])) != 7: raise SystemExit(2)
-          value={"version":"cogs.stage2-r-diagnostic-result/v1",
-            "authority":"non-authoritative-diagnostic-only","result":"pass",
-            "candidate_revision":os.environ["GITHUB_SHA"],
-            "workflow_run_id":int(os.environ["GITHUB_RUN_ID"]),"workflow_run_attempt":1,
-            "cycle_count":7,"generated_evidence_members":members,
-            "production_evidence_eligible":False,"issue42_closure_eligible":False}
-          pathlib.Path(sys.argv[2]).write_text(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True,allow_nan=False)+"\n")
-          PY
-          rm -rf "$private"
+          sudo -n cp --no-preserve=ownership \
+            /var/lib/cogs/stage2-aws-production-v2/stage2-r-diagnostic-result.json \
+            "$public/diagnostic-result.json"
+          sudo -n chown "$(id -u):$(id -g)" "$public/diagnostic-result.json"
+          chmod 0400 "$public/diagnostic-result.json"
+          jq -e '.version == "cogs.stage2-r-diagnostic-result/v2" and
+            .authority == "non-authoritative-diagnostic-only" and .result == "pass" and
+            .cycle_count == 7 and .production_evidence_eligible == false and
+            .issue42_closure_eligible == false' "$public/diagnostic-result.json" >/dev/null
 
       - name: Upload diagnostic-only result manifest
         id: diagnostic_upload

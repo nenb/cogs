@@ -195,8 +195,8 @@
         "rate_source_commitment": { "$ref": "#/$defs/digest" },
         "aggregate_effect_duration_ns": { "$ref": "#/$defs/positive" },
         "actual_campaign_duration_ns": { "$ref": "#/$defs/positive" },
-        "aggregate_cost_micro_usd": { "type": "integer", "minimum": 1, "maximum": 1100000 },
-        "approved_maximum_micro_usd": { "type": "integer", "minimum": 1, "maximum": 1100000 }
+        "aggregate_cost_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 },
+        "approved_maximum_micro_usd": { "type": "integer", "minimum": 1, "maximum": 499999 }
       }
     },
     "limitations": {

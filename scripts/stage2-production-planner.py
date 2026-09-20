@@ -362,7 +362,7 @@ def main(arguments):
             and image.get("RootDeviceType") == "ebs" and image.get("State") == "available")
     now = time.time_ns()
     draft = {
-        "version": "cogs.stage2-production-approval-draft/v3",
+        "version": "cogs.stage2-production-approval-draft/v4",
         "implementation_revision": bindings["source_head"],
         "control_revision": package["control_revision"],
         "qualification_revision": package["qualification_revision"],
@@ -387,6 +387,7 @@ def main(arguments):
         "cleanup_reserve_ns": 30 * 60 * 10**9, "expires_unix_ns": now + 10 * 60 * 60 * 10**9,
         "maximum_cycle_duration_ns": 150 * 60 * 10**9,
         "maximum_cost_micro_usd": 1_100_000,
+        "phase_boundary_ordinal": 3, "phase_cycle_counts": [3, 4],
         "executor_principal_commitment": production.executor_principal_commitment("aws", account, role),
         "inventory_observer_principal_commitment":
             production.executor_principal_commitment("aws", account, observer_role),

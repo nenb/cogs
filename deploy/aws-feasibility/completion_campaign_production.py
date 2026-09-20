@@ -13,9 +13,13 @@ from pathlib import Path
 import re
 import runpy
 
-APPROVAL_PHRASE = "run-seven-sequential-stage2-completion-launches"
+APPROVAL_PHRASE = "run-seven-sequential-stage2-completion-launches-in-one-fixed-two-phase-campaign"
 VERSION = "cogs.stage2-completion-production-controller/v3"
-CONTINUATION_VERSION = "cogs.stage2-production-campaign-continuation/v1"
+CONTINUATION_VERSION = "cogs.stage2-production-continuation/v1"
+CONTINUATION_ADMISSION_VERSION = "cogs.stage2-production-continuation-admission/v1"
+PHASE_BOUNDARY_ORDINAL = 3
+PHASE_CYCLE_COUNTS = (3, 4)
+FIRST_PLAN_MAXIMUM_NS = 900 * 1_000_000_000
 CYCLE_MODES = ("full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness")
 INVENTORY_CATEGORIES = (
     "ec2_instances", "ebs_volumes", "network_interfaces", "eni_public_associations",
@@ -107,7 +111,7 @@ RATE_SOURCE_COMMITMENT = _commit(
 
 
 def approval_batch_commitment(value):
-    return _commit(b"cogs.stage2-production-approved-batch/v5", _approval_fields(value))
+    return _commit(b"cogs.stage2-production-approved-batch/v6", _approval_fields(value))
 
 
 def executor_principal_commitment(partition, account_id, role_name):
@@ -140,6 +144,8 @@ def resolved_ami_commitment(value):
 class ProductionApproval:
     version: str
     phrase: str
+    phase_boundary_ordinal: int
+    phase_cycle_counts: tuple[int, int]
     batch_commitment: str
     implementation_revision: str
     control_revision: str
@@ -181,9 +187,11 @@ class ProductionApproval:
     one_attempt: bool
 
     def __post_init__(self):
-        _require(self.version == "cogs.stage2-completion-production-approval/v5"
-                 and self.phrase == APPROVAL_PHRASE and self.one_attempt is True,
-                 ProductionApprovalError)
+        _require(self.version == "cogs.stage2-completion-production-approval/v6"
+                 and self.phrase == APPROVAL_PHRASE
+                 and self.phase_boundary_ordinal == PHASE_BOUNDARY_ORDINAL
+                 and self.phase_cycle_counts == PHASE_CYCLE_COUNTS
+                 and self.one_attempt is True, ProductionApprovalError)
         _digest(self.batch_commitment); _sha1(self.implementation_revision); _sha1(self.control_revision)
         _sha1(self.qualification_revision)
         _require(len({self.implementation_revision, self.control_revision,
@@ -859,18 +867,66 @@ def _journal_checkpoint(consumption, grants, effects, cycles):
 
 
 @dataclass(frozen=True)
+class PhaseOneResult:
+    consumption: ApprovalConsumptionReceipt
+    grants: tuple[CycleLaunchGrant, ...]
+    effects: tuple[tuple[EffectReceipt, EffectReceipt, EffectReceipt, EffectReceipt], ...]
+    remotes: tuple[RemoteReceipt, ...]
+    inventories: tuple[InventoryReceipt, ...]
+    costs: tuple[CostReceipt, ...]
+    cycle_commitments: tuple[str, ...]
+    first_apply_unix_ns: int
+    effect_deadline_unix_ns: int
+    cleanup_deadline_unix_ns: int
+    cumulative_cost_micro_usd: int
+    journal_sequence: int
+    journal_tip_sha256: str
+
+    def __post_init__(self):
+        _require(type(self.consumption) is ApprovalConsumptionReceipt
+                 and len(self.grants) == len(self.effects) == len(self.remotes) ==
+                     len(self.inventories) == len(self.costs) ==
+                     len(self.cycle_commitments) == PHASE_BOUNDARY_ORDINAL
+                 and tuple(item.ordinal for item in self.grants) == (1, 2, 3)
+                 and tuple(len(item) for item in self.effects) == (4, 4, 4)
+                 and type(self.first_apply_unix_ns) is int and self.first_apply_unix_ns > 0
+                 and type(self.effect_deadline_unix_ns) is int
+                 and type(self.cleanup_deadline_unix_ns) is int
+                 and type(self.cumulative_cost_micro_usd) is int
+                 and self.cumulative_cost_micro_usd > 0
+                 and type(self.journal_sequence) is int and self.journal_sequence > 0,
+                 ProductionReceiptError)
+        _digest(self.journal_tip_sha256)
+
+
+@dataclass(frozen=True)
 class CampaignContinuation:
     version: str
     execution_authority: str
     repository: str
+    workflow_path: str
     workflow_ref: str
+    workflow_revision: str
+    event: str
+    ref: str
+    producer_job_name: str
+    producer_job_id: int
     github_run_id: int
     github_run_attempt: int
+    approval_artifact_run_id: int
+    approval_artifact_id: int
+    approval_artifact_digest: str
+    approval_artifact_name: str
     approval_commitment: str
     batch_commitment: str
     implementation_revision: str
     control_revision: str
     qualification_revision: str
+    source_manifest_sha256: str
+    phase_boundary_ordinal: int
+    active_resource: bool
+    certain_zero: bool
+    credentials_retired: bool
     consumption: ApprovalConsumptionReceipt
     grants: tuple[CycleLaunchGrant, ...]
     effects: tuple[tuple[EffectReceipt, EffectReceipt, EffectReceipt, EffectReceipt], ...]
@@ -890,10 +946,25 @@ class CampaignContinuation:
         _require(self.version == CONTINUATION_VERSION
                  and self.execution_authority in {"authenticated-aws-adapter", "test-only"}
                  and self.repository == "nenb/cogs"
+                 and self.workflow_path == ".github/workflows/stage2-production-campaign.yml"
                  and self.workflow_ref ==
                     "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main"
+                 and self.event == "workflow_dispatch" and self.ref == "refs/heads/main"
+                 and self.producer_job_name == "cycles_1_3"
+                 and type(self.producer_job_id) is int and self.producer_job_id > 0
                  and type(self.github_run_id) is int and self.github_run_id > 0
                  and type(self.github_run_attempt) is int and self.github_run_attempt == 1
+                 and type(self.approval_artifact_run_id) is int
+                 and self.approval_artifact_run_id > 0
+                 and type(self.approval_artifact_id) is int and self.approval_artifact_id > 0
+                 and type(self.approval_artifact_digest) is str
+                 and re.fullmatch(r"sha256:[0-9a-f]{64}", self.approval_artifact_digest)
+                 and type(self.approval_artifact_name) is str
+                 and self.approval_artifact_name ==
+                    f"stage2-production-approval-{self.workflow_revision}-{self.approval_artifact_run_id}"
+                 and self.phase_boundary_ordinal == PHASE_BOUNDARY_ORDINAL
+                 and self.active_resource is False and self.certain_zero is True
+                 and self.credentials_retired is True
                  and type(self.consumption) is ApprovalConsumptionReceipt
                  and len(self.grants) == len(self.effects) == len(self.remotes) ==
                      len(self.inventories) == len(self.costs) ==
@@ -908,8 +979,9 @@ class CampaignContinuation:
                  and type(self.journal_sequence) is int and self.journal_sequence > 0,
                  ProductionReceiptError)
         _digest(self.approval_commitment); _digest(self.batch_commitment)
-        _sha1(self.implementation_revision); _sha1(self.control_revision)
-        _sha1(self.qualification_revision); _digest(self.journal_tip_sha256)
+        _sha1(self.workflow_revision); _sha1(self.implementation_revision)
+        _sha1(self.control_revision); _sha1(self.qualification_revision)
+        _digest(self.source_manifest_sha256); _digest(self.journal_tip_sha256)
         _digest(self.continuation_commitment)
         fields = asdict(self); fields.pop("continuation_commitment")
         _require(self.continuation_commitment == _commit(
@@ -917,6 +989,88 @@ class CampaignContinuation:
 
     def canonical_bytes(self):
         return _canonical(asdict(self)) + b"\n"
+
+
+@dataclass(frozen=True)
+class ContinuationAdmission:
+    version: str
+    repository: str
+    workflow_path: str
+    workflow_revision: str
+    ref: str
+    run_id: int
+    run_attempt: int
+    producer_job_name: str
+    producer_job_id: int
+    consumer_job_name: str
+    consumer_job_id: int
+    continuation_sha256: str
+    continuation_commitment: str
+    bundle_sha256: str
+    trusted_root_sha256: str
+    signer_identity: str
+    artifact_id: int
+    artifact_digest: str
+    artifact_name: str
+    approval_commitment: str
+    authentication_receipt_sha256: str
+    batch_commitment: str
+    implementation_revision: str
+    control_revision: str
+    qualification_revision: str
+    journal_sequence: int
+    journal_tip_sha256: str
+    cycle3_zero_commitment: str
+    admission_commitment: str
+
+    def __post_init__(self):
+        _require(self.version == CONTINUATION_ADMISSION_VERSION
+                 and self.repository == "nenb/cogs"
+                 and self.workflow_path == ".github/workflows/stage2-production-campaign.yml"
+                 and self.ref == "refs/heads/main"
+                 and self.producer_job_name == "cycles_1_3"
+                 and self.consumer_job_name == "cycles_4_7"
+                 and self.run_attempt == 1
+                 and all(type(item) is int and item > 0 for item in (
+                    self.run_id, self.producer_job_id, self.consumer_job_id, self.artifact_id,
+                    self.journal_sequence))
+                 and self.producer_job_id != self.consumer_job_id
+                 and re.fullmatch(r"sha256:[0-9a-f]{64}", self.artifact_digest)
+                 and self.artifact_name ==
+                    f"stage2-production-continuation-{self.workflow_revision}-{self.run_id}-1"
+                 and self.signer_identity ==
+                    "https://github.com/nenb/cogs/.github/workflows/"
+                    "stage2-production-campaign.yml@refs/heads/main",
+                 ProductionReceiptError)
+        for item in (self.continuation_sha256, self.continuation_commitment,
+                     self.bundle_sha256, self.trusted_root_sha256,
+                     self.approval_commitment, self.authentication_receipt_sha256,
+                     self.batch_commitment, self.journal_tip_sha256,
+                     self.cycle3_zero_commitment, self.admission_commitment):
+            _digest(item)
+        for item in (self.workflow_revision, self.implementation_revision,
+                     self.control_revision, self.qualification_revision):
+            _sha1(item)
+        fields = asdict(self); fields.pop("admission_commitment")
+        _require(self.admission_commitment == _commit(
+            b"cogs.stage2-production-handoff-authentication/v1", fields),
+            ProductionReceiptError)
+
+    def canonical_bytes(self):
+        return _canonical(asdict(self)) + b"\n"
+
+
+_AUTHENTICATED_PHASE_SEAL = object()
+
+
+class AuthenticatedPhaseOne:
+    __slots__ = ("continuation", "admission", "_seal", "used")
+    def __init__(self, continuation, admission, seal):
+        _require(seal is _AUTHENTICATED_PHASE_SEAL
+                 and type(continuation) is CampaignContinuation
+                 and type(admission) is ContinuationAdmission)
+        self.continuation, self.admission = continuation, admission
+        self._seal, self.used = seal, False
 
 
 def _strict_mapping(value, cls, error=ProductionReceiptError):
@@ -957,11 +1111,15 @@ def _decode_inventory(value):
 
 
 def _validate_continuation(value, approval, run_id, run_attempt, classification):
-    approval_commitment = _commit(b"cogs.stage2-production-approval/v5", asdict(approval))
+    approval_commitment = _commit(b"cogs.stage2-production-approval/v6", asdict(approval))
     _require(value.execution_authority == classification
              and value.github_run_id == run_id and value.github_run_attempt == run_attempt
              and value.approval_commitment == approval_commitment
              and value.batch_commitment == approval.batch_commitment
+             and value.source_manifest_sha256 == approval.source_manifest_sha256
+             and value.phase_boundary_ordinal == approval.phase_boundary_ordinal
+             and value.active_resource is False and value.certain_zero is True
+             and value.credentials_retired is True
              and (value.implementation_revision, value.control_revision,
                   value.qualification_revision) == (
                      approval.implementation_revision, approval.control_revision,
@@ -1086,8 +1244,55 @@ def _validate_continuation(value, approval, run_id, run_attempt, classification)
     return value
 
 
+def continuation_for_phase_one(result, approval, classification, workflow_revision,
+                               github_run_id, producer_job_id,
+                               approval_artifact_run_id, approval_artifact_id,
+                               approval_artifact_digest, approval_artifact_name):
+    _require(type(result) is PhaseOneResult and type(approval) is ProductionApproval
+             and classification in {"authenticated-aws-adapter", "test-only"})
+    values = {
+        "version": CONTINUATION_VERSION,
+        "execution_authority": classification,
+        "repository": "nenb/cogs",
+        "workflow_path": ".github/workflows/stage2-production-campaign.yml",
+        "workflow_ref": "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
+        "workflow_revision": workflow_revision,
+        "event": "workflow_dispatch", "ref": "refs/heads/main",
+        "producer_job_name": "cycles_1_3", "producer_job_id": producer_job_id,
+        "github_run_id": github_run_id, "github_run_attempt": 1,
+        "approval_artifact_run_id": approval_artifact_run_id,
+        "approval_artifact_id": approval_artifact_id,
+        "approval_artifact_digest": approval_artifact_digest,
+        "approval_artifact_name": approval_artifact_name,
+        "approval_commitment": _commit(
+            b"cogs.stage2-production-approval/v6", asdict(approval)),
+        "batch_commitment": approval.batch_commitment,
+        "implementation_revision": approval.implementation_revision,
+        "control_revision": approval.control_revision,
+        "qualification_revision": approval.qualification_revision,
+        "source_manifest_sha256": approval.source_manifest_sha256,
+        "phase_boundary_ordinal": PHASE_BOUNDARY_ORDINAL,
+        "active_resource": False, "certain_zero": True,
+        "credentials_retired": True,
+        "consumption": result.consumption, "grants": result.grants,
+        "effects": result.effects, "remotes": result.remotes,
+        "inventories": result.inventories, "costs": result.costs,
+        "cycle_commitments": result.cycle_commitments,
+        "first_apply_unix_ns": result.first_apply_unix_ns,
+        "effect_deadline_unix_ns": result.effect_deadline_unix_ns,
+        "cleanup_deadline_unix_ns": result.cleanup_deadline_unix_ns,
+        "cumulative_cost_micro_usd": result.cumulative_cost_micro_usd,
+        "journal_sequence": result.journal_sequence,
+        "journal_tip_sha256": result.journal_tip_sha256,
+    }
+    continuation = CampaignContinuation(**values, continuation_commitment=_commit(
+        b"cogs.stage2-production-continuation/v1", _plain(values)))
+    return _validate_continuation(
+        continuation, approval, github_run_id, 1, classification)
+
+
 def continuation_from_bytes(raw, approval, run_id, run_attempt, classification):
-    _require(type(raw) is bytes and 0 < len(raw) <= 16 * 1024 * 1024
+    _require(type(raw) is bytes and 0 < len(raw) <= 4 * 1024 * 1024
              and raw.endswith(b"\n") and raw.count(b"\n") == 1
              and not any(marker in raw for marker in (
                  b"AWS_ACCESS_KEY_ID", b"AWS_SECRET_ACCESS_KEY", b"AWS_SESSION_TOKEN",
@@ -1119,6 +1324,62 @@ def continuation_from_bytes(raw, approval, run_id, run_attempt, classification):
         continuation, approval, run_id, run_attempt, classification)
 
 
+def _validate_admission(value, continuation, approval):
+    _require(type(value) is ContinuationAdmission
+             and type(continuation) is CampaignContinuation
+             and type(approval) is ProductionApproval
+             and value.workflow_revision == continuation.workflow_revision
+             and value.run_id == continuation.github_run_id
+             and value.run_attempt == continuation.github_run_attempt
+             and value.producer_job_id == continuation.producer_job_id
+             and value.artifact_id > 0
+             and value.approval_commitment == continuation.approval_commitment
+             and value.authentication_receipt_sha256 ==
+                 continuation.consumption.authentication_receipt_sha256
+             and value.batch_commitment == continuation.batch_commitment
+             and (value.implementation_revision, value.control_revision,
+                  value.qualification_revision) == (
+                    continuation.implementation_revision,
+                    continuation.control_revision,
+                    continuation.qualification_revision)
+             and value.journal_sequence == continuation.journal_sequence
+             and value.journal_tip_sha256 == continuation.journal_tip_sha256
+             and value.cycle3_zero_commitment ==
+                 continuation.inventories[-1].zero_commitment
+             and value.continuation_commitment ==
+                 continuation.continuation_commitment
+             and value.continuation_sha256 ==
+                 hashlib.sha256(continuation.canonical_bytes()).hexdigest()
+             and continuation.batch_commitment == approval.batch_commitment,
+             ProductionReceiptError)
+    return value
+
+
+def admission_from_bytes(raw, continuation, approval):
+    _require(type(raw) is bytes and 0 < len(raw) <= 64 * 1024
+             and raw.endswith(b"\n") and raw.count(b"\n") == 1,
+             ProductionReceiptError)
+    try: decoded = json.loads(raw.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ProductionReceiptError() from error
+    _require(_canonical(decoded) + b"\n" == raw, ProductionReceiptError)
+    value = ContinuationAdmission(**_strict_mapping(decoded, ContinuationAdmission))
+    return _validate_admission(value, continuation, approval)
+
+
+def _issue_adapter_authenticated_phase_one(authority, continuation, admission, approval):
+    import completion_campaign_aws_adapter as adapter
+    _require(adapter._validate_handoff_authority(authority))
+    _validate_admission(admission, continuation, approval)
+    return AuthenticatedPhaseOne(continuation, admission, _AUTHENTICATED_PHASE_SEAL)
+
+
+def _issue_test_authenticated_phase_one(continuation, admission, approval):
+    _require(continuation.execution_authority == "test-only")
+    _validate_admission(admission, continuation, approval)
+    return AuthenticatedPhaseOne(continuation, admission, _AUTHENTICATED_PHASE_SEAL)
+
+
 @dataclass(frozen=True)
 class CampaignCandidate:
     execution_authority: str
@@ -1130,6 +1391,8 @@ class CampaignCandidate:
     inventories: tuple[InventoryReceipt, ...]
     costs: tuple[CostReceipt, ...]
     cycle_commitments: tuple[str, ...]
+    continuation: CampaignContinuation
+    admission: ContinuationAdmission
     custody_root: str
 
     def __post_init__(self):
@@ -1140,17 +1403,26 @@ class CampaignCandidate:
                      == len(self.costs) == len(self.cycle_commitments) == 7
                  and len(self.inventories) == 8
                  and tuple(item.ordinal for item in self.grants) == tuple(range(1, 8))
-                 and len(set(self.cycle_commitments)) == 7, ProductionReceiptError)
+                 and len(set(self.cycle_commitments)) == 7
+                 and type(self.continuation) is CampaignContinuation
+                 and type(self.admission) is ContinuationAdmission,
+                 ProductionReceiptError)
         _digest(self.custody_root)
         approval_commitment = _commit(
-            b"cogs.stage2-production-approval/v5", asdict(self.approval))
-        expected = _commit(b"cogs.stage2-production-custody/v2", {
+            b"cogs.stage2-production-approval/v6", asdict(self.approval))
+        _validate_admission(self.admission, self.continuation, self.approval)
+        expected = _commit(b"cogs.stage2-production-custody/v3", {
             "execution_authority": self.execution_authority,
             "approval": approval_commitment,
             "consumption": self.consumption.durable_record_commitment,
             "cycles": list(self.cycle_commitments),
             "inventories": [item.zero_commitment for item in self.inventories],
             "costs": [item.receipt_commitment for item in self.costs],
+            "continuation": self.continuation.continuation_commitment,
+            "continuation_sha256": hashlib.sha256(
+                self.continuation.canonical_bytes()).hexdigest(),
+            "continuation_bundle_sha256": self.admission.bundle_sha256,
+            "handoff_authentication": self.admission.admission_commitment,
         })
         _require(self.custody_root == expected, ProductionReceiptError)
 
@@ -1183,7 +1455,7 @@ class ProductionPorts:
     def __init__(self, seal, classification, approval, now, consume, effect,
                  remote, inventory, cost, recover, journal, journal_state):
         _require(seal is _PORT_SEAL
-                 and classification in {"authenticated-aws-adapter", "test-only"}
+                 and classification in {"authenticated-aws-adapter", "diagnostic-only", "test-only"}
                  and type(approval) is ProductionApproval)
         for callback in (now, consume, effect, remote, inventory, cost, recover, journal,
                          journal_state):
@@ -1199,12 +1471,13 @@ _PORT_SEAL = object()
 _TEST_PORT_SEAL = object()
 
 
-def _issue_adapter_ports(authority, approval, now, consume, effect, remote,
-                         inventory, cost, recover, journal, journal_state):
+def _issue_adapter_ports(authority, classification, approval, now, consume, effect,
+                         remote, inventory, cost, recover, journal, journal_state):
     # Imported lazily to avoid granting a seal to arbitrary callers.
     import completion_campaign_aws_adapter as adapter
-    _require(adapter._validate_port_authority(authority))
-    return ProductionPorts(_PORT_SEAL, "authenticated-aws-adapter", approval,
+    _require(adapter._validate_port_authority(authority)
+             and classification in {"authenticated-aws-adapter", "diagnostic-only"})
+    return ProductionPorts(_PORT_SEAL, classification, approval,
                            now, consume, effect, remote, inventory, cost,
                            recover, journal, journal_state)
 
@@ -1263,6 +1536,50 @@ def _validate_remote_bindings(remote, grant, approval):
                  (grant.mode == "readiness")
              and (grant.mode != "readiness" or qemu.post_ssh_runtime_fact_sha256 !=
                   qemu.pre_ssh_runtime_fact_sha256), ProductionReceiptError)
+
+
+def _validate_cleanup_receipt(receipt, grant, state, approval):
+    _require(type(receipt) is CleanupReceipt
+             and receipt.grant_commitment == grant.grant_commitment
+             and receipt.state_commitment == state
+             and receipt.normal_destroy_reissued is False,
+             ProductionReceiptError)
+    if receipt.certain_zero:
+        inventory = receipt.inventory
+        _require(type(inventory) is InventoryReceipt
+                 and inventory.batch_commitment == approval.batch_commitment
+                 and inventory.observation_sequence == grant.ordinal
+                 and inventory.cycle_ordinal == grant.ordinal
+                 and inventory.account_commitment == approval.account_commitment
+                 and inventory.region == approval.region
+                 and inventory.destroyed_state_commitment == state
+                 and inventory.observed_ended_unix_ns < approval.expires_unix_ns,
+                 ProductionReceiptError)
+    return receipt
+
+
+@dataclass(frozen=True)
+class DiagnosticCampaignReceipt:
+    version: str
+    authority: str
+    result: str
+    cycle_count: int
+    cycle_commitments: tuple[str, ...]
+    final_zero_commitment: str
+    aggregate_cost_micro_usd: int
+    production_evidence_eligible: bool
+    issue42_closure_eligible: bool
+
+    def __post_init__(self):
+        _require(self.version == "cogs.stage2-r-diagnostic-result/v2"
+                 and self.authority == "non-authoritative-diagnostic-only"
+                 and self.result == "pass" and self.cycle_count == 7
+                 and len(self.cycle_commitments) == len(set(self.cycle_commitments)) == 7
+                 and type(self.aggregate_cost_micro_usd) is int
+                 and self.aggregate_cost_micro_usd > 0
+                 and self.production_evidence_eligible is False
+                 and self.issue42_closure_eligible is False)
+        for item in (*self.cycle_commitments, self.final_zero_commitment): _digest(item)
 
 
 class ProductionCampaignController:
@@ -1404,11 +1721,8 @@ class ProductionCampaignController:
                 try:
                     cleanup = self.ports.recover(active_grant, active_state,
                                                  last_certain, primary)
-                    _require(type(cleanup) is CleanupReceipt
-                             and cleanup.grant_commitment == active_grant.grant_commitment
-                             and cleanup.state_commitment == active_state
-                             and cleanup.normal_destroy_reissued is False,
-                             ProductionReceiptError)
+                    _validate_cleanup_receipt(
+                        cleanup, active_grant, active_state, approval)
                     self.ports.journal("cleanup", "settled" if cleanup.certain_zero
                                        else "uncertain", active_grant.ordinal,
                                        active_grant.mode,
@@ -1421,13 +1735,17 @@ class ProductionCampaignController:
                     raise ProductionUncertainty() from cleanup_error
             raise
 
-    def run_first_segment(self, github_run_id, github_run_attempt):
-        _require(self.phase == 0 and type(github_run_id) is int and github_run_id > 0
-                 and type(github_run_attempt) is int and github_run_attempt == 1)
-        self.phase = 1
+    def run_phase_one(self):
+        _require(self.phase == 0 and self.ports.classification in {
+            "authenticated-aws-adapter", "test-only"})
         approval = self.ports.approval
         consumed_at = self._now(approval)
-        approval_commitment = _commit(b"cogs.stage2-production-approval/v5", asdict(approval))
+        # Reject before consumption, journal creation, grants, or any effect callback.
+        _require(consumed_at + FIRST_PLAN_MAXIMUM_NS + approval.effect_deadline_ns
+                 + approval.cleanup_reserve_ns <= approval.expires_unix_ns,
+                 ProductionApprovalError)
+        self.phase = 1
+        approval_commitment = _commit(b"cogs.stage2-production-approval/v6", asdict(approval))
         consumption = self.ports.consume(approval, approval_commitment, consumed_at)
         _require(type(consumption) is ApprovalConsumptionReceipt
                  and consumption.approval_commitment == approval_commitment,
@@ -1435,42 +1753,30 @@ class ProductionCampaignController:
         self.ports.journal("batch", "consumed", None, None,
                            consumption.durable_record_commitment)
         state = self._empty_state(consumption)
-        self._run_cycles(state, 1, 3)
+        self._run_cycles(state, 1, PHASE_BOUNDARY_ORDINAL)
         sequence, tip = self.ports.journal_state()
         expected = _journal_checkpoint(consumption, tuple(state["grants"]),
                                        tuple(state["effects"]), tuple(state["cycles"]))
         _require((sequence, tip) == expected, ProductionReceiptError)
-        values = {
-            "version": CONTINUATION_VERSION,
-            "execution_authority": self.ports.classification,
-            "repository": "nenb/cogs",
-            "workflow_ref": "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
-            "github_run_id": github_run_id, "github_run_attempt": github_run_attempt,
-            "approval_commitment": approval_commitment,
-            "batch_commitment": approval.batch_commitment,
-            "implementation_revision": approval.implementation_revision,
-            "control_revision": approval.control_revision,
-            "qualification_revision": approval.qualification_revision,
-            "consumption": consumption, "grants": tuple(state["grants"]),
-            "effects": tuple(state["effects"]), "remotes": tuple(state["remotes"]),
-            "inventories": tuple(state["inventories"]), "costs": tuple(state["costs"]),
-            "cycle_commitments": tuple(state["cycles"]),
-            "first_apply_unix_ns": state["first_apply"],
-            "effect_deadline_unix_ns": state["first_apply"] + approval.effect_deadline_ns,
-            "cleanup_deadline_unix_ns": state["first_apply"] +
-                approval.effect_deadline_ns + approval.cleanup_reserve_ns,
-            "cumulative_cost_micro_usd": sum(item.cost_micro_usd for item in state["costs"]),
-            "journal_sequence": sequence, "journal_tip_sha256": tip,
-        }
-        continuation = CampaignContinuation(**values, continuation_commitment=_commit(
-            b"cogs.stage2-production-continuation/v1", _plain(values)))
-        return _validate_continuation(continuation, approval, github_run_id,
-                                      github_run_attempt, self.ports.classification)
+        return PhaseOneResult(
+            consumption, tuple(state["grants"]), tuple(state["effects"]),
+            tuple(state["remotes"]), tuple(state["inventories"]),
+            tuple(state["costs"]), tuple(state["cycles"]), state["first_apply"],
+            state["first_apply"] + approval.effect_deadline_ns,
+            state["first_apply"] + approval.effect_deadline_ns + approval.cleanup_reserve_ns,
+            sum(item.cost_micro_usd for item in state["costs"]), sequence, tip)
 
-    def run_second_segment(self, continuation, github_run_id, github_run_attempt):
-        _require(self.phase in {0, 1})
-        _validate_continuation(continuation, self.ports.approval, github_run_id,
-                               github_run_attempt, self.ports.classification)
+    def run_phase_two(self, authenticated):
+        _require(self.phase == 0 and type(authenticated) is AuthenticatedPhaseOne
+                 and authenticated._seal is _AUTHENTICATED_PHASE_SEAL
+                 and authenticated.used is False
+                 and self.ports.classification in {"authenticated-aws-adapter", "test-only"})
+        authenticated.used = True
+        continuation, admission = authenticated.continuation, authenticated.admission
+        _validate_continuation(continuation, self.ports.approval,
+                               admission.run_id, admission.run_attempt,
+                               self.ports.classification)
+        _validate_admission(admission, continuation, self.ports.approval)
         self.phase = 2
         approval = self.ports.approval
         state = self._continuation_state(continuation)
@@ -1500,9 +1806,9 @@ class ProductionCampaignController:
                 try:
                     cleanup = self.ports.recover(active_grant, active_state,
                                                  last_certain, primary)
-                    _require(type(cleanup) is CleanupReceipt and cleanup.certain_zero
-                             and cleanup.normal_destroy_reissued is False,
-                             ProductionReceiptError)
+                    _validate_cleanup_receipt(
+                        cleanup, active_grant, active_state, approval)
+                    _require(cleanup.certain_zero, ProductionReceiptError)
                     self.ports.journal("cleanup", "settled", active_grant.ordinal,
                                        active_grant.mode, cleanup.reconciliation_commitment)
                 except BaseException as cleanup_error:
@@ -1534,18 +1840,22 @@ class ProductionCampaignController:
                      "run_commitment", "zero_commitment"):
             _require(len({getattr(item, name) for item in inventories}) == 8,
                      ProductionReceiptError)
-        custody = _commit(b"cogs.stage2-production-custody/v2", {
+        custody = _commit(b"cogs.stage2-production-custody/v3", {
             "execution_authority": self.ports.classification,
             "approval": continuation.approval_commitment,
             "consumption": state["consumption"].durable_record_commitment,
             "cycles": cycles,
             "inventories": [item.zero_commitment for item in inventories],
             "costs": [item.receipt_commitment for item in costs],
+            "continuation": continuation.continuation_commitment,
+            "continuation_sha256": admission.continuation_sha256,
+            "continuation_bundle_sha256": admission.bundle_sha256,
+            "handoff_authentication": admission.admission_commitment,
         })
         candidate = CampaignCandidate(
             self.ports.classification, approval, state["consumption"], tuple(grants),
             tuple(effects), tuple(remotes), tuple(inventories), tuple(costs),
-            tuple(cycles), custody)
+            tuple(cycles), continuation, admission, custody)
         _require(candidate.actual_duration_ns > 0
                  and candidate.final_zero_unix_ns < continuation.cleanup_deadline_unix_ns
                  and candidate.total_cost_micro_usd <= approval.maximum_cost_micro_usd
@@ -1556,8 +1866,107 @@ class ProductionCampaignController:
         evidence_issuer._retain_controller_candidate(candidate)
         return candidate
 
+    def run_diagnostic_campaign(self):
+        """Run the fixed seven-cycle diagnostic without constructing formal authority."""
+        _require(self.phase == 0 and self.ports.classification == "diagnostic-only")
+        approval = self.ports.approval
+        consumed_at = self._now(approval)
+        _require(consumed_at + FIRST_PLAN_MAXIMUM_NS + approval.effect_deadline_ns
+                 + approval.cleanup_reserve_ns <= approval.expires_unix_ns,
+                 ProductionApprovalError)
+        self.phase = 3
+        approval_commitment = _commit(
+            b"cogs.stage2-production-approval/v6", asdict(approval))
+        consumption = self.ports.consume(approval, approval_commitment, consumed_at)
+        _require(type(consumption) is ApprovalConsumptionReceipt
+                 and consumption.approval_commitment == approval_commitment)
+        self.ports.journal("batch", "consumed", None, None,
+                           consumption.durable_record_commitment)
+        state = self._empty_state(consumption)
+        self._run_cycles(state, 1, 7)
+        grant = state["grants"][-1]
+        last = state["effects"][-1][-1]
+        try:
+            final = self.ports.inventory(None, last, 8)
+            _require(type(final) is InventoryReceipt
+                     and final.batch_commitment == approval.batch_commitment
+                     and final.observation_sequence == 8 and final.cycle_ordinal is None
+                     and final.account_commitment == approval.account_commitment
+                     and final.region == approval.region
+                     and final.destroyed_state_commitment == last.state_commitment
+                     and final.observed_started_unix_ns > state["previous_zero"]
+                     and final.observed_ended_unix_ns <
+                        state["first_apply"] + approval.effect_deadline_ns +
+                        approval.cleanup_reserve_ns)
+        except BaseException as primary:
+            try:
+                cleanup = self.ports.recover(
+                    grant, last.state_commitment, last, primary)
+                _validate_cleanup_receipt(
+                    cleanup, grant, last.state_commitment, approval)
+                _require(cleanup.certain_zero, ProductionReceiptError)
+                self.ports.journal("cleanup", "settled", grant.ordinal,
+                                   grant.mode, cleanup.reconciliation_commitment)
+            except BaseException as cleanup_error:
+                raise ProductionUncertainty() from cleanup_error
+            raise
+        _require(all(len({getattr(item, name) for item in (*state["inventories"], final)}) == 8
+                     for name in ("observer_commitment", "session_commitment",
+                                  "run_commitment", "zero_commitment")))
+        total = sum(item.cost_micro_usd for item in state["costs"])
+        _require(total <= approval.maximum_cost_micro_usd)
+        self.ports.journal("batch", "diagnostic", None, None,
+                           _commit(b"cogs.stage2-r-diagnostic-terminal/v2", {
+                               "cycles": state["cycles"], "zero": final.zero_commitment,
+                               "cost": total}))
+        return DiagnosticCampaignReceipt(
+            "cogs.stage2-r-diagnostic-result/v2",
+            "non-authoritative-diagnostic-only", "pass", 7,
+            tuple(state["cycles"]), final.zero_commitment, total, False, False)
+
     def run_test_campaign(self, github_run_id=1, github_run_attempt=1):
-        """Non-authoritative compatibility entry for the sealed hostile test issuer."""
-        _require(self.ports.classification == "test-only")
-        continuation = self.run_first_segment(github_run_id, github_run_attempt)
-        return self.run_second_segment(continuation, github_run_id, github_run_attempt)
+        """Explicit test-sealed split path; unavailable to production adapters."""
+        _require(self.ports.classification == "test-only"
+                 and github_run_attempt == 1)
+        result = self.run_phase_one()
+        approval = self.ports.approval
+        revision = "4" * 40
+        approval_run, artifact_id, producer, consumer = 11, 12, 13, 14
+        artifact_name = f"stage2-production-approval-{revision}-{approval_run}"
+        continuation = continuation_for_phase_one(
+            result, approval, "test-only", revision, github_run_id, producer,
+            approval_run, artifact_id, "sha256:" + "5" * 64, artifact_name)
+        admission_fields = {
+            "version": CONTINUATION_ADMISSION_VERSION,
+            "repository": "nenb/cogs",
+            "workflow_path": ".github/workflows/stage2-production-campaign.yml",
+            "workflow_revision": revision, "ref": "refs/heads/main",
+            "run_id": github_run_id, "run_attempt": 1,
+            "producer_job_name": "cycles_1_3", "producer_job_id": producer,
+            "consumer_job_name": "cycles_4_7", "consumer_job_id": consumer,
+            "continuation_sha256": hashlib.sha256(
+                continuation.canonical_bytes()).hexdigest(),
+            "continuation_commitment": continuation.continuation_commitment,
+            "bundle_sha256": "6" * 64, "trusted_root_sha256": "7" * 64,
+            "signer_identity": "https://github.com/nenb/cogs/.github/workflows/"
+                "stage2-production-campaign.yml@refs/heads/main",
+            "artifact_id": 15, "artifact_digest": "sha256:" + "8" * 64,
+            "artifact_name": f"stage2-production-continuation-{revision}-{github_run_id}-1",
+            "approval_commitment": continuation.approval_commitment,
+            "authentication_receipt_sha256":
+                continuation.consumption.authentication_receipt_sha256,
+            "batch_commitment": continuation.batch_commitment,
+            "implementation_revision": continuation.implementation_revision,
+            "control_revision": continuation.control_revision,
+            "qualification_revision": continuation.qualification_revision,
+            "journal_sequence": continuation.journal_sequence,
+            "journal_tip_sha256": continuation.journal_tip_sha256,
+            "cycle3_zero_commitment": continuation.inventories[-1].zero_commitment,
+        }
+        admission = ContinuationAdmission(**admission_fields,
+            admission_commitment=_commit(
+                b"cogs.stage2-production-handoff-authentication/v1",
+                admission_fields))
+        authenticated = _issue_test_authenticated_phase_one(
+            continuation, admission, approval)
+        return ProductionCampaignController(self.ports).run_phase_two(authenticated)
