@@ -1,0 +1,65 @@
+name: Throwaway Stage 2 AWS cgroup-race diagnostic
+run-name: Throwaway AWS cgroup-race diagnostic ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      authorization_phrase:
+        description: Confirm one disposable cgroup-race AWS diagnostic
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: throwaway-stage2-aws-full-cycle-trace
+  cancel-in-progress: false
+
+env:
+  H: 1ef6aae3506fded805d8277ec4bce02e585c0650
+  G: fce64662b39b2a21e9b384eba8408ecd5311047a
+  Q: 4e16c314b220c59330a1b4fb898c532f9ca6460e
+  AMI_ID: ami-025d99823a4caad37
+  AMI_COMMITMENT: 1b3349f3f1c2c37a54292cc2cfcc9dc59cef66d26528113815c946bd4a727a58
+  STATIC_CONTROL_SHA256: 4c2e0e0377ba80a3206f91489b2420bf61688fb757b0d9de1a8090b0cc851656
+  ROOTFS_DESCRIPTOR_SHA256: 757d1ddff8b58febc5686fd81ae14d03a0bbb6eb689549da5918c5acc924a17e
+  BUDGET_EMAIL: ${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}
+
+jobs:
+  full_cycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Admit this branch-only throwaway diagnostic
+        run: |
+          set -euo pipefail
+          test '${{ inputs.authorization_phrase }}' = run-one-throwaway-stage2-cgroup-race-trace
+          test "$GITHUB_REPOSITORY" = nenb/cogs
+          test "$GITHUB_REF" = refs/heads/debug/issue42-aws-full-cycle-trace
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_ACTOR" = nenb
+      - name: Check out throwaway tracer
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Acquire short-lived branch-bound AWS credentials
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
+        with:
+          role-to-assume: arn:aws:iam::372495030090:role/cogs-stage2-throwaway-trace
+          role-session-name: cogs-stage2-cgroup-race-${{ github.run_id }}
+          aws-region: us-east-1
+          role-duration-seconds: 10800
+      - name: Run one cgroup-race-stressed full cycle
+        run: scripts/run-stage2-throwaway-seven-cycle-range.sh 1 1
+      - name: Upload private trace and inventories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: PRIVATE-throwaway-stage2-cgroup-race-${{ github.run_id }}
+          path: ${{ runner.temp }}/seven-cycle-trace
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0

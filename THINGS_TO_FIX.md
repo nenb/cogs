@@ -131,6 +131,22 @@ durable cleanup mechanism. Before relying on this diagnostic harness for future
 long runs, provide an independently durable cleanup path or avoid hard
 cancellation and perform explicit bounded shutdown.
 
+## Latest seven-cycle result
+
+Non-authoritative run `35482513823` at diagnostic head
+`a29da2776851c8a01958410e44813641e75268cf` completed successfully:
+
+- cycle 1 used the full route;
+- cycles 2–7 used the readiness route;
+- every SSM invocation returned `Success` with response code `0`;
+- the fwupd units were non-active before custody in every cycle;
+- every per-cycle, per-job preflight, and trap inventory reported zero;
+- an independent all-enabled-region inventory reported zero.
+
+This establishes that the combined disposable hotpatch behavior can complete a
+seven-cycle rehearsal. It does not convert the hotpatches into production code
+or resolve the previously observed cgroup race by non-recurrence.
+
 ## Exit condition
 
 Do not treat a non-recurrence as a fix. The diagnostic phase is complete only

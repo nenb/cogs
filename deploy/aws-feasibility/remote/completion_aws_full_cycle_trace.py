@@ -7,12 +7,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import traceback
 
 # GetCommandInvocation returns only the first 8,000 stderr characters.
 _MAX_DIAGNOSTIC_BYTES = 7_500
 _written = 0
 _var_lib_baseline: tuple[str, ...] | None = None
+_cgroup_stress_announced = False
 
 
 def _var_lib_names() -> tuple[str, ...]:
@@ -198,6 +200,13 @@ def main() -> None:
     original_prepare_cgroup = process._prepare_cgroup
 
     def traced_prepare_cgroup(context, daemon_profile=None):
+        global _cgroup_stress_announced
+        if daemon_profile is not None and daemon_profile.runtime_leaf_name is not None:
+            if not _cgroup_stress_announced:
+                _emit("diagnostic-hotpatch", owner_call="cgroup-race-stress",
+                      delay_milliseconds=3000)
+                _cgroup_stress_announced = True
+            time.sleep(3)
         try:
             return original_prepare_cgroup(context, daemon_profile)
         except BaseException:
