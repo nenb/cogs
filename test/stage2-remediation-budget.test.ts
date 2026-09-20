@@ -47,7 +47,7 @@ assert 'scripts/stage2-cosign-keyless-sign.sh' in local
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in tasks[0]['paths']
 assert 'schemas/aws-stage2-completion-production-approval-v6.json' in tasks[0]['paths']
-assert 'test/stage2-production-workflows.test.ts' in local
+assert 'test/stage2-production-workflows.test.ts' in tasks[0]['paths']
 assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 3300000
 assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 8400000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}

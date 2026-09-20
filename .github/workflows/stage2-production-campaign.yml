@@ -38,6 +38,14 @@ jobs:
           AUTHORIZATION_PHRASE: ${{ inputs.authorization_phrase }}
         run: |
           set -euo pipefail
+          umask 077
+          JOB_START_FILE="$RUNNER_TEMP/stage2-job-start-epoch" /usr/bin/python3 -I -B - <<'PY'
+          import os,time
+          path=os.environ["JOB_START_FILE"]
+          fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+          with os.fdopen(fd,"w",encoding="ascii") as stream:
+              stream.write(f"{int(time.time())}\n"); stream.flush(); os.fsync(stream.fileno())
+          PY
           test "$AUTHORIZATION_PHRASE" = authorize-seven-stage2-production-cycles
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
@@ -84,7 +92,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           digest-mismatch: error
 
-      - name: Cryptographically verify approval and derive segment-one role duration
+      - name: Cryptographically verify approval and pre-credential runway
         id: approval_verification
         run: |
           set -euo pipefail
@@ -103,7 +111,6 @@ jobs:
           # Preserve the 480m effect + 30m cleanup window and the controller's
           # 15m first-plan allowance before any approval consumption or OIDC use.
           test "$remaining" -ge 31500
-          printf 'role_duration_seconds=18000\n' >>"$GITHUB_OUTPUT"
 
       - name: Acquire and stage exact implementation H before credentials
         run: |
@@ -118,13 +125,29 @@ jobs:
           test "$(git -C "$destination" rev-parse HEAD)" = "$h"
           sudo -n /usr/bin/python3 -I -B "$destination/scripts/prepare-stage2-fixed-source.py" >/dev/null
 
+      - name: Derive fresh bounded segment-one executor role duration
+        id: segment_one_executor_duration
+        run: |
+          set -euo pipefail
+          expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
+          now_s=$(date +%s)
+          remaining=$(( expiry_s - now_s - 60 ))
+          cap=18000
+          segment_min=16200
+          duration="$remaining"
+          if (( duration > cap )); then duration="$cap"; fi
+          test "$duration" -ge "$segment_min"
+          test "$duration" -le "$cap"
+          test "$duration" -le "$remaining"
+          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+
       - name: Acquire fresh segment-one executor credentials
         uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:
           role-to-assume: ${{ vars.STAGE2_AWS_PRODUCTION_EXECUTOR_ROLE_ARN }}
           role-session-name: cogs-stage2-campaign-s1-${{ github.run_id }}
           aws-region: us-east-1
-          role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
+          role-duration-seconds: ${{ steps.segment_one_executor_duration.outputs.role_duration_seconds }}
 
       - name: Verify executor budget tag-read closure before any resource effect
         run: |
@@ -134,25 +157,44 @@ jobs:
           if aws budgets list-tags-for-resource --resource-arn "arn:aws:budgets::${account}:budget/cogs-s2-permission-probe-$GITHUB_RUN_ID-s1" --output json --no-cli-pager >"$output" 2>"$diagnostic"; then exit 2; fi
           test ! -s "$output"; grep -Fq NotFoundException "$diagnostic"; if grep -Fq AccessDenied "$diagnostic"; then exit 2; fi
 
-      - name: Seal executor and acquire fresh segment-one observer credentials
+      - name: Seal segment-one executor credentials
         run: |
           set -euo pipefail; umask 077
           printf '[nebula]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >"$RUNNER_TEMP/aws-credentials"
-      - uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
-        name: Acquire fresh segment-one inventory-observer credentials
+
+      - name: Derive fresh bounded segment-one observer role duration
+        id: segment_one_observer_duration
+        run: |
+          set -euo pipefail
+          expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
+          now_s=$(date +%s)
+          remaining=$(( expiry_s - now_s - 60 ))
+          cap=18000
+          segment_min=16200
+          duration="$remaining"
+          if (( duration > cap )); then duration="$cap"; fi
+          test "$duration" -ge "$segment_min"
+          test "$duration" -le "$cap"
+          test "$duration" -le "$remaining"
+          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+
+      - name: Acquire fresh segment-one inventory-observer credentials
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:
           role-to-assume: ${{ vars.STAGE2_AWS_INVENTORY_OBSERVER_ROLE_ARN }}
           role-session-name: cogs-stage2-observer-s1-${{ github.run_id }}
           aws-region: us-east-1
-          role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
+          role-duration-seconds: ${{ steps.segment_one_observer_duration.outputs.role_duration_seconds }}
 
       - name: Stage approval, plans, and segment-one credentials
         id: production_staging
+        env:
+          BUDGET_ALERT_EMAIL: ${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}
         run: |
           set -euo pipefail; umask 077
           printf '[profile nebula]\nregion = us-east-1\noutput = json\n[profile observer]\nregion = us-east-1\noutput = json\n' >"$RUNNER_TEMP/aws-config"
           printf '[observer]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >>"$RUNNER_TEMP/aws-credentials"
-          printf '%s\n' '${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}' >"$RUNNER_TEMP/budget-email"
+          printf '%s\n' "$BUDGET_ALERT_EMAIL" >"$RUNNER_TEMP/budget-email"
           sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
 
       - name: Recover exact failed segment-one staging
@@ -162,20 +204,29 @@ jobs:
           if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2 || sudo -n test -e /var/lib/cogs/stage2-aws-production-v2.staging; then sudo -n env COGS_STAGE2_STAGING_RECOVERY_ONLY=1 /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"; fi
           sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2; sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2.staging
 
-      - name: Retire runner credential files and exported environment
+      - name: Retire runner AWS credential files and exported AWS environment
         if: always()
         run: |
           set -euo pipefail
           rm -f "$RUNNER_TEMP/aws-credentials" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/budget-email"
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
-          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\nACTIONS_ID_TOKEN_REQUEST_TOKEN=\nACTIONS_ID_TOKEN_REQUEST_URL=\n' >>"$GITHUB_ENV"
+          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nAWS_PROFILE=\n' >>"$GITHUB_ENV"
 
       - name: Execute exactly cycles 1 through 3
         id: campaign_segment
         timeout-minutes: 240
         run: |
           set -euo pipefail
-          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+          start_file="$RUNNER_TEMP/stage2-job-start-epoch"
+          test "$(stat -c '%a:%h' "$start_file")" = 600:1
+          job_start=$(cat "$start_file"); [[ "$job_start" =~ ^[1-9][0-9]*$ ]]
+          now_s=$(date +%s)
+          job_deadline=$(( job_start + (300 - 31) * 60 ))
+          remaining=$(( job_deadline - now_s ))
+          test "$remaining" -gt 0
+          campaign_status=0
+          /usr/bin/timeout --signal=TERM --kill-after=10s "$remaining"s sudo -n \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
             COGS_STAGE2_WORKFLOW_REVISION="$GITHUB_SHA" \
             COGS_STAGE2_GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             COGS_STAGE2_PRODUCER_JOB_ID="${{ steps.campaign_admission.outputs.producer_job_id }}" \
@@ -183,7 +234,9 @@ jobs:
             COGS_STAGE2_APPROVAL_ARTIFACT_ID="$APPROVAL_ARTIFACT_ID" \
             COGS_STAGE2_APPROVAL_ARTIFACT_DIGEST="$APPROVAL_ARTIFACT_DIGEST" \
             COGS_STAGE2_APPROVAL_ARTIFACT_NAME="stage2-production-approval-$GITHUB_SHA-$APPROVAL_RUN_ID" \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh \
+            || campaign_status=$?
+          exit "$campaign_status"
 
       - name: Cleanup after an uncertain segment-one outcome
         if: always() && steps.campaign_segment.outcome != 'success'
@@ -265,6 +318,10 @@ jobs:
         if: steps.continuation_upload.outcome == 'success'
         run: diff -r --no-dereference "$RUNNER_TEMP/continuation-package" "$RUNNER_TEMP/continuation-readback"
 
+      - name: Retire job-one OIDC request environment after continuation custody
+        if: always()
+        run: printf 'ACTIONS_ID_TOKEN_REQUEST_TOKEN=\nACTIONS_ID_TOKEN_REQUEST_URL=\n' >>"$GITHUB_ENV"
+
   cycles_4_7:
     needs: cycles_1_3
     if: ${{ github.run_attempt == 1 && needs.cycles_1_3.result == 'success' }}
@@ -280,6 +337,14 @@ jobs:
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
+          umask 077
+          JOB_START_FILE="$RUNNER_TEMP/stage2-job-start-epoch" /usr/bin/python3 -I -B - <<'PY'
+          import os,time
+          path=os.environ["JOB_START_FILE"]
+          fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+          with os.fdopen(fd,"w",encoding="ascii") as stream:
+              stream.write(f"{int(time.time())}\n"); stream.flush(); os.fsync(stream.fileno())
+          PY
           test "$GITHUB_REPOSITORY" = nenb/cogs; test "$GITHUB_REF" = refs/heads/main; test "$GITHUB_REF_PROTECTED" = true; test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_EVENT_NAME" = workflow_dispatch; test "$GITHUB_ACTOR" = nenb; test "$GITHUB_TRIGGERING_ACTOR" = nenb
           [[ "$CONTINUATION_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; [[ "$CONTINUATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; [[ "$CONTINUATION_SHA256" =~ ^[0-9a-f]{64}$ ]]
@@ -363,7 +428,6 @@ jobs:
           handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - $(date +%s) - 60 ))
           test "$approval_remaining" -ge 19800
           test "$handoff_remaining" -ge 19800
-          printf 'role_duration_seconds=19800\n' >>"$GITHUB_OUTPUT"
 
       - name: Acquire and stage exact implementation H before credentials
         run: |
@@ -376,13 +440,31 @@ jobs:
           test "$(git -C "$destination" rev-parse HEAD)" = "$h"
           sudo -n /usr/bin/python3 -I -B "$destination/scripts/prepare-stage2-fixed-source.py" >/dev/null
 
+      - name: Derive fresh bounded segment-two executor role duration
+        id: segment_two_executor_duration
+        run: |
+          set -euo pipefail
+          now_s=$(date +%s)
+          approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 60 ))
+          handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 60 ))
+          remaining="$approval_remaining"
+          if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
+          cap=19800
+          segment_min=18000
+          duration="$remaining"
+          if (( duration > cap )); then duration="$cap"; fi
+          test "$duration" -ge "$segment_min"
+          test "$duration" -le "$cap"
+          test "$duration" -le "$remaining"
+          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+
       - name: Acquire fresh segment-two executor credentials
         uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:
           role-to-assume: ${{ vars.STAGE2_AWS_PRODUCTION_EXECUTOR_ROLE_ARN }}
           role-session-name: cogs-stage2-campaign-s2-${{ github.run_id }}
           aws-region: us-east-1
-          role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
+          role-duration-seconds: ${{ steps.segment_two_executor_duration.outputs.role_duration_seconds }}
       - name: Verify segment-two executor budget tag-read closure
         run: |
           set -euo pipefail; umask 077
@@ -390,25 +472,46 @@ jobs:
           output="$RUNNER_TEMP/executor-budget-tag-read.stdout"; diagnostic="$RUNNER_TEMP/executor-budget-tag-read.stderr"; trap 'rm -f "$output" "$diagnostic"' EXIT
           if aws budgets list-tags-for-resource --resource-arn "arn:aws:budgets::${account}:budget/cogs-s2-permission-probe-$GITHUB_RUN_ID-s2" --output json --no-cli-pager >"$output" 2>"$diagnostic"; then exit 2; fi
           test ! -s "$output"; grep -Fq NotFoundException "$diagnostic"; if grep -Fq AccessDenied "$diagnostic"; then exit 2; fi
-      - name: Seal executor and acquire fresh segment-two observer credentials
+      - name: Seal segment-two executor credentials
         run: |
           set -euo pipefail; umask 077
           printf '[nebula]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >"$RUNNER_TEMP/aws-credentials"
-      - uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
-        name: Acquire fresh segment-two inventory-observer credentials
+
+      - name: Derive fresh bounded segment-two observer role duration
+        id: segment_two_observer_duration
+        run: |
+          set -euo pipefail
+          now_s=$(date +%s)
+          approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 60 ))
+          handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 60 ))
+          remaining="$approval_remaining"
+          if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
+          cap=19800
+          segment_min=18000
+          duration="$remaining"
+          if (( duration > cap )); then duration="$cap"; fi
+          test "$duration" -ge "$segment_min"
+          test "$duration" -le "$cap"
+          test "$duration" -le "$remaining"
+          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
+
+      - name: Acquire fresh segment-two inventory-observer credentials
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
         with:
           role-to-assume: ${{ vars.STAGE2_AWS_INVENTORY_OBSERVER_ROLE_ARN }}
           role-session-name: cogs-stage2-observer-s2-${{ github.run_id }}
           aws-region: us-east-1
-          role-duration-seconds: ${{ steps.approval_verification.outputs.role_duration_seconds }}
+          role-duration-seconds: ${{ steps.segment_two_observer_duration.outputs.role_duration_seconds }}
 
       - name: Stage approval, fresh credentials, and root-verified continuation
         id: production_staging
+        env:
+          BUDGET_ALERT_EMAIL: ${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}
         run: |
           set -euo pipefail; umask 077
           printf '[profile nebula]\nregion = us-east-1\noutput = json\n[profile observer]\nregion = us-east-1\noutput = json\n' >"$RUNNER_TEMP/aws-config"
           printf '[observer]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >>"$RUNNER_TEMP/aws-credentials"
-          printf '%s\n' '${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}' >"$RUNNER_TEMP/budget-email"
+          printf '%s\n' "$BUDGET_ALERT_EMAIL" >"$RUNNER_TEMP/budget-email"
           sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
           sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py stage-continuation \
             "$RUNNER_TEMP/continuation" "$GITHUB_SHA" "$GITHUB_RUN_ID" \
@@ -445,8 +548,19 @@ jobs:
         timeout-minutes: 270
         run: |
           set -euo pipefail
-          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh
+          start_file="$RUNNER_TEMP/stage2-job-start-epoch"
+          test "$(stat -c '%a:%h' "$start_file")" = 600:1
+          job_start=$(cat "$start_file"); [[ "$job_start" =~ ^[1-9][0-9]*$ ]]
+          now_s=$(date +%s)
+          job_deadline=$(( job_start + (330 - 31) * 60 ))
+          remaining=$(( job_deadline - now_s ))
+          test "$remaining" -gt 0
+          campaign_status=0
+          /usr/bin/timeout --signal=TERM --kill-after=10s "$remaining"s sudo -n \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh \
+            || campaign_status=$?
+          exit "$campaign_status"
 
       - name: Cleanup after an uncertain segment-two campaign outcome
         if: always() && steps.production_staging.outcome == 'success' && steps.campaign_segment.outcome != 'success'

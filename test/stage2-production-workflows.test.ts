@@ -205,6 +205,36 @@ test("R diagnostic lane exercises production bytes without creating evidence aut
   assert.match(providerEntry, cleanImmutable);
 });
 
+test("budget alert values cross workflow expression boundaries only through step environments", () => {
+  for (const [source, expected] of [
+    [campaign, 2],
+    [diagnosticCampaign, 1],
+  ] as const) {
+    assert.equal(
+      (source.match(/^ {10}BUDGET_ALERT_EMAIL: \$\{\{ vars\.STAGE2_AWS_BUDGET_ALERT_EMAIL \}\}$/gmu) ?? []).length,
+      expected,
+    );
+    assert.equal((source.match(/printf '%s\\n' "\$BUDGET_ALERT_EMAIL"/gu) ?? []).length, expected);
+    assert.doesNotMatch(source, /printf[^\n]*\$\{\{ vars\.STAGE2_AWS_BUDGET_ALERT_EMAIL \}\}/u);
+  }
+
+  const directory = mkdtempSync(join(tmpdir(), "cogs-stage2-budget-env-"));
+  try {
+    const output = join(directory, "email");
+    const marker = join(directory, "injected");
+    const hostile = `owner'; printf injected >"${marker}"; : '@example.invalid`;
+    const result = spawnSync("/bin/bash", ["-c", `printf '%s\\n' "$BUDGET_ALERT_EMAIL" >"$OUTPUT"`], {
+      encoding: "utf8",
+      env: { BUDGET_ALERT_EMAIL: hostile, OUTPUT: output },
+    });
+    assert.equal(result.status, 0);
+    assert.equal(readFileSync(output, "utf8"), `${hostile}\n`);
+    assert.throws(() => readFileSync(marker));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("production entry initialization failures emit only fixed diagnostics", () => {
   const directory = mkdtempSync(join(tmpdir(), "cogs-stage2-entry-"));
   try {
@@ -283,9 +313,64 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /maximum_cost_micro_usd == 1100000/u);
   assert.match(campaign, /expires_unix_ns - \.not_before_unix_ns\) == 36000000000000/u);
   assert.match(campaign, /test "\$remaining" -ge 31500/u);
-  assert.match(campaign, /role_duration_seconds=18000/u);
   assert.match(campaign, /test "\$handoff_remaining" -ge 19800/u);
-  assert.match(campaign, /role_duration_seconds=19800/u);
+  assert.doesNotMatch(campaign, /steps\.approval_verification\.outputs\.role_duration_seconds/u);
+
+  const roleAssumptions = [
+    ["Acquire fresh segment-one executor credentials", "segment_one_executor_duration", 18000, 16200],
+    ["Acquire fresh segment-one inventory-observer credentials", "segment_one_observer_duration", 18000, 16200],
+    ["Acquire fresh segment-two executor credentials", "segment_two_executor_duration", 19800, 18000],
+    ["Acquire fresh segment-two inventory-observer credentials", "segment_two_observer_duration", 19800, 18000],
+  ] as const;
+  assert.equal((campaign.match(/^ {8}id: segment_(?:one|two)_(?:executor|observer)_duration$/gmu) ?? []).length, 4);
+  for (const [name, id, cap, segmentMinimum] of roleAssumptions) {
+    const actionMarker = `      - name: ${name}\n        uses: aws-actions/configure-aws-credentials@`;
+    const actionAt = campaign.indexOf(actionMarker);
+    assert.ok(actionAt >= 0, name);
+    const priorStepAt = campaign.lastIndexOf("\n      - name: ", actionAt - 2);
+    const derivation = campaign.slice(priorStepAt, actionAt);
+    assert.match(derivation, new RegExp(`id: ${id}`, "u"), name);
+    assert.match(derivation, /expires_unix_ns/u, name);
+    assert.match(derivation, /now_s=\$\(date \+%s\)/u, name);
+    assert.match(derivation, / - now_s - 60 \)\)/u, name);
+    assert.match(derivation, new RegExp(`cap=${cap}`, "u"), name);
+    assert.match(derivation, new RegExp(`segment_min=${segmentMinimum}`, "u"), name);
+    assert.match(derivation, /if \(\( duration > cap \)\); then duration="\$cap"; fi/u, name);
+    assert.match(derivation, /test "\$duration" -ge "\$segment_min"/u, name);
+    assert.match(derivation, /test "\$duration" -le "\$remaining"/u, name);
+    const actionEnd = campaign.indexOf("\n      - name: ", actionAt + actionMarker.length);
+    const action = campaign.slice(actionAt, actionEnd);
+    assert.match(
+      action,
+      new RegExp(`role-duration-seconds: \\$\\{\\{ steps\\.${id}\\.outputs\\.role_duration_seconds \\}\\}`, "u"),
+      name,
+    );
+  }
+
+  const firstJob = campaign.slice(campaign.indexOf("  cycles_1_3:"), campaign.indexOf("  cycles_4_7:"));
+  const secondJob = campaign.slice(campaign.indexOf("  cycles_4_7:"));
+  assert.equal((campaign.match(/os\.O_EXCL/gu) ?? []).length, 2);
+  assert.ok(firstJob.indexOf("os.O_EXCL") < firstJob.indexOf("authorize-seven-stage2-production-cycles"));
+  assert.ok(secondJob.indexOf("os.O_EXCL") < secondJob.indexOf('test "$GITHUB_REPOSITORY"'));
+  for (const [job, jobMinutes, campaignMinutes] of [
+    [firstJob, 300, 240],
+    [secondJob, 330, 270],
+  ] as const) {
+    assert.match(job, new RegExp(`timeout-minutes: ${campaignMinutes}`, "u"));
+    assert.match(job, new RegExp(`job_deadline=\\$\\(\\( job_start \\+ \\(${jobMinutes} - 31\\) \\* 60 \\)\\)`, "u"));
+    assert.match(job, /remaining=\$\(\( job_deadline - now_s \)\)/u);
+    assert.match(job, /test "\$remaining" -gt 0/u);
+    assert.match(job, /\/usr\/bin\/timeout --signal=TERM --kill-after=10s "\$remaining"s sudo -n/u);
+    assert.match(job, /\|\| campaign_status=\$\?[\s\S]*exit "\$campaign_status"/u);
+    assert.ok((jobMinutes - 31) * 60 + 10 + 30 * 60 < jobMinutes * 60);
+  }
+
+  const signerAt = firstJob.indexOf("scripts/stage2-cosign-keyless-sign.sh");
+  const readbackAt = firstJob.indexOf("Byte-compare continuation readback");
+  const oidcRetirementAt = firstJob.indexOf("Retire job-one OIDC request environment after continuation custody");
+  assert.ok(signerAt >= 0 && readbackAt > signerAt && oidcRetirementAt > readbackAt);
+  assert.doesNotMatch(firstJob.slice(0, signerAt), /ACTIONS_ID_TOKEN_REQUEST_TOKEN=\\n/u);
+  assert.match(firstJob.slice(oidcRetirementAt), /ACTIONS_ID_TOKEN_REQUEST_TOKEN=\\nACTIONS_ID_TOKEN_REQUEST_URL=\\n/u);
 
   assert.match(campaign, /stage2-stage-production-approval\.py/u);
   assert.match(campaign, /run-production-campaign\.sh/u);

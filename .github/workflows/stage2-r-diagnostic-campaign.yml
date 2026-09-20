@@ -217,6 +217,8 @@ jobs:
 
       - name: Stage approval, credentials, provider package, and plans
         id: production_staging
+        env:
+          BUDGET_ALERT_EMAIL: ${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}
         run: |
           set -euo pipefail
           umask 077
@@ -232,7 +234,7 @@ jobs:
           printf '[observer]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' \
             "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" \
             >>"$RUNNER_TEMP/aws-credentials"
-          printf '%s\n' '${{ vars.STAGE2_AWS_BUDGET_ALERT_EMAIL }}' >"$RUNNER_TEMP/budget-email"
+          printf '%s\n' "$BUDGET_ALERT_EMAIL" >"$RUNNER_TEMP/budget-email"
           sudo -n env COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
             /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py \
             "$input" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
