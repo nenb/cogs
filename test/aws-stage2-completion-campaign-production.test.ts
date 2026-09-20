@@ -54,6 +54,12 @@ test("production controller is pure while issuing only adapter-sealed, receipt-b
     "routes",
   ])
     assert.match(source, new RegExp(`"${category}"`, "u"));
+  assert.match(source, /class CampaignContinuation/u);
+  assert.match(source, /def run_first_segment/u);
+  assert.match(source, /def run_second_segment/u);
+  assert.doesNotMatch(source, /\n {4}def run\(self\):/u);
+  assert.match(source, /github_run_attempt == 1/u);
+  assert.match(source, /_journal_checkpoint/u);
   assert.match(source, /class CleanupReceipt/u);
   assert.match(source, /self\.ports\.recover\(/u);
   assert.doesNotMatch(

@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-20
 - Decider: Nick Byrne
-- Scope: bounded pre-H implementation, tests, non-authoritative rehearsal, and later fresh H/G/Q; no formal evidence reuse
+- Scope: bounded pre-H correction, direct fresh H/G/Q after protected validation, and one split formal AWS campaign; no formal evidence reuse
 
 ## Context
 
@@ -82,20 +82,44 @@ signal-shaped exits. Preserve the historical diagnostic artifacts as
 non-authoritative and do not copy their hotpatch wrapper into production.
 
 The corrected implementation first receives local validation, review,
-protected PR checks, and exact-head non-AWS checks. It then requires a fresh
-non-authoritative static observation/control package and a complete seven-cycle
-AWS rehearsal of those exact selected source bytes with one batch and zero
-inventory after every cycle. A failure, recurrence, cancellation, or uncertain
-cleanup retires that rehearsal generation.
+protected PR checks, and exact-head non-AWS checks. The already completed
+contiguous seven-cycle diagnostic described above is sufficient convergence
+information for this bounded correction; a second seven-cycle AWS rehearsal is
+not a prerequisite. After those protected checks pass and the correction is
+merged, this decision directly authorizes freezing the reviewed unchanged merge
+result as fresh H. G must have that exact H as its sole parent, and Q must have
+that exact fresh G as its sole parent. Fresh mixed preflight and seven-runner
+qualification remain mandatory. Historical H/G/Q, diagnostic plans, approvals,
+cycles, artifacts, or passed ordinals cannot supply authority to that chain.
 
-A clean rehearsal cannot itself authorize or produce H. Its accepted evidence
-may only be an input to a separate reviewed and accepted decision that explicitly
-authorizes freezing the unchanged implementation as a new H. G must then have
-that exact H as its sole parent, and Q must have that exact fresh G as its sole
-parent. Fresh mixed preflight, seven-runner qualification, and formal R
-planning/approval/campaign are then required. Historical H/G/Q, diagnostic
-plans, approvals, cycles, artifacts, or passed ordinals cannot supply authority
-to that chain.
+The later authoritative AWS campaign is one generation split into exactly two
+sequential GitHub jobs: cycles 1--3 and cycles 4--7 plus final zero inventory.
+The second job may start only after the first succeeds in the same run and first
+attempt. The first job consumes the one-shot approval once, reaches zero after
+cycle 3, retires its independently acquired executor and observer credentials,
+and publishes only a canonical credential-free continuation. That continuation
+is bound to the exact approval and batch, H/G/Q, run ID and attempt, first-apply
+deadlines, accumulated cost, typed cycle records, approval-consumption record,
+and journal checkpoint. It is signed by keyless Cosign under the exact protected
+campaign workflow identity, uploaded and read back by exact artifact ID and
+archive digest. The second job independently verifies the artifact metadata,
+bytes, signature, and committed trusted root offline under fixed root custody,
+reconstructs consumption and journal continuity without consuming the approval
+again, and independently acquires fresh executor and observer credentials.
+Replay, cross-run or cross-attempt substitution, partial stitching, and an
+alternate authoritative single-job seven-cycle entry are rejected.
+
+The approval bounds for that one generation are exactly ten hours of validity,
+a 480-minute effect deadline anchored to the original first apply, a 30-minute
+cleanup reserve, a 150-minute maximum per cycle, and 1,100,000 micro-USD. Job
+bounds are 300 minutes for cycles 1--3 and 330 minutes for cycles 4--7; each
+retains a 30-minute recovery path and derives a separate short-lived role
+session duration from the remaining approval lifetime within the approved AWS
+maximum. Zero inventory after every cycle, global identity distinctness,
+strict cgroup checks, cleanup certainty, and pass-only evidence issuance after
+cycle 7 and final zero are unchanged. Any publication, verification, download,
+admission, campaign, cancellation, or cleanup uncertainty terminates the run;
+no ordinal is reusable.
 
 ## Accounting
 
@@ -105,18 +129,21 @@ this ADR to governance. Admit only
 focused Python test to the pre-H portion of `final-HGQ`; the provider and its
 existing fake test remain in `local-tofu-ssm`. The new ADR raises the tracked
 file high from 1,545 to 1,546. The deterministic readiness refresh receives no
-deletion credit: reallocate 600,000 prospective bytes from `local-tofu-ssm` to
-`readiness-ci`, making their active highs 3,500,000 and 8,200,000 bytes. No task
-line high, tranche total, global forecast, serialized-inventory limit, or
-source-byte limit changes. Deletions and rewrites provide no credit.
+deletion credit: the host correction reallocated 600,000 prospective bytes from
+`local-tofu-ssm` to `readiness-ci`. This split implementation reallocates another
+200,000 prospective bytes for the mandatory refreshed tracked-source inventory,
+making their active highs 3,300,000 and 8,400,000 bytes. No task line high,
+tranche total, global forecast, serialized-inventory limit, or source-byte limit
+changes. Deletions and rewrites provide no credit.
 
 ## Consequences
 
 The successful disposable campaign proves feasibility, not production
-correctness or authority. This ADR does not authorize formal H/G/Q/R evidence,
-production eligibility, release, or Issue 42 closure. It authorizes the bounded
-source correction and exact non-authoritative rehearsal sequence above under
-the owner's standing instruction to continue until behavior is resolved.
+evidence or authority. This ADR authorizes the bounded correction to proceed
+directly through protected review and merge into a fresh H/G/Q chain, followed
+only by the newly split one-shot formal R sequence above. It does not accept the
+diagnostic evidence as formal evidence, authorize release, or by itself close
+Issue 42.
 
 Stage 4 remains separate and consumes accepted Stage 2 evidence only after the
 fresh Stage 2 chain closes; it does not rerun or substitute for H, G, or Q.

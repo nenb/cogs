@@ -196,6 +196,43 @@ def remove_partial(expected):
     require(not any(STAGING.iterdir())); STAGING.rmdir(); sync(STAGING.parent)
 
 
+def stage_continuation(source, run_id_text, expected_sha256):
+    require(os.geteuid() == os.getegid() == 0 and DESTINATION.is_dir()
+            and not adapter.CONSUMED.exists() and not adapter.JOURNAL.exists()
+            and not adapter.CONTINUATION.exists()
+            and not adapter.CONTINUATION_BUNDLE.exists()
+            and re.fullmatch(r"[1-9][0-9]*", run_id_text) is not None
+            and re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is not None)
+    caller_uid = os.environ.get("SUDO_UID"); caller_gid = os.environ.get("SUDO_GID")
+    require(caller_uid is not None and caller_gid is not None
+            and re.fullmatch(r"[1-9][0-9]*", caller_uid) is not None
+            and re.fullmatch(r"[1-9][0-9]*", caller_gid) is not None)
+    caller = (int(caller_uid), int(caller_gid))
+    source = Path(source); seen = source.lstat()
+    require(stat.S_ISDIR(seen.st_mode) and not source.is_symlink()
+            and (seen.st_uid, seen.st_gid) == caller
+            and stat.S_IMODE(seen.st_mode) == 0o700)
+    entries = tuple(source.iterdir())
+    require({item.name for item in entries} == {
+        "campaign-continuation.json", "campaign-continuation.bundle.json"}
+            and all(item.is_file() and not item.is_symlink() and item.lstat().st_nlink == 1
+                    and (item.lstat().st_uid, item.lstat().st_gid) == caller
+                    and stat.S_IMODE(item.lstat().st_mode) == 0o400 for item in entries))
+    continuation = read(source / "campaign-continuation.json", 16 * 1024 * 1024)
+    bundle = read(source / "campaign-continuation.bundle.json", 1024 * 1024)
+    require(hashlib.sha256(continuation).hexdigest() == expected_sha256)
+    write(adapter.CONTINUATION, continuation)
+    write(adapter.CONTINUATION_BUNDLE, bundle)
+    approval, authentication_sha256 = adapter._approval()
+    adapter._verify_blob(adapter.CONTINUATION, adapter.CONTINUATION_BUNDLE,
+                         adapter.CAMPAIGN_IDENTITY)
+    parsed = production.continuation_from_bytes(
+        adapter._read_fixed(adapter.CONTINUATION, 16 * 1024 * 1024), approval,
+        int(run_id_text), 1, "authenticated-aws-adapter")
+    require(parsed.consumption.authentication_receipt_sha256 == authentication_sha256)
+    return parsed.continuation_commitment
+
+
 def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
     require(os.geteuid() == os.getegid() == 0)
     source = Path(source)
@@ -390,6 +427,9 @@ if __name__ == "__main__":
             require(json.dumps(manifest, sort_keys=True, separators=(",", ":"),
                                ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n" == raw)
             provider_package_archive(sys.argv[2], manifest)
+            result = "verified"
+        elif len(sys.argv) == 5 and sys.argv[1] == "stage-continuation":
+            result = stage_continuation(sys.argv[2], sys.argv[3], sys.argv[4])
         else:
             require(len(sys.argv) == 5)
             result = stage(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])

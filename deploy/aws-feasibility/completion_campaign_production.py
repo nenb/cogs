@@ -1,7 +1,7 @@
-"""Closed production campaign contracts and the sole seven-cycle state machine.
+"""Closed production campaign contracts and the sole split seven-cycle state machine.
 
-This module is provider-neutral, but not synthetic: concrete ports are issued only
-by the dormant AWS adapter.  Tests receive a separately labelled test issuer.
+Cycles 1--3 issue a canonical continuation; only a validated continuation may
+admit cycles 4--7.  Concrete ports are issued only by the dormant AWS adapter.
 No callback may relabel a receipt; every effect carries the complete one-shot
 grant and durable intent/settlement identity.
 """
@@ -14,7 +14,8 @@ import re
 import runpy
 
 APPROVAL_PHRASE = "run-seven-sequential-stage2-completion-launches"
-VERSION = "cogs.stage2-completion-production-controller/v2"
+VERSION = "cogs.stage2-completion-production-controller/v3"
+CONTINUATION_VERSION = "cogs.stage2-production-campaign-continuation/v1"
 CYCLE_MODES = ("full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness")
 INVENTORY_CATEGORIES = (
     "ec2_instances", "ebs_volumes", "network_interfaces", "eni_public_associations",
@@ -66,6 +67,13 @@ def _canonical(value):
 
 def _commit(domain, value):
     return hashlib.sha256(domain + b"\0" + _canonical(value)).hexdigest()
+
+
+def _plain(value):
+    if hasattr(value, "__dataclass_fields__"): return asdict(value)
+    if type(value) in {tuple, list}: return [_plain(item) for item in value]
+    if type(value) is dict: return {name: _plain(item) for name, item in value.items()}
+    return value
 
 
 def _runtime_identity(value):
@@ -212,15 +220,15 @@ class ProductionApproval:
                  and type(self.effect_deadline_ns) is int
                  and type(self.cleanup_reserve_ns) is int
                  and type(self.expires_unix_ns) is int
-                 and 0 < self.effect_deadline_ns <= 320 * 60 * 1_000_000_000
-                 and 5 * 60 * 1_000_000_000 <= self.cleanup_reserve_ns <= 30 * 60 * 1_000_000_000
+                 and self.effect_deadline_ns == 480 * 60 * 1_000_000_000
+                 and self.cleanup_reserve_ns == 30 * 60 * 1_000_000_000
+                 and self.expires_unix_ns - self.not_before_unix_ns == 10 * 60 * 60 * 1_000_000_000
                  and self.not_before_unix_ns + self.effect_deadline_ns + self.cleanup_reserve_ns
                      <= self.expires_unix_ns
                  and type(self.maximum_cycle_duration_ns) is int
-                 and 0 < self.maximum_cycle_duration_ns <= 150 * 60 * 1_000_000_000
-                 and self.maximum_cycle_duration_ns <= self.effect_deadline_ns
+                 and self.maximum_cycle_duration_ns == 150 * 60 * 1_000_000_000
                  and type(self.maximum_cost_micro_usd) is int
-                 and 0 < self.maximum_cost_micro_usd < 500_000
+                 and self.maximum_cost_micro_usd == 1_100_000
                  and self.maximum_cost_micro_usd >= (
                     (self.effect_deadline_ns + self.cleanup_reserve_ns)
                     * FIXED_RATE_MICRO_USD_PER_HOUR + 3_600_000_000_000 - 1) // 3_600_000_000_000
@@ -822,6 +830,295 @@ class CleanupReceipt:
                      ProductionReceiptError)
 
 
+def _journal_checkpoint(consumption, grants, effects, cycles):
+    """Recompute the exact durable journal prefix represented by a continuation."""
+    events = [("batch", "consumed", None, None,
+               consumption.durable_record_commitment)]
+    for grant, receipts, cycle in zip(grants, effects, cycles):
+        events.append(("cycle", "opened", grant.ordinal, grant.mode,
+                       grant.grant_commitment))
+        for receipt in receipts:
+            events.extend((
+                ("effect", "intent", grant.ordinal, grant.mode,
+                 receipt.intent_commitment),
+                ("effect", "settled", grant.ordinal, grant.mode,
+                 receipt.settlement_commitment),
+                ("receipt", receipt.kind, grant.ordinal, grant.mode,
+                 receipt.settlement_commitment),
+            ))
+        events.append(("cycle", "sealed", grant.ordinal, grant.mode, cycle))
+    sequence, tip = 0, "0" * 64
+    for category, event, ordinal, mode, commitment in events:
+        row = {"version": "cogs.stage2-production-campaign-journal/v1",
+               "sequence": sequence, "previous_sha256": tip,
+               "category": category, "event": event, "ordinal": ordinal,
+               "mode": mode, "commitment": commitment}
+        tip = hashlib.sha256(_canonical(row) + b"\n").hexdigest()
+        sequence += 1
+    return sequence, tip
+
+
+@dataclass(frozen=True)
+class CampaignContinuation:
+    version: str
+    execution_authority: str
+    repository: str
+    workflow_ref: str
+    github_run_id: int
+    github_run_attempt: int
+    approval_commitment: str
+    batch_commitment: str
+    implementation_revision: str
+    control_revision: str
+    qualification_revision: str
+    consumption: ApprovalConsumptionReceipt
+    grants: tuple[CycleLaunchGrant, ...]
+    effects: tuple[tuple[EffectReceipt, EffectReceipt, EffectReceipt, EffectReceipt], ...]
+    remotes: tuple[RemoteReceipt, ...]
+    inventories: tuple[InventoryReceipt, ...]
+    costs: tuple[CostReceipt, ...]
+    cycle_commitments: tuple[str, ...]
+    first_apply_unix_ns: int
+    effect_deadline_unix_ns: int
+    cleanup_deadline_unix_ns: int
+    cumulative_cost_micro_usd: int
+    journal_sequence: int
+    journal_tip_sha256: str
+    continuation_commitment: str
+
+    def __post_init__(self):
+        _require(self.version == CONTINUATION_VERSION
+                 and self.execution_authority in {"authenticated-aws-adapter", "test-only"}
+                 and self.repository == "nenb/cogs"
+                 and self.workflow_ref ==
+                    "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main"
+                 and type(self.github_run_id) is int and self.github_run_id > 0
+                 and type(self.github_run_attempt) is int and self.github_run_attempt == 1
+                 and type(self.consumption) is ApprovalConsumptionReceipt
+                 and len(self.grants) == len(self.effects) == len(self.remotes) ==
+                     len(self.inventories) == len(self.costs) ==
+                     len(self.cycle_commitments) == 3
+                 and tuple(item.ordinal for item in self.grants) == (1, 2, 3)
+                 and tuple(len(item) for item in self.effects) == (4, 4, 4)
+                 and type(self.first_apply_unix_ns) is int and self.first_apply_unix_ns > 0
+                 and type(self.effect_deadline_unix_ns) is int
+                 and type(self.cleanup_deadline_unix_ns) is int
+                 and type(self.cumulative_cost_micro_usd) is int
+                 and self.cumulative_cost_micro_usd > 0
+                 and type(self.journal_sequence) is int and self.journal_sequence > 0,
+                 ProductionReceiptError)
+        _digest(self.approval_commitment); _digest(self.batch_commitment)
+        _sha1(self.implementation_revision); _sha1(self.control_revision)
+        _sha1(self.qualification_revision); _digest(self.journal_tip_sha256)
+        _digest(self.continuation_commitment)
+        fields = asdict(self); fields.pop("continuation_commitment")
+        _require(self.continuation_commitment == _commit(
+            b"cogs.stage2-production-continuation/v1", fields), ProductionReceiptError)
+
+    def canonical_bytes(self):
+        return _canonical(asdict(self)) + b"\n"
+
+
+def _strict_mapping(value, cls, error=ProductionReceiptError):
+    _require(type(value) is dict and value.keys() == cls.__dataclass_fields__.keys(), error)
+    return dict(value)
+
+
+def _decode_effect(value):
+    row = _strict_mapping(value, EffectReceipt)
+    resources = row.pop("resource_commitments")
+    _require(type(resources) is list)
+    return EffectReceipt(**row, resource_commitments=tuple(tuple(item) for item in resources))
+
+
+def _decode_remote(value):
+    row = _strict_mapping(value, RemoteReceipt)
+    workloads = row.pop("workloads"); bindings = _strict_mapping(row.pop("bindings"), RemoteBindingProjection)
+    source = RemoteSourceBindings(**_strict_mapping(bindings.pop("source"), RemoteSourceBindings))
+    qemu = RemoteQemuBindings(**_strict_mapping(bindings.pop("qemu"), RemoteQemuBindings))
+    projection = RemoteBindingProjection(**bindings, source=source, qemu=qemu)
+    _require(type(workloads) is list)
+    return RemoteReceipt(**row, workloads=tuple(
+        WorkloadMeasurement(**_strict_mapping(item, WorkloadMeasurement)) for item in workloads),
+        bindings=projection)
+
+
+def _decode_inventory(value):
+    row = _strict_mapping(value, InventoryReceipt); raw_pages = row.pop("pages")
+    _require(type(raw_pages) is list)
+    pages = []
+    for value_page in raw_pages:
+        page = _strict_mapping(value_page, InventoryPage); raw_resources = page.pop("resources")
+        _require(type(raw_resources) is list)
+        pages.append(InventoryPage(**page, resources=tuple(
+            InventoryResource(**_strict_mapping(item, InventoryResource))
+            for item in raw_resources)))
+    return InventoryReceipt(**row, pages=tuple(pages))
+
+
+def _validate_continuation(value, approval, run_id, run_attempt, classification):
+    approval_commitment = _commit(b"cogs.stage2-production-approval/v5", asdict(approval))
+    _require(value.execution_authority == classification
+             and value.github_run_id == run_id and value.github_run_attempt == run_attempt
+             and value.approval_commitment == approval_commitment
+             and value.batch_commitment == approval.batch_commitment
+             and (value.implementation_revision, value.control_revision,
+                  value.qualification_revision) == (
+                     approval.implementation_revision, approval.control_revision,
+                     approval.qualification_revision)
+             and value.consumption.approval_commitment == approval_commitment
+             and approval.not_before_unix_ns <= value.consumption.consumed_unix_ns <
+                 approval.expires_unix_ns, ProductionReceiptError)
+    consumed_raw = _canonical({
+        "version": "cogs.stage2-production-approval-consumption/v1",
+        "approval_commitment": approval_commitment,
+        "batch_commitment": approval.batch_commitment,
+        "consumed_unix_ns": value.consumption.consumed_unix_ns,
+        "first_created": True}) + b"\n"
+    _require(value.consumption.durable_record_commitment ==
+             hashlib.sha256(consumed_raw).hexdigest(), ProductionReceiptError)
+    previous_zero = None
+    identities = {name: [] for name in ("state", "lineage", "instance", "operation",
+        "boot", "runtime", "mapping", "pre_ssh", "client", "host", "resource")}
+    post_ssh = []
+    for ordinal, (grant, receipts, remote, inventory, cost, cycle) in enumerate(zip(
+            value.grants, value.effects, value.remotes, value.inventories,
+            value.costs, value.cycle_commitments), 1):
+        expected_grant = _grant(approval, ordinal)
+        _require(grant == expected_grant
+                 and tuple(item.kind for item in receipts) == EFFECT_KINDS
+                 and all(item.grant_commitment == grant.grant_commitment
+                         and item.batch_commitment == approval.batch_commitment
+                         and item.ordinal == ordinal and item.mode == grant.mode
+                         for item in receipts), ProductionReceiptError)
+        plan, apply, running, destroy = receipts
+        previous_settlement = None
+        for receipt in receipts:
+            expected_intent = _commit(b"cogs.stage2-provider-effect-intent/v1", {
+                "kind": receipt.kind, "grant": grant.grant_commitment,
+                "previous": previous_settlement})
+            settlement = asdict(receipt); settlement.pop("settlement_commitment")
+            _require(receipt.intent_commitment == expected_intent
+                     and receipt.settlement_commitment == _commit(
+                        b"cogs.stage2-provider-effect-settlement/v1", settlement),
+                     ProductionReceiptError)
+            previous_settlement = receipt.settlement_commitment
+        cycle_deadline = min(value.effect_deadline_unix_ns,
+            apply.observed_started_unix_ns + approval.maximum_cycle_duration_ns)
+        _require(plan.identity_commitment == approval.plan_sha256s[ordinal - 1]
+                 and all(item.ami_commitment == approval.ami_commitment for item in receipts)
+                 and apply.state_commitment == plan.state_commitment ==
+                     running.state_commitment == destroy.state_commitment
+                 and apply.state_lineage_commitment == plan.state_lineage_commitment ==
+                     running.state_lineage_commitment == destroy.state_lineage_commitment
+                 and apply.state_bytes_sha256 != "0" * 64
+                 and running.state_bytes_sha256 == apply.state_bytes_sha256
+                 and plan.observed_ended_unix_ns < apply.observed_started_unix_ns
+                 and apply.observed_ended_unix_ns < running.observed_started_unix_ns
+                 and running.observed_ended_unix_ns < destroy.observed_started_unix_ns
+                 and max(apply.observed_ended_unix_ns, running.observed_ended_unix_ns,
+                         destroy.observed_ended_unix_ns) < cycle_deadline
+                 and (previous_zero is None or plan.observed_started_unix_ns > previous_zero)
+                 and remote.grant_commitment == grant.grant_commitment
+                 and remote.batch_commitment == approval.batch_commitment
+                 and remote.ordinal == ordinal and remote.mode == grant.mode
+                 and remote.state_commitment == apply.state_commitment
+                 and remote.state_lineage_commitment == apply.state_lineage_commitment
+                 and remote.instance_commitment == running.identity_commitment
+                 and remote.provider_launch_started_unix_ns == apply.observed_started_unix_ns
+                 and remote.provider_running_observed_unix_ns == running.observed_ended_unix_ns
+                 and remote.rootfs_descriptor_sha256 == approval.rootfs_descriptor_sha256
+                 and remote.ami_commitment == approval.ami_commitment,
+                 ProductionReceiptError)
+        _validate_remote_bindings(remote, grant, approval)
+        _require(inventory.batch_commitment == approval.batch_commitment
+                 and inventory.observation_sequence == ordinal
+                 and inventory.cycle_ordinal == ordinal
+                 and inventory.account_commitment == approval.account_commitment
+                 and inventory.region == approval.region
+                 and inventory.destroyed_state_commitment == destroy.state_commitment
+                 and inventory.observed_started_unix_ns > destroy.observed_ended_unix_ns
+                 and inventory.observed_ended_unix_ns < value.cleanup_deadline_unix_ns
+                 and (previous_zero is None or inventory.observed_started_unix_ns > previous_zero)
+                 and cost.grant_commitment == grant.grant_commitment
+                 and cost.cycle_ordinal == ordinal
+                 and cost.rate_source_commitment == approval.rate_source_commitment,
+                 ProductionReceiptError)
+        expected_cycle = _commit(b"cogs.stage2-production-cycle/v2", {
+            "grant": grant.grant_commitment,
+            "effects": [item.settlement_commitment for item in receipts],
+            "remote": remote.host_receipt_commitment, "zero": inventory.zero_commitment,
+            "cost": cost.receipt_commitment})
+        _require(cycle == expected_cycle, ProductionReceiptError)
+        previous_zero = inventory.observed_ended_unix_ns
+        qmp = remote.bindings.qemu
+        for name, identity in (
+            ("state", apply.state_commitment), ("lineage", apply.state_lineage_commitment),
+            ("instance", remote.instance_commitment), ("operation", remote.operation_commitment),
+            ("boot", remote.host_boot_commitment), ("runtime", qmp.runtime_identity_sha256),
+            ("mapping", qmp.live_mapping_sha256), ("pre_ssh", qmp.pre_ssh_runtime_fact_sha256),
+            ("client", remote.client_key_commitment), ("host", remote.host_key_commitment),
+            ("resource", dict(running.resource_commitments)["instance"])):
+            identities[name].append(identity)
+        if qmp.post_ssh_runtime_fact_sha256 is not None:
+            post_ssh.append(qmp.post_ssh_runtime_fact_sha256)
+    sequence, tip = _journal_checkpoint(value.consumption, value.grants,
+                                         value.effects, value.cycle_commitments)
+    _require(value.first_apply_unix_ns == value.effects[0][1].observed_started_unix_ns
+             and value.consumption.consumed_unix_ns < value.first_apply_unix_ns
+             and value.effect_deadline_unix_ns ==
+                 value.first_apply_unix_ns + approval.effect_deadline_ns
+             and value.cleanup_deadline_unix_ns ==
+                 value.effect_deadline_unix_ns + approval.cleanup_reserve_ns
+             and value.cleanup_deadline_unix_ns <= approval.expires_unix_ns
+             and value.cumulative_cost_micro_usd ==
+                 sum(item.cost_micro_usd for item in value.costs)
+             and value.cumulative_cost_micro_usd <= approval.maximum_cost_micro_usd
+             and all(len(items) == len(set(items)) == 3 for items in identities.values())
+             and all(len({getattr(item, name) for item in value.inventories}) == 3
+                     for name in ("observer_commitment", "session_commitment",
+                                  "run_commitment", "zero_commitment"))
+             and len(post_ssh) == len(set(post_ssh)) == 2
+             and len(set(identities["pre_ssh"]) | set(post_ssh)) == 5
+             and len(set(identities["client"]) | set(identities["host"])) == 6
+             and (value.journal_sequence, value.journal_tip_sha256) == (sequence, tip),
+             ProductionReceiptError)
+    return value
+
+
+def continuation_from_bytes(raw, approval, run_id, run_attempt, classification):
+    _require(type(raw) is bytes and 0 < len(raw) <= 16 * 1024 * 1024
+             and raw.endswith(b"\n") and raw.count(b"\n") == 1
+             and not any(marker in raw for marker in (
+                 b"AWS_ACCESS_KEY_ID", b"AWS_SECRET_ACCESS_KEY", b"AWS_SESSION_TOKEN",
+                 b"aws_access_key_id", b"aws_secret_access_key", b"aws_session_token")),
+             ProductionReceiptError)
+    try: decoded = json.loads(raw.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ProductionReceiptError() from error
+    _require(_canonical(decoded) + b"\n" == raw, ProductionReceiptError)
+    row = _strict_mapping(decoded, CampaignContinuation)
+    consumption = ApprovalConsumptionReceipt(**_strict_mapping(
+        row.pop("consumption"), ApprovalConsumptionReceipt))
+    raw_grants = row.pop("grants"); raw_effects = row.pop("effects")
+    raw_remotes = row.pop("remotes"); raw_inventories = row.pop("inventories")
+    raw_costs = row.pop("costs"); cycles = row.pop("cycle_commitments")
+    _require(all(type(item) is list for item in (
+        raw_grants, raw_effects, raw_remotes, raw_inventories, raw_costs, cycles)))
+    continuation = CampaignContinuation(
+        **row, consumption=consumption,
+        grants=tuple(CycleLaunchGrant(**_strict_mapping(item, CycleLaunchGrant))
+                     for item in raw_grants),
+        effects=tuple(tuple(_decode_effect(receipt) for receipt in item)
+                      for item in raw_effects),
+        remotes=tuple(_decode_remote(item) for item in raw_remotes),
+        inventories=tuple(_decode_inventory(item) for item in raw_inventories),
+        costs=tuple(CostReceipt(**_strict_mapping(item, CostReceipt)) for item in raw_costs),
+        cycle_commitments=tuple(cycles))
+    return _validate_continuation(
+        continuation, approval, run_id, run_attempt, classification)
+
+
 @dataclass(frozen=True)
 class CampaignCandidate:
     execution_authority: str
@@ -881,18 +1178,20 @@ class CampaignCandidate:
 class ProductionPorts:
     """Sealed concrete effect boundary; only the AWS adapter receives its seal."""
     __slots__ = ("approval", "now", "consume", "effect", "remote", "inventory",
-                 "cost", "recover", "journal", "classification", "_seal")
+                 "cost", "recover", "journal", "journal_state", "classification", "_seal")
     def __init_subclass__(cls, **_kwargs): raise TypeError("production ports are sealed")
     def __init__(self, seal, classification, approval, now, consume, effect,
-                 remote, inventory, cost, recover, journal):
+                 remote, inventory, cost, recover, journal, journal_state):
         _require(seal is _PORT_SEAL
                  and classification in {"authenticated-aws-adapter", "test-only"}
                  and type(approval) is ProductionApproval)
-        for callback in (now, consume, effect, remote, inventory, cost, recover, journal):
+        for callback in (now, consume, effect, remote, inventory, cost, recover, journal,
+                         journal_state):
             _require(callable(callback))
         self.approval, self.now, self.consume = approval, now, consume
         self.effect, self.remote, self.inventory = effect, remote, inventory
         self.cost, self.recover, self.journal = cost, recover, journal
+        self.journal_state = journal_state
         self.classification, self._seal = classification, seal
 
 
@@ -901,21 +1200,22 @@ _TEST_PORT_SEAL = object()
 
 
 def _issue_adapter_ports(authority, approval, now, consume, effect, remote,
-                         inventory, cost, recover, journal):
+                         inventory, cost, recover, journal, journal_state):
     # Imported lazily to avoid granting a seal to arbitrary callers.
     import completion_campaign_aws_adapter as adapter
     _require(adapter._validate_port_authority(authority))
     return ProductionPorts(_PORT_SEAL, "authenticated-aws-adapter", approval,
                            now, consume, effect, remote, inventory, cost,
-                           recover, journal)
+                           recover, journal, journal_state)
 
 
 def _issue_test_ports(approval, now, consume, effect, remote, inventory,
-                      cost, recover, journal):
+                      cost, recover, journal, journal_state):
     """Explicit non-production issuer used only by the hostile contract suite."""
     _require(__name__ != "__main__")
     return ProductionPorts(_PORT_SEAL, "test-only", approval, now, consume,
-                           effect, remote, inventory, cost, recover, journal)
+                           effect, remote, inventory, cost, recover, journal,
+                           journal_state)
 
 
 def _grant(approval, ordinal):
@@ -969,7 +1269,7 @@ class ProductionCampaignController:
     def __init__(self, ports):
         _require(type(ports) is ProductionPorts and ports._seal is _PORT_SEAL)
         self.ports = ports
-        self.used = False
+        self.phase = 0
 
     def _now(self, approval):
         value = self.ports.now()
@@ -989,40 +1289,36 @@ class ProductionCampaignController:
                            receipt.settlement_commitment)
         return receipt
 
-    def run(self):
-        _require(not self.used); self.used = True
+    @staticmethod
+    def _empty_state(consumption):
+        return {"consumption": consumption, "grants": [], "effects": [],
+                "remotes": [], "inventories": [], "costs": [], "cycles": [],
+                "first_apply": None, "previous_zero": None}
+
+    @staticmethod
+    def _continuation_state(value):
+        return {"consumption": value.consumption, "grants": list(value.grants),
+                "effects": list(value.effects), "remotes": list(value.remotes),
+                "inventories": list(value.inventories), "costs": list(value.costs),
+                "cycles": list(value.cycle_commitments),
+                "first_apply": value.first_apply_unix_ns,
+                "previous_zero": value.inventories[-1].observed_ended_unix_ns}
+
+    def _run_cycles(self, state, start, end):
         approval = self.ports.approval
-        consumed_at = self._now(approval)
-        approval_commitment = _commit(b"cogs.stage2-production-approval/v5", asdict(approval))
-        consumption = self.ports.consume(approval, approval_commitment, consumed_at)
-        _require(type(consumption) is ApprovalConsumptionReceipt
-                 and consumption.approval_commitment == approval_commitment,
-                 ProductionApprovalError)
-        self.ports.journal("batch", "consumed", None, None,
-                           consumption.durable_record_commitment)
-        grants = []; effects = []; remotes = []; inventories = []; costs = []; cycles = []
-        states = []; lineages = []; instances = []; operations = []; boots = []; runtimes = []
-        live_mappings = []; pre_ssh_facts = []; post_ssh_facts = []
-        client_keys = []; host_keys = []; instance_resources = []
-        previous_zero_end = None
-        first_apply_start = None
-        active_grant = None
-        active_state = None
-        last_certain = None
+        active_grant = active_state = last_certain = None
         try:
-            for ordinal, mode in enumerate(CYCLE_MODES, 1):
+            for ordinal in range(start, end + 1):
+                mode = CYCLE_MODES[ordinal - 1]
                 self._now(approval)
                 grant = _grant(approval, ordinal); active_grant = grant
-                # The grant commitment is a conservative recovery key until a
-                # provider state slot has been certainly observed.  Therefore a
-                # plan failure still enters independent cleanup/inventory.
                 active_state = grant.grant_commitment
                 self.ports.journal("cycle", "opened", ordinal, mode,
                                    grant.grant_commitment)
                 plan = self._effect("plan", grant, None)
                 _require(plan.identity_commitment == approval.plan_sha256s[ordinal - 1]
-                         and (previous_zero_end is None
-                              or plan.observed_started_unix_ns > previous_zero_end),
+                         and (state["previous_zero"] is None
+                              or plan.observed_started_unix_ns > state["previous_zero"]),
                          ProductionReceiptError)
                 active_state = plan.state_commitment
                 apply = self._effect("apply", grant, plan); active_state = apply.state_commitment
@@ -1031,8 +1327,9 @@ class ProductionCampaignController:
                          and apply.state_bytes_sha256 != "0" * 64
                          and plan.observed_ended_unix_ns < apply.observed_started_unix_ns,
                          ProductionReceiptError)
-                if first_apply_start is None: first_apply_start = apply.observed_started_unix_ns
-                effect_deadline = first_apply_start + approval.effect_deadline_ns
+                if state["first_apply"] is None:
+                    state["first_apply"] = apply.observed_started_unix_ns
+                effect_deadline = state["first_apply"] + approval.effect_deadline_ns
                 cleanup_deadline = effect_deadline + approval.cleanup_reserve_ns
                 cycle_deadline = min(
                     effect_deadline,
@@ -1078,15 +1375,15 @@ class ProductionCampaignController:
                          and zero.destroyed_state_commitment == destroy.state_commitment
                          and zero.observed_started_unix_ns > destroy.observed_ended_unix_ns
                          and zero.observed_ended_unix_ns < cleanup_deadline
-                         and (previous_zero_end is None
-                              or zero.observed_started_unix_ns > previous_zero_end),
+                         and (state["previous_zero"] is None
+                              or zero.observed_started_unix_ns > state["previous_zero"]),
                          ProductionReceiptError)
-                previous_zero_end = zero.observed_ended_unix_ns
+                state["previous_zero"] = zero.observed_ended_unix_ns
                 cost = self.ports.cost(grant, apply, destroy)
                 _require(type(cost) is CostReceipt
                          and cost.grant_commitment == grant.grant_commitment
                          and cost.cycle_ordinal == ordinal, ProductionReceiptError)
-                _require(sum(item.cost_micro_usd for item in (*costs, cost))
+                _require(sum(item.cost_micro_usd for item in (*state["costs"], cost))
                          <= approval.maximum_cost_micro_usd, ProductionApprovalError)
                 cycle = _commit(b"cogs.stage2-production-cycle/v2", {
                     "grant": grant.grant_commitment,
@@ -1096,75 +1393,12 @@ class ProductionCampaignController:
                     "zero": zero.zero_commitment,
                     "cost": cost.receipt_commitment,
                 })
-                grants.append(grant); effects.append((plan, apply, running, destroy))
-                remotes.append(remote); inventories.append(zero); costs.append(cost)
-                cycles.append(cycle); states.append(apply.state_commitment)
-                lineages.append(apply.state_lineage_commitment)
-                instances.append(remote.instance_commitment)
-                operations.append(remote.operation_commitment)
-                boots.append(remote.host_boot_commitment)
-                qmp = remote.bindings.qemu
-                runtimes.append(qmp.runtime_identity_sha256)
-                live_mappings.append(qmp.live_mapping_sha256)
-                pre_ssh_facts.append(qmp.pre_ssh_runtime_fact_sha256)
-                if qmp.post_ssh_runtime_fact_sha256 is not None:
-                    post_ssh_facts.append(qmp.post_ssh_runtime_fact_sha256)
-                client_keys.append(remote.client_key_commitment)
-                host_keys.append(remote.host_key_commitment)
-                instance_resources.append(dict(running.resource_commitments)["instance"])
+                state["grants"].append(grant)
+                state["effects"].append((plan, apply, running, destroy))
+                state["remotes"].append(remote); state["inventories"].append(zero)
+                state["costs"].append(cost); state["cycles"].append(cycle)
                 active_grant = active_state = last_certain = None
                 self.ports.journal("cycle", "sealed", ordinal, mode, cycle)
-            active_grant = grants[-1]
-            active_state = effects[-1][-1].state_commitment
-            last_certain = effects[-1][-1]
-            final = self.ports.inventory(None, effects[-1][-1], 8)
-            _require(type(final) is InventoryReceipt
-                     and final.batch_commitment == approval.batch_commitment
-                     and final.observation_sequence == 8 and final.cycle_ordinal is None
-                     and final.account_commitment == approval.account_commitment
-                     and final.region == approval.region
-                     and final.destroyed_state_commitment == effects[-1][-1].state_commitment
-                     and final.observed_started_unix_ns > previous_zero_end
-                     and final.observed_ended_unix_ns < cleanup_deadline,
-                     ProductionReceiptError)
-            inventories.append(final)
-            active_grant = active_state = last_certain = None
-            _require(all(len(set(values)) == 7 for values in
-                         (states, lineages, instances, operations, boots, runtimes,
-                          live_mappings, pre_ssh_facts))
-                     and len(post_ssh_facts) == len(set(post_ssh_facts)) == 6
-                     and len(set(pre_ssh_facts) | set(post_ssh_facts)) == 13
-                     and len(set(client_keys)) == len(set(host_keys)) == 7
-                     and len(set(client_keys) | set(host_keys)) == 14
-                     and len(set(instance_resources)) == 7,
-                     ProductionReceiptError)
-            for name in ("observer_commitment", "session_commitment",
-                         "run_commitment", "zero_commitment"):
-                _require(len({getattr(item, name) for item in inventories}) == 8,
-                         ProductionReceiptError)
-            custody = _commit(b"cogs.stage2-production-custody/v2", {
-                "execution_authority": self.ports.classification,
-                "approval": approval_commitment,
-                "consumption": consumption.durable_record_commitment,
-                "cycles": cycles,
-                "inventories": [item.zero_commitment for item in inventories],
-                "costs": [item.receipt_commitment for item in costs],
-            })
-            candidate = CampaignCandidate(
-                self.ports.classification, approval, consumption, tuple(grants),
-                tuple(effects), tuple(remotes), tuple(inventories), tuple(costs),
-                tuple(cycles), custody)
-            _require(candidate.actual_duration_ns > 0
-                     and candidate.total_cost_micro_usd <= approval.maximum_cost_micro_usd
-                     and len(candidate.workload_measurements) == 21,
-                     ProductionReceiptError)
-            self.ports.journal("batch", "candidate", None, None, custody)
-            # Transfer only this exact, fully checked object into the closure-private
-            # pass-only evidence route.  Reconstructed dataclasses/public JSON never
-            # enter that route.
-            import completion_campaign_evidence_issuer as evidence_issuer
-            evidence_issuer._retain_controller_candidate(candidate)
-            return candidate
         except BaseException as primary:
             if active_grant is not None and active_state is not None:
                 try:
@@ -1186,3 +1420,144 @@ class ProductionCampaignController:
                 except BaseException as cleanup_error:
                     raise ProductionUncertainty() from cleanup_error
             raise
+
+    def run_first_segment(self, github_run_id, github_run_attempt):
+        _require(self.phase == 0 and type(github_run_id) is int and github_run_id > 0
+                 and type(github_run_attempt) is int and github_run_attempt == 1)
+        self.phase = 1
+        approval = self.ports.approval
+        consumed_at = self._now(approval)
+        approval_commitment = _commit(b"cogs.stage2-production-approval/v5", asdict(approval))
+        consumption = self.ports.consume(approval, approval_commitment, consumed_at)
+        _require(type(consumption) is ApprovalConsumptionReceipt
+                 and consumption.approval_commitment == approval_commitment,
+                 ProductionApprovalError)
+        self.ports.journal("batch", "consumed", None, None,
+                           consumption.durable_record_commitment)
+        state = self._empty_state(consumption)
+        self._run_cycles(state, 1, 3)
+        sequence, tip = self.ports.journal_state()
+        expected = _journal_checkpoint(consumption, tuple(state["grants"]),
+                                       tuple(state["effects"]), tuple(state["cycles"]))
+        _require((sequence, tip) == expected, ProductionReceiptError)
+        values = {
+            "version": CONTINUATION_VERSION,
+            "execution_authority": self.ports.classification,
+            "repository": "nenb/cogs",
+            "workflow_ref": "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
+            "github_run_id": github_run_id, "github_run_attempt": github_run_attempt,
+            "approval_commitment": approval_commitment,
+            "batch_commitment": approval.batch_commitment,
+            "implementation_revision": approval.implementation_revision,
+            "control_revision": approval.control_revision,
+            "qualification_revision": approval.qualification_revision,
+            "consumption": consumption, "grants": tuple(state["grants"]),
+            "effects": tuple(state["effects"]), "remotes": tuple(state["remotes"]),
+            "inventories": tuple(state["inventories"]), "costs": tuple(state["costs"]),
+            "cycle_commitments": tuple(state["cycles"]),
+            "first_apply_unix_ns": state["first_apply"],
+            "effect_deadline_unix_ns": state["first_apply"] + approval.effect_deadline_ns,
+            "cleanup_deadline_unix_ns": state["first_apply"] +
+                approval.effect_deadline_ns + approval.cleanup_reserve_ns,
+            "cumulative_cost_micro_usd": sum(item.cost_micro_usd for item in state["costs"]),
+            "journal_sequence": sequence, "journal_tip_sha256": tip,
+        }
+        continuation = CampaignContinuation(**values, continuation_commitment=_commit(
+            b"cogs.stage2-production-continuation/v1", _plain(values)))
+        return _validate_continuation(continuation, approval, github_run_id,
+                                      github_run_attempt, self.ports.classification)
+
+    def run_second_segment(self, continuation, github_run_id, github_run_attempt):
+        _require(self.phase in {0, 1})
+        _validate_continuation(continuation, self.ports.approval, github_run_id,
+                               github_run_attempt, self.ports.classification)
+        self.phase = 2
+        approval = self.ports.approval
+        state = self._continuation_state(continuation)
+        self._now(approval)
+        _require(self.ports.now() < continuation.effect_deadline_unix_ns,
+                 ProductionApprovalError)
+        self._run_cycles(state, 4, 7)
+        effects = state["effects"]
+        active_grant = state["grants"][-1]
+        active_state = effects[-1][-1].state_commitment
+        last_certain = effects[-1][-1]
+        try:
+            final = self.ports.inventory(None, last_certain, 8)
+            _require(type(final) is InventoryReceipt
+                     and final.batch_commitment == approval.batch_commitment
+                     and final.observation_sequence == 8 and final.cycle_ordinal is None
+                     and final.account_commitment == approval.account_commitment
+                     and final.region == approval.region
+                     and final.destroyed_state_commitment == active_state
+                     and final.observed_started_unix_ns > state["previous_zero"]
+                     and final.observed_ended_unix_ns < continuation.cleanup_deadline_unix_ns,
+                     ProductionReceiptError)
+            state["inventories"].append(final)
+            active_grant = active_state = last_certain = None
+        except BaseException as primary:
+            if active_grant is not None:
+                try:
+                    cleanup = self.ports.recover(active_grant, active_state,
+                                                 last_certain, primary)
+                    _require(type(cleanup) is CleanupReceipt and cleanup.certain_zero
+                             and cleanup.normal_destroy_reissued is False,
+                             ProductionReceiptError)
+                    self.ports.journal("cleanup", "settled", active_grant.ordinal,
+                                       active_grant.mode, cleanup.reconciliation_commitment)
+                except BaseException as cleanup_error:
+                    raise ProductionUncertainty() from cleanup_error
+            raise
+        grants = state["grants"]; remotes = state["remotes"]
+        inventories = state["inventories"]; costs = state["costs"]; cycles = state["cycles"]
+        states = [item[1].state_commitment for item in effects]
+        lineages = [item[1].state_lineage_commitment for item in effects]
+        instances = [item.instance_commitment for item in remotes]
+        operations = [item.operation_commitment for item in remotes]
+        boots = [item.host_boot_commitment for item in remotes]
+        runtimes = [item.bindings.qemu.runtime_identity_sha256 for item in remotes]
+        live_mappings = [item.bindings.qemu.live_mapping_sha256 for item in remotes]
+        pre_ssh = [item.bindings.qemu.pre_ssh_runtime_fact_sha256 for item in remotes]
+        post_ssh = [item.bindings.qemu.post_ssh_runtime_fact_sha256 for item in remotes
+                    if item.bindings.qemu.post_ssh_runtime_fact_sha256 is not None]
+        client_keys = [item.client_key_commitment for item in remotes]
+        host_keys = [item.host_key_commitment for item in remotes]
+        resources = [dict(item[2].resource_commitments)["instance"] for item in effects]
+        _require(all(len(set(values)) == 7 for values in
+                     (states, lineages, instances, operations, boots, runtimes,
+                      live_mappings, pre_ssh, client_keys, host_keys, resources))
+                 and len(post_ssh) == len(set(post_ssh)) == 6
+                 and len(set(pre_ssh) | set(post_ssh)) == 13
+                 and len(set(client_keys) | set(host_keys)) == 14,
+                 ProductionReceiptError)
+        for name in ("observer_commitment", "session_commitment",
+                     "run_commitment", "zero_commitment"):
+            _require(len({getattr(item, name) for item in inventories}) == 8,
+                     ProductionReceiptError)
+        custody = _commit(b"cogs.stage2-production-custody/v2", {
+            "execution_authority": self.ports.classification,
+            "approval": continuation.approval_commitment,
+            "consumption": state["consumption"].durable_record_commitment,
+            "cycles": cycles,
+            "inventories": [item.zero_commitment for item in inventories],
+            "costs": [item.receipt_commitment for item in costs],
+        })
+        candidate = CampaignCandidate(
+            self.ports.classification, approval, state["consumption"], tuple(grants),
+            tuple(effects), tuple(remotes), tuple(inventories), tuple(costs),
+            tuple(cycles), custody)
+        _require(candidate.actual_duration_ns > 0
+                 and candidate.final_zero_unix_ns < continuation.cleanup_deadline_unix_ns
+                 and candidate.total_cost_micro_usd <= approval.maximum_cost_micro_usd
+                 and len(candidate.workload_measurements) == 21,
+                 ProductionReceiptError)
+        self.ports.journal("batch", "candidate", None, None, custody)
+        import completion_campaign_evidence_issuer as evidence_issuer
+        evidence_issuer._retain_controller_candidate(candidate)
+        return candidate
+
+    def run_test_campaign(self, github_run_id=1, github_run_attempt=1):
+        """Non-authoritative compatibility entry for the sealed hostile test issuer."""
+        _require(self.ports.classification == "test-only")
+        continuation = self.run_first_segment(github_run_id, github_run_attempt)
+        return self.run_second_segment(continuation, github_run_id, github_run_attempt)

@@ -7,6 +7,7 @@ import test from "node:test";
 
 const path = "deploy/aws-feasibility/completion_campaign_aws_adapter.py";
 const source = readFileSync(path, "utf8");
+const launcher = readFileSync("deploy/aws-feasibility/run-production-campaign.sh", "utf8");
 
 test("concrete AWS adapter is import-inert and owns the sole production port issuer", () => {
   const probe = spawnSync(
@@ -58,7 +59,9 @@ test("diagnostic normal and recovery entries preserve only the clean selector en
         "    assert all(os.environ.get(key)==value for key,value in expected.items())",
         "    assert not any(key.startswith('AWS_') for key in os.environ)",
         "    return Receipt('pass')",
-        "def run_fixed_campaign(): return check()",
+        "def run_fixed_diagnostic_campaign(run_id,run_attempt):",
+        "    assert (run_id,run_attempt)==(123,1)",
+        "    return check()",
         "def recover_fixed_campaign(): return check()",
         "",
       ].join("\n"),
@@ -75,6 +78,9 @@ test("diagnostic normal and recovery entries preserve only the clean selector en
           "PATH=/usr/bin:/bin",
           "TZ=UTC",
           "COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1",
+          "COGS_STAGE2_CAMPAIGN_SEGMENT=diagnostic",
+          "COGS_STAGE2_GITHUB_RUN_ID=123",
+          "COGS_STAGE2_GITHUB_RUN_ATTEMPT=1",
           "/usr/bin/python3",
           "-I",
           "-B",
@@ -91,6 +97,17 @@ test("diagnostic normal and recovery entries preserve only the clean selector en
   }
 });
 
+test("split launcher passes only the selector admitted for its exact segment", () => {
+  assert.match(launcher, /cycles-1-3\)/u);
+  assert.match(launcher, /cycles-4-7\)/u);
+  assert.match(launcher, /diagnostic\)/u);
+  assert.match(launcher, /\^\[0-9a-f\]\{64\}\$/u);
+  assert.match(launcher, /clean\+=\(COGS_STAGE2_CONTINUATION_SHA256=/u);
+  assert.match(launcher, /clean\+=\(COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1\)/u);
+  assert.doesNotMatch(launcher, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC="\$\{/u);
+  assert.doesNotMatch(launcher, /COGS_STAGE2_CONTINUATION_SHA256="\$\{[^}]+:-\}"/u);
+});
+
 test("adapter commands and custody paths are fixed with one closed diagnostic identity selector", () => {
   for (const command of [
     "run-production-effect.sh",
@@ -100,7 +117,7 @@ test("adapter commands and custody paths are fixed with one closed diagnostic id
   ])
     assert.match(source, new RegExp(command.replace(".", "\\."), "u"));
   assert.doesNotMatch(source, /sys\.argv|argparse|getenv\(/u);
-  assert.equal(source.match(/os\.environ\.get/g)?.length, 1);
+  assert.equal(source.match(/os\.environ\.get/g)?.length, 2);
   assert.match(source, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC/u);
   assert.match(source, /diagnostic in \{None, "1"\}/u);
   const identityProbe = spawnSync(
@@ -127,7 +144,12 @@ test("adapter commands and custody paths are fixed with one closed diagnostic id
     { encoding: "utf8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } },
   );
   assert.equal(identityProbe.status, 0, identityProbe.stderr);
-  assert.match(source, /run_fixed_campaign/u);
+  assert.match(source, /def run_fixed_first_segment/u);
+  assert.match(source, /def run_fixed_second_segment/u);
+  assert.doesNotMatch(source, /def run_fixed_campaign/u);
+  assert.match(source, /campaign-continuation\.json/u);
+  assert.match(source, /continuation_from_bytes/u);
+  assert.match(source, /CAMPAIGN_IDENTITY/u);
   assert.match(source, /issue_completion_evidence\(candidate, custody\)/u);
   assert.match(source, /approval-authentication\.json/u);
   assert.match(source, /approval-authentication\.bundle\.json/u);

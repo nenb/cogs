@@ -57,11 +57,11 @@ def approval():
         ami_architecture="x86_64", ami_virtualization_type="hvm",
         ami_root_device_type="ebs", ami_state="available",
         plan_sha256s=tuple(d(f"plan-{index}") for index in range(1, 8)),
-        not_before_unix_ns=1, effect_deadline_ns=90 * 60 * 10**9,
-        cleanup_reserve_ns=10 * 60 * 10**9,
-        expires_unix_ns=101 * 60 * 10**9,
-        maximum_cycle_duration_ns=10 * 60 * 10**9,
-        maximum_cost_micro_usd=499_999,
+        not_before_unix_ns=1, effect_deadline_ns=480 * 60 * 10**9,
+        cleanup_reserve_ns=30 * 60 * 10**9,
+        expires_unix_ns=1 + 10 * 60 * 60 * 10**9,
+        maximum_cycle_duration_ns=150 * 60 * 10**9,
+        maximum_cost_micro_usd=1_100_000,
         rate_source_commitment=production.RATE_SOURCE_COMMITMENT,
         issuer_commitment=d("issuer"), executor_principal_commitment=d("executor"),
         inventory_observer_principal_commitment=d("observer-principal"),
@@ -101,8 +101,13 @@ class Harness:
     def consume(self, value, commitment, observed):
         if self.consumed or value is not self.approval: raise production.ProductionApprovalError()
         self.consumed = True
+        raw = production._canonical({
+            "version": "cogs.stage2-production-approval-consumption/v1",
+            "approval_commitment": commitment,
+            "batch_commitment": value.batch_commitment,
+            "consumed_unix_ns": observed, "first_created": True}) + b"\n"
         return production.ApprovalConsumptionReceipt(
-            commitment, d("auth"), d("consumed"), observed, True)
+            commitment, d("auth"), hashlib.sha256(raw).hexdigest(), observed, True)
 
     def effect(self, kind, grant, previous):
         self.calls.append((kind, grant.ordinal, grant.mode))
@@ -137,11 +142,19 @@ class Harness:
             batch_commitment=grant.batch_commitment, ordinal=grant.ordinal, mode=grant.mode,
             state_commitment=state, state_bytes_sha256=state_bytes,
             state_lineage_commitment=lineage, identity_commitment=identity,
-            intent_commitment=d(f"intent-{kind}-{grant.ordinal}"), ami_commitment=grant.ami_commitment,
+            intent_commitment=production._commit(b"cogs.stage2-provider-effect-intent/v1", {
+                "kind": kind, "grant": grant.grant_commitment,
+                "previous": None if previous is None else previous.settlement_commitment}),
+            ami_commitment=grant.ami_commitment,
             resource_commitments=resources, observed_started_unix_ns=start,
             observed_ended_unix_ns=end, invocation_count=1, certain=True)
-        return production.EffectReceipt(**fields, settlement_commitment=production._commit(
+        receipt = production.EffectReceipt(**fields, settlement_commitment=production._commit(
             b"cogs.stage2-provider-effect-settlement/v1", fields))
+        self.journal_rows.extend((("effect", "intent", grant.ordinal, grant.mode,
+                                   receipt.intent_commitment),
+                                  ("effect", "settled", grant.ordinal, grant.mode,
+                                   receipt.settlement_commitment)))
+        return receipt
 
     def remote(self, grant, apply, running, effect_deadline):
         if not (type(effect_deadline) is int and effect_deadline > self.time):
@@ -260,14 +273,34 @@ class Harness:
 
     def journal(self, *row): self.journal_rows.append(row)
 
+    def journal_state(self):
+        sequence, tip = 0, "0" * 64
+        for category, event, ordinal, mode, commitment in self.journal_rows:
+            row = {"version": "cogs.stage2-production-campaign-journal/v1",
+                   "sequence": sequence, "previous_sha256": tip,
+                   "category": category, "event": event, "ordinal": ordinal,
+                   "mode": mode, "commitment": commitment}
+            tip = hashlib.sha256(production._canonical(row) + b"\n").hexdigest()
+            sequence += 1
+        return sequence, tip
+
     def ports(self):
         return production._issue_test_ports(
             self.approval, self.now, self.consume, self.effect, self.remote,
-            self.inventory, self.cost, self.recover, self.journal)
+            self.inventory, self.cost, self.recover, self.journal, self.journal_state)
 
 
 h = Harness(); controller = production.ProductionCampaignController(h.ports())
-candidate = controller.run()
+continuation = controller.run_first_segment(101, 1)
+assert tuple(item.ordinal for item in continuation.grants) == (1, 2, 3)
+assert [row[1] for row in h.calls if row[0] == "remote"] == [1, 2, 3]
+raw = continuation.canonical_bytes()
+assert production.continuation_from_bytes(raw, h.approval, 101, 1, "test-only") == continuation
+for hostile in (raw[:-2] + b"x\n", raw.replace(b'\"github_run_id\":101', b'\"github_run_id\":102')):
+    try: production.continuation_from_bytes(hostile, h.approval, 101, 1, "test-only")
+    except production.ProductionCampaignError: pass
+    else: raise AssertionError("hostile continuation accepted")
+candidate = controller.run_second_segment(continuation, 101, 1)
 assert candidate.actual_duration_ns == candidate.final_zero_unix_ns - candidate.first_apply_unix_ns
 assert candidate.total_cost_micro_usd == 7 and len(candidate.cycle_commitments) == 7
 assert len(candidate.launch_ready_samples_ns) == len(candidate.ssh_ready_samples_ns) == 7
@@ -279,6 +312,28 @@ assert all(item.bindings.qemu.runtime_identity_sha256 != candidate.approval.runt
            for item in candidate.remotes)
 assert h.inventory_count == 8 and not h.active and h.cleanup_count == 0
 assert [row[2] for row in h.calls if row[0] == "remote"] == list(production.CYCLE_MODES)
+
+# A fresh second-job controller resumes without consuming the approval again;
+# run/attempt substitution, stale admission, and canonical-byte tampering fail.
+first_job = Harness(); first_controller = production.ProductionCampaignController(first_job.ports())
+resume = first_controller.run_first_segment(202, 1)
+second_job = Harness(approval_value=first_job.approval)
+second_job.time = resume.inventories[-1].observed_ended_unix_ns + 10
+resumed = production.ProductionCampaignController(second_job.ports()).run_second_segment(resume, 202, 1)
+assert first_job.consumed and not second_job.consumed
+assert first_job.inventory_count == 3 and second_job.inventory_count == 5
+assert tuple(item.ordinal for item in resumed.grants) == tuple(range(1, 8))
+for run_id, attempt in ((203, 1), (202, 2)):
+    fresh = Harness(approval_value=first_job.approval)
+    try: production.ProductionCampaignController(fresh.ports()).run_second_segment(
+        resume, run_id, attempt)
+    except production.ProductionCampaignError: pass
+    else: raise AssertionError("cross-run/attempt continuation accepted")
+stale = Harness(approval_value=first_job.approval)
+stale.time = resume.effect_deadline_unix_ns
+try: production.ProductionCampaignController(stale.ports()).run_second_segment(resume, 202, 1)
+except production.ProductionCampaignError: pass
+else: raise AssertionError("expired continuation accepted")
 for field, hostile in (("ordinal", True), ("ordinal", 1.0),
                        ("observed_started_unix_ns", 0),
                        ("observed_ended_unix_ns", 2.5),
@@ -322,7 +377,7 @@ with tempfile.TemporaryDirectory() as directory:
         # test. This isolated fake-port controller projection remains deliberately
         # distinct and cannot overwrite or authorize that fixture.
     finally: os.close(parent_fd)
-try: controller.run()
+try: controller.run_test_campaign()
 except production.ProductionCampaignError: pass
 else: raise AssertionError("controller replay accepted")
 
@@ -332,7 +387,7 @@ for mutation in ("state", "instance", "instance_drift", "operation", "rootfs", "
                  "cross_pre_from_post", "cross_post_from_pre", "cross_key_replay",
                  "instance_resource_replay"):
     h = Harness(mutate=mutation)
-    try: production.ProductionCampaignController(h.ports()).run()
+    try: production.ProductionCampaignController(h.ports()).run_test_campaign()
     except production.ProductionCampaignError: pass
     else: raise AssertionError(f"{mutation} drift accepted")
 
@@ -342,7 +397,7 @@ for mutation in ("remote_source", "remote_parser", "remote_qemu", "remote_instan
                  "remote_mapping", "remote_pre_fact", "remote_post_fact",
                  "remote_cross_pre", "remote_cross_post", "remote_cross_key",
                  "remote_instance_resource"):
-    candidate = production.ProductionCampaignController(Harness().ports()).run()
+    candidate = production.ProductionCampaignController(Harness().ports()).run_test_campaign()
     binding = candidate.remotes[1].bindings
     if mutation == "remote_source":
         object.__setattr__(binding.source, "host_attestation_sha256", d("evidence-hostile-source"))
@@ -385,7 +440,7 @@ for mutation in ("remote_source", "remote_parser", "remote_qemu", "remote_instan
 for failure in (("plan", 1), ("apply", 1), ("running", 1), ("remote", 1),
                 ("destroy", 1), ("inventory", 8)):
     h = Harness(fail=failure)
-    try: production.ProductionCampaignController(h.ports()).run()
+    try: production.ProductionCampaignController(h.ports()).run_test_campaign()
     except production.ProductionCampaignError: pass
     else: raise AssertionError(f"{failure} unexpectedly passed")
     destroy_calls = [row for row in h.calls if row[:2] == ("destroy", 1)]
@@ -393,7 +448,7 @@ for failure in (("plan", 1), ("apply", 1), ("running", 1), ("remote", 1),
     assert h.cleanup_count == 1
 
 h = Harness(fail=("remote", 1), uncertain_cleanup=True)
-try: production.ProductionCampaignController(h.ports()).run()
+try: production.ProductionCampaignController(h.ports()).run_test_campaign()
 except production.ProductionUncertainty: pass
 else: raise AssertionError("cleanup uncertainty was suppressed")
 
@@ -410,7 +465,7 @@ for change in ({"version": "cogs.stage2-completion-production-approval/v4"},
 
 # The no-replace transaction preserves occupied bytes, while test projection
 # custody itself is one-shot and cannot be retried.
-h = Harness(); publication_candidate = production.ProductionCampaignController(h.ports()).run()
+h = Harness(); publication_candidate = production.ProductionCampaignController(h.ports()).run_test_campaign()
 with tempfile.TemporaryDirectory() as directory:
     os.chmod(directory, 0o700)
     occupied = Path(directory, issuer.EVIDENCE_NAME)
@@ -429,8 +484,8 @@ with tempfile.TemporaryDirectory() as directory:
     finally: os.close(parent_fd)
 
 # Two controller instances cannot reuse one durable approval consumption.
-h = Harness(); production.ProductionCampaignController(h.ports()).run()
-try: production.ProductionCampaignController(h.ports()).run()
+h = Harness(); production.ProductionCampaignController(h.ports()).run_test_campaign()
+try: production.ProductionCampaignController(h.ports()).run_test_campaign()
 except production.ProductionApprovalError: pass
 else: raise AssertionError("durably consumed approval was reused")
 

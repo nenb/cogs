@@ -228,38 +228,72 @@ test("production entry initialization failures emit only fixed diagnostics", () 
   }
 });
 
-test("future campaign has one sealed caller, explicit credential files, recovery, and no retry", () => {
+test("future campaign is exactly two sequential run-bound jobs with fresh credentials", () => {
   assert.match(campaign, /authorize-seven-stage2-production-cycles/u);
+  assert.equal((campaign.match(/authorize-seven-stage2-production-cycles/gu) ?? []).length, 1);
   assert.match(campaign, /stage2-production-campaign\.yml\/runs/u);
   assert.match(campaign, /stage2-production-approval\.yml/u);
   assert.match(campaign, /CONTROL_HEAD: \$\{\{ inputs\.control_head \}\}/u);
   assert.match(campaign, /\.control_revision == \$g/u);
-  assert.match(campaign, /approval-authentication\.bundle\.json/u);
-  assert.match(campaign, /prepare-stage2-fixed-source\.py/u);
-  assert.ok(
-    campaign.indexOf("prepare-stage2-fixed-source.py") <
-      campaign.indexOf("Acquire short-lived fixed executor credentials"),
-  );
-  assert.match(campaign, /Verify executor budget tag-read closure before any resource effect/u);
-  assert.match(campaign, /budgets list-tags-for-resource/u);
-  assert.match(campaign, /cogs-s2-permission-probe-\$GITHUB_RUN_ID/u);
+  assert.match(campaign, /jobs:\n {2}cycles_1_3:/u);
+  assert.match(campaign, /\n {2}cycles_4_7:\n {4}needs: cycles_1_3/u);
+  assert.equal((campaign.match(/^ {2}[a-z0-9_]+:\n {4}(?:needs:|runs-on:)/gmu) ?? []).length, 2);
+  assert.match(campaign, /timeout-minutes: 300/u);
+  assert.match(campaign, /timeout-minutes: 330/u);
+  assert.match(campaign, /github\.run_attempt == 1 && needs\.cycles_1_3\.result == 'success'/u);
+  assert.match(campaign, /COGS_STAGE2_CAMPAIGN_SEGMENT=cycles-1-3/u);
+  assert.match(campaign, /COGS_STAGE2_CAMPAIGN_SEGMENT=cycles-4-7/u);
+  assert.equal((campaign.match(/aws-actions\/configure-aws-credentials@[0-9a-f]{40}/gu) ?? []).length, 4);
+  for (const session of ["campaign-s1", "observer-s1", "campaign-s2", "observer-s2"])
+    assert.match(campaign, new RegExp(`cogs-stage2-${session}-\\$\\{\\{ github.run_id \\}\\}`, "u"));
+  assert.equal((campaign.match(/prepare-stage2-fixed-source\.py/gu) ?? []).length, 2);
+  assert.equal((campaign.match(/budgets list-tags-for-resource/gu) ?? []).length, 2);
   assert.match(campaign, /NotFoundException/u);
   assert.match(campaign, /AccessDenied/u);
-  assert.ok(
-    campaign.indexOf("Acquire short-lived fixed executor credentials") <
-      campaign.indexOf("Verify executor budget tag-read closure") &&
-      campaign.indexOf("Verify executor budget tag-read closure") <
-        campaign.indexOf("Seal executor credential bytes") &&
-      campaign.indexOf("Seal executor credential bytes") < campaign.indexOf("run-production-campaign.sh"),
-  );
+
+  assert.match(campaign, /stage2-production-continuation-\$\{\{ github\.sha \}\}-\$\{\{ github\.run_id \}\}-1/u);
+  assert.match(campaign, /continuation_upload\.outputs\.artifact-id/u);
+  assert.match(campaign, /continuation_upload\.outputs\.artifact-digest/u);
+  assert.match(campaign, /\.workflow_run\.id == \$run and \.name == \$name/u);
+  assert.match(campaign, /campaign-continuation\.bundle\.json campaign-continuation\.json/u);
+  assert.match(campaign, /campaign-continuation\.bundle\.json/u);
+  assert.match(campaign, /CONTINUATION_SHA256/u);
+  assert.match(campaign, /ASIA\[A-Z0-9\]\{16\}/u);
+  assert.match(campaign, /stage2-production-campaign\.yml@refs\/heads\/main/u);
+  assert.match(campaign, /stage2-cosign-keyless-sign\.sh[\s\S]*campaign-continuation/u);
+  assert.match(campaign, /stage-continuation "\$RUNNER_TEMP\/continuation" "\$GITHUB_RUN_ID" "\$CONTINUATION_SHA256"/u);
+  assert.match(stager, /def stage_continuation/u);
+  assert.match(stager, /adapter\._verify_blob\(adapter\.CONTINUATION/u);
+  assert.match(stager, /continuation_from_bytes/u);
+  assert.match(stager, /os\.environ\.get\("SUDO_UID"\)/u);
+  assert.match(stager, /\(item\.lstat\(\)\.st_uid, item\.lstat\(\)\.st_gid\) == caller/u);
+  assert.match(stager, /stat\.S_IMODE\(item\.lstat\(\)\.st_mode\) == 0o400/u);
+  assert.match(signer, /stage2-production-campaign\.yml@refs\/heads\/main/u);
+  assert.match(signer, /campaign-continuation/u);
+
+  assert.match(campaign, /effect_deadline_ns == 28800000000000/u);
+  assert.match(campaign, /cleanup_reserve_ns == 1800000000000/u);
+  assert.match(campaign, /maximum_cycle_duration_ns == 9000000000000/u);
+  assert.match(campaign, /maximum_cost_micro_usd == 1100000/u);
+  assert.match(campaign, /expires_unix_ns - \.not_before_unix_ns\) == 36000000000000/u);
+  assert.match(campaign, /test "\$duration" -ge 18000/u);
+  assert.match(campaign, /test "\$duration" -ge 19800/u);
+  assert.match(campaign, /duration=21600/u);
+  assert.match(campaign, /duration=23400/u);
+
   assert.match(campaign, /stage2-stage-production-approval\.py/u);
   assert.match(campaign, /run-production-campaign\.sh/u);
   assert.match(campaign, /recover-production-campaign-entry\.sh/u);
   assert.match(campaign, /evidence_upload\.outputs\.artifact-id/u);
   assert.match(campaign, /diff -r --no-dereference/u);
   assert.match(campaign, /production-evidence-upload-receipt\/v2/u);
+  assert.match(
+    campaign,
+    /Stage pass-only canonical evidence[\s\S]*test ! -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials/u,
+  );
   assert.doesNotMatch(campaign, /continue-on-error:\s*true/u);
   assert.doesNotMatch(`${planning}\n${approval}\n${campaign}`, /\.\[\]\[\]/u);
+
   assert.match(stager, /aws-credentials/u);
   assert.match(stager, /ASIA\[A-Z0-9\]/u);
   assert.match(stager, /"\/usr\/bin\/unshare", "--net"/u);
@@ -267,17 +301,9 @@ test("future campaign has one sealed caller, explicit credential files, recovery
   assert.match(stager, /PACKAGE_MAX_FILES = 64/u);
   assert.match(stager, /st_nlink == 1/u);
   assert.match(stager, /filesystem_mirror/u);
-  assert.match(stager, /provider-mirror/u);
-  assert.match(stager, /registry\.opentofu\.org\/hashicorp\/aws/u);
-  assert.match(stager, /provider_package\(mirror_root, provider_manifest\)/u);
   assert.match(stager, /provider_package_archive\(source, provider_manifest\)/u);
-  assert.match(campaign, /verify-provider-package "\$out"/u);
-  assert.match(campaign, /provider-package\.tar\.sha256/u);
+  assert.equal(campaign.match(/verify-provider-package "\$out"/gu)?.length, 2);
   assert.doesNotMatch(stager, /dev_overrides/u);
-  assert.match(campaign, /role_duration_seconds/u);
-  assert.match(campaign, /expires_unix_ns/u);
-  assert.match(campaign, /test "\$duration" -ge 16500/u);
-  assert.doesNotMatch(campaign, /test "\$duration" -ge 20000/u);
   for (const source of [planning, approval, campaign]) {
     assert.match(source, /&head_sha=\$GITHUB_SHA/u);
     assert.match(source, /\(\[\.\[\]\.total_count\] \| unique\) == \[1\]/u);
@@ -291,13 +317,6 @@ test("future campaign has one sealed caller, explicit credential files, recovery
     assert.match(source, /raise SystemExit\(2\) from None/u);
   }
   assert.ok(campaign.indexOf(retiredH) < campaign.indexOf("gh api --paginate"));
-  assert.ok(
-    campaign.indexOf("approval_sha256") < campaign.indexOf("Acquire exact separately approved implementation H"),
-  );
-  assert.ok(
-    campaign.indexOf("stage2-production-approval.py eligibility") <
-      campaign.indexOf("Acquire exact separately approved implementation H"),
-  );
   assert.match(stager, /stage2-revision-retirement\.py/u);
   assert.ok(
     stager.indexOf('eligible((value.get("implementation_revision")') < stager.indexOf("aws_credentials = read"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sole zero-argument future AWS campaign and cleanup-only recovery entry."""
+"""Fixed zero-argument dispatcher for one split AWS campaign segment."""
 from dataclasses import asdict, is_dataclass
 import json
 import os
@@ -33,7 +33,24 @@ def main():
     if not _MODULE_ROOT.is_dir(): raise ImportError("fixed campaign module root unavailable")
     sys.path.insert(0, str(_MODULE_ROOT))
     import completion_campaign_aws_adapter as adapter
-    _write(adapter.run_fixed_campaign())
+    segment = os.environ.get("COGS_STAGE2_CAMPAIGN_SEGMENT")
+    run_id_text = os.environ.get("COGS_STAGE2_GITHUB_RUN_ID", "")
+    attempt_text = os.environ.get("COGS_STAGE2_GITHUB_RUN_ATTEMPT", "")
+    if not run_id_text.isdigit() or str(int(run_id_text)) != run_id_text:
+        raise RuntimeError("invalid run id")
+    if attempt_text != "1": raise RuntimeError("only first attempt is admissible")
+    run_id, attempt = int(run_id_text), int(attempt_text)
+    if os.environ.get("COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC") == "1":
+        if segment != "diagnostic": raise RuntimeError("invalid diagnostic segment")
+        receipt = adapter.run_fixed_diagnostic_campaign(run_id, attempt)
+    elif segment == "cycles-1-3":
+        receipt = adapter.run_fixed_first_segment(run_id, attempt)
+    elif segment == "cycles-4-7":
+        expected = os.environ.get("COGS_STAGE2_CONTINUATION_SHA256", "")
+        receipt = adapter.run_fixed_second_segment(run_id, attempt, expected)
+    else:
+        raise RuntimeError("invalid campaign segment")
+    _write(receipt)
 
 
 def cli():

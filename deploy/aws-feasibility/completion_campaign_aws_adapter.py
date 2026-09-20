@@ -1,8 +1,7 @@
-"""Dormant concrete AWS adapter for the reviewed seven-cycle controller.
+"""Dormant concrete AWS adapter for the reviewed split seven-cycle controller.
 
-Importing this module is effect-free. ``run_fixed_campaign`` is the sole normal
-entry; ``recover_fixed_campaign`` is cleanup-only and cannot return a candidate.
-Both require the same root-owned custody directory and fixed repository scripts.
+The two normal entries admit cycles 1--3 or a signed continuation for cycles
+4--7. Recovery remains cleanup-only. Every entry requires fixed root custody.
 """
 
 from dataclasses import asdict, dataclass
@@ -49,6 +48,14 @@ JOURNAL = ROOT / "campaign-journal.jsonl"
 LOCK = ROOT / "campaign.lock"
 ACTIVE = ROOT / "cleanup-active.json"
 CLEANUP_COMPLETE = ROOT / "cleanup-complete.json"
+SEGMENT_COMPLETE = ROOT / "segment-one-zero-complete.json"
+CONTINUATION = ROOT / "campaign-continuation.json"
+CONTINUATION_BUNDLE = ROOT / "campaign-continuation.bundle.json"
+CONTINUATION_ANCHOR = ROOT / "continuation-journal-anchor.json"
+CONTINUATION_PUBLICATION = ROOT / "continuation-publication"
+CAMPAIGN_IDENTITY = (
+    "https://github.com/nenb/cogs/.github/workflows/"
+    "stage2-production-campaign.yml@refs/heads/main")
 STATE_ROOT = ROOT / "provider-state"
 SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 EFFECT_COMMAND = SOURCE / "deploy/aws-feasibility/run-production-effect.sh"
@@ -84,6 +91,20 @@ class NoActiveCleanupReceipt:
         _require(self.version == "cogs.stage2-cleanup-complete/v1"
                  and self.certain_zero is True)
         production._digest(self.reconciliation_commitment)
+
+
+@dataclass(frozen=True)
+class ContinuationPublicationReceipt:
+    version: str
+    continuation_sha256: str
+    continuation_commitment: str
+    completed_cycles: int
+
+    def __post_init__(self):
+        _require(self.version == "cogs.stage2-continuation-publication/v1"
+                 and self.completed_cycles == 3)
+        production._digest(self.continuation_sha256)
+        production._digest(self.continuation_commitment)
 
 
 def _require(value):
@@ -228,6 +249,21 @@ def approval_identity():
             else PRODUCTION_APPROVAL_IDENTITY)
 
 
+def _verify_blob(payload, bundle, identity):
+    _require(identity in {PRODUCTION_APPROVAL_IDENTITY, DIAGNOSTIC_APPROVAL_IDENTITY,
+                          CAMPAIGN_IDENTITY})
+    verification = subprocess.run(
+        ("/usr/bin/unshare", "--net", "--", str(COSIGN), "verify-blob",
+         "--trusted-root", str(TRUSTED_ROOT), "--bundle", str(bundle),
+         "--certificate-identity", identity,
+         "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+         str(payload)), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, env={"HOME": "/nonexistent", "LANG": "C",
+        "LC_ALL": "C", "PATH": "/usr/bin:/bin"}, close_fds=True,
+        start_new_session=True, timeout=30, check=False)
+    _require(verification.returncode == 0)
+
+
 def _approval():
     raw = _read_fixed(APPROVAL, 64 * 1024)
     _read_fixed(AWS_CONFIG, 4096); _read_fixed(AWS_CREDENTIALS, 16 * 1024)
@@ -241,16 +277,7 @@ def _approval():
     _require(hashlib.sha256(cosign_raw).hexdigest() == COSIGN_SHA256
              and hashlib.sha256(tofu_raw).hexdigest() == TOFU_SHA256
              and hashlib.sha256(trusted_root_raw).hexdigest() == TRUSTED_ROOT_SHA256)
-    verification = subprocess.run(
-        ("/usr/bin/unshare", "--net", "--", str(COSIGN), "verify-blob",
-         "--trusted-root", str(TRUSTED_ROOT), "--bundle", str(AUTHENTICATION_BUNDLE),
-         "--certificate-identity", approval_identity(),
-         "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
-         str(AUTHENTICATION)), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, env={"HOME": "/nonexistent", "LANG": "C",
-        "LC_ALL": "C", "PATH": "/usr/bin:/bin"}, close_fds=True,
-        start_new_session=True, timeout=30, check=False)
-    _require(verification.returncode == 0)
+    _verify_blob(AUTHENTICATION, AUTHENTICATION_BUNDLE, approval_identity())
     value = _decode(raw, 64 * 1024)
     authentication = _decode(authentication_raw, 64 * 1024)
     _require(set(authentication) == {
@@ -354,6 +381,17 @@ class AwsCampaignCustodian:
             os.ftruncate(descriptor, boundary); os.fsync(descriptor); raw = raw[:boundary]
         tip = "0" * 64
         sequence = 0
+        if CONTINUATION_ANCHOR.exists():
+            anchor = _decode(_read_fixed(CONTINUATION_ANCHOR, 64 * 1024, (0o600,)),
+                             64 * 1024)
+            _require(set(anchor) == {"version", "sequence", "tip_sha256",
+                                     "continuation_commitment"}
+                     and anchor["version"] ==
+                        "cogs.stage2-production-continuation-journal-anchor/v1"
+                     and type(anchor["sequence"]) is int and anchor["sequence"] > 0)
+            production._digest(anchor["tip_sha256"])
+            production._digest(anchor["continuation_commitment"])
+            sequence, tip = anchor["sequence"], anchor["tip_sha256"]
         for line in raw.splitlines(keepends=True):
             row = _decode(line, 64 * 1024)
             _require(row == {
@@ -572,7 +610,18 @@ class AwsCampaignCustodian:
         authority = _issue_port_authority(self, seal)
         return production._issue_adapter_ports(
             authority, self.approval, self.now, self.consume, self.effect,
-            self.remote, self.inventory, self.cost, self.recover, self.journal)
+            self.remote, self.inventory, self.cost, self.recover, self.journal,
+            self.journal_state)
+
+    def journal_state(self):
+        descriptor = os.open(JOURNAL, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            seen = os.fstat(descriptor)
+            _require(stat.S_ISREG(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                     and stat.S_IMODE(seen.st_mode) == 0o600 and seen.st_nlink == 1)
+            return self._journal_state(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def _retire_credentials():
@@ -621,46 +670,157 @@ def _admit_root():
                  "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "TF_VAR_credentials", "GOOGLE_APPLICATION_CREDENTIALS"}))
 
 
-def run_fixed_campaign():
-    """Sole future normal AWS entry. Merely importing this module has no effect."""
+def _continuation(approval, authentication_sha256, run_id, run_attempt, expected_sha256):
+    raw = _read_fixed(CONTINUATION, 16 * 1024 * 1024)
+    _read_fixed(CONTINUATION_BUNDLE, 1024 * 1024)
+    production._digest(expected_sha256)
+    _require(hashlib.sha256(raw).hexdigest() == expected_sha256)
+    _verify_blob(CONTINUATION, CONTINUATION_BUNDLE, CAMPAIGN_IDENTITY)
+    value = production.continuation_from_bytes(
+        raw, approval, run_id, run_attempt, "authenticated-aws-adapter")
+    _require(value.consumption.authentication_receipt_sha256 == authentication_sha256)
+    return value
+
+
+def _import_continuation(custodian, value):
+    _require(not CONSUMED.exists() and not JOURNAL.exists() and not ACTIVE.exists()
+             and not CLEANUP_COMPLETE.exists() and not SEGMENT_COMPLETE.exists()
+             and not CONTINUATION_ANCHOR.exists())
+    consumed = {"version": "cogs.stage2-production-approval-consumption/v1",
+                "approval_commitment": value.approval_commitment,
+                "batch_commitment": value.batch_commitment,
+                "consumed_unix_ns": value.consumption.consumed_unix_ns,
+                "first_created": True}
+    consumed_raw = _canonical(consumed)
+    _require(hashlib.sha256(consumed_raw).hexdigest() ==
+             value.consumption.durable_record_commitment)
+    anchor = {"version": "cogs.stage2-production-continuation-journal-anchor/v1",
+              "sequence": value.journal_sequence,
+              "tip_sha256": value.journal_tip_sha256,
+              "continuation_commitment": value.continuation_commitment}
+    _write_once(CONSUMED, consumed_raw)
+    _write_once(CONTINUATION_ANCHOR, _canonical(anchor))
+    custodian.first_apply_started = value.first_apply_unix_ns
+    custodian._append("batch", "continued", None, None,
+                      value.continuation_commitment)
+
+
+def _publish_evidence(candidate):
+    _write_once(CLEANUP_COMPLETE, _canonical({
+        "version": "cogs.stage2-cleanup-complete/v1",
+        "reconciliation_commitment": candidate.inventories[-1].zero_commitment,
+        "certain_zero": True}))
+    _retire_credentials()
+    import completion_campaign_evidence_issuer as evidence_issuer
+    evidence_root = ROOT / "evidence-publication"
+    evidence_root.mkdir(mode=0o700, exist_ok=False)
+    os.chown(evidence_root, 0, 0); os.chmod(evidence_root, 0o700)
+    parent_fd = os.open(evidence_root, os.O_RDONLY | os.O_DIRECTORY |
+                        os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        custody = evidence_issuer.open_publication_custody(parent_fd, 0)
+        return evidence_issuer.issue_completion_evidence(candidate, custody)
+    finally:
+        os.close(parent_fd)
+
+
+def run_fixed_first_segment(run_id, run_attempt):
+    """Consume one approval, execute exactly cycles 1--3, and retire credentials."""
     _admit_root()
+    _require(type(run_id) is int and run_id > 0
+             and type(run_attempt) is int and run_attempt == 1)
     lock = _root_lock()
     try:
-        _require(not CONSUMED.exists() and not JOURNAL.exists() and not ACTIVE.exists()
-                 and not CLEANUP_COMPLETE.exists())
+        _require(not any(path.exists() for path in (
+            CONSUMED, JOURNAL, ACTIVE, CLEANUP_COMPLETE, SEGMENT_COMPLETE,
+            CONTINUATION, CONTINUATION_BUNDLE, CONTINUATION_ANCHOR,
+            CONTINUATION_PUBLICATION)))
         approval, authentication_sha256 = _approval()
-        custodian = AwsCampaignCustodian(
-            _ADAPTER_SEAL, approval, authentication_sha256)
-        try:
-            candidate = production.ProductionCampaignController(
-                custodian.ports(_ADAPTER_SEAL)).run()
-        except BaseException:
-            if CLEANUP_COMPLETE.exists() and not ACTIVE.exists() and AWS_CREDENTIALS.exists():
-                _retire_credentials()
-            raise
-        _write_once(CLEANUP_COMPLETE, _canonical({
-            "version": "cogs.stage2-cleanup-complete/v1",
-            "reconciliation_commitment": candidate.inventories[-1].zero_commitment,
+        custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval, authentication_sha256)
+        continuation = production.ProductionCampaignController(
+            custodian.ports(_ADAPTER_SEAL)).run_first_segment(run_id, run_attempt)
+        _write_once(SEGMENT_COMPLETE, _canonical({
+            "version": "cogs.stage2-segment-one-zero-complete/v1",
+            "zero_commitment": continuation.inventories[-1].zero_commitment,
+            "continuation_commitment": continuation.continuation_commitment,
             "certain_zero": True}))
         _retire_credentials()
-        import completion_campaign_evidence_issuer as evidence_issuer
-        evidence_root = ROOT / "evidence-publication"
-        evidence_root.mkdir(mode=0o700, exist_ok=False)
-        os.chown(evidence_root, 0, 0); os.chmod(evidence_root, 0o700)
-        parent_fd = os.open(evidence_root, os.O_RDONLY | os.O_DIRECTORY |
-                            os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
-            custody = evidence_issuer.open_publication_custody(parent_fd, 0)
-            return evidence_issuer.issue_completion_evidence(candidate, custody)
-        finally:
-            os.close(parent_fd)
+        CONTINUATION_PUBLICATION.mkdir(mode=0o700, exist_ok=False)
+        os.chown(CONTINUATION_PUBLICATION, 0, 0)
+        os.chmod(CONTINUATION_PUBLICATION, 0o700)
+        raw = continuation.canonical_bytes()
+        _write_once(CONTINUATION_PUBLICATION / "campaign-continuation.json", raw, 0o400)
+        return ContinuationPublicationReceipt(
+            "cogs.stage2-continuation-publication/v1",
+            hashlib.sha256(raw).hexdigest(), continuation.continuation_commitment, 3)
     except BaseException:
-        if not CONSUMED.exists() and AWS_CREDENTIALS.exists():
+        if not CONSUMED.exists() and not ACTIVE.exists() and AWS_CREDENTIALS.exists():
+            if not CLEANUP_COMPLETE.exists():
+                _write_once(CLEANUP_COMPLETE, _canonical({
+                    "version": "cogs.stage2-cleanup-complete/v1",
+                    "reconciliation_commitment": production._commit(
+                        b"cogs.stage2-unadmitted-root-retirement/v1", {"root": str(ROOT)}),
+                    "certain_zero": True}))
+            _retire_credentials()
+        elif (SEGMENT_COMPLETE.exists() or CLEANUP_COMPLETE.exists()) and \
+                AWS_CREDENTIALS.exists() and not ACTIVE.exists():
             _retire_credentials()
         raise
     finally:
         os.close(lock)
 
+
+def run_fixed_second_segment(run_id, run_attempt, expected_sha256):
+    """Admit one signed run-bound continuation and execute exactly cycles 4--7."""
+    _admit_root()
+    _require(type(run_id) is int and run_id > 0
+             and type(run_attempt) is int and run_attempt == 1)
+    lock = _root_lock()
+    try:
+        _require(not CONSUMED.exists() and not JOURNAL.exists() and not ACTIVE.exists()
+                 and not CLEANUP_COMPLETE.exists() and not SEGMENT_COMPLETE.exists()
+                 and not CONTINUATION_ANCHOR.exists())
+        approval, authentication_sha256 = _approval()
+        continuation = _continuation(
+            approval, authentication_sha256, run_id, run_attempt, expected_sha256)
+        custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval, authentication_sha256)
+        _import_continuation(custodian, continuation)
+        try:
+            candidate = production.ProductionCampaignController(
+                custodian.ports(_ADAPTER_SEAL)).run_second_segment(
+                    continuation, run_id, run_attempt)
+        except BaseException:
+            if CLEANUP_COMPLETE.exists() and not ACTIVE.exists() and AWS_CREDENTIALS.exists():
+                _retire_credentials()
+            raise
+        return _publish_evidence(candidate)
+    except BaseException:
+        if not CONSUMED.exists() and AWS_CREDENTIALS.exists():
+            if not CLEANUP_COMPLETE.exists():
+                _write_once(CLEANUP_COMPLETE, _canonical({
+                    "version": "cogs.stage2-cleanup-complete/v1",
+                    "reconciliation_commitment": production._commit(
+                        b"cogs.stage2-unadmitted-root-retirement/v1", {"root": str(ROOT)}),
+                    "certain_zero": True}))
+            _retire_credentials()
+        raise
+    finally:
+        os.close(lock)
+
+
+def run_fixed_diagnostic_campaign(run_id, run_attempt):
+    """Explicitly non-authoritative compatibility path; never callable in production."""
+    _require(os.environ.get(DIAGNOSTIC_ENVIRONMENT) == "1")
+    _admit_root(); lock = _root_lock()
+    try:
+        approval, authentication_sha256 = _approval()
+        custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval, authentication_sha256)
+        controller = production.ProductionCampaignController(custodian.ports(_ADAPTER_SEAL))
+        continuation = controller.run_first_segment(run_id, run_attempt)
+        candidate = controller.run_second_segment(continuation, run_id, run_attempt)
+        return _publish_evidence(candidate)
+    finally:
+        os.close(lock)
 
 def recover_fixed_campaign():
     """Cleanup-only crash entry; it cannot resume cycles or mint a candidate."""

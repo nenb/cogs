@@ -86,6 +86,22 @@ test("production approval issuance is canonical, provider-free, signed, and firs
   assert.ok(validate);
   const fixture = JSON.parse(readFileSync("test/fixtures/stage2-completion/approval-v5-test-only.json", "utf8"));
   assert.equal(validate(fixture), true, ajv.errorsText(validate.errors));
+  assert.deepEqual(
+    [
+      fixture.expires_unix_ns - fixture.not_before_unix_ns,
+      fixture.effect_deadline_ns,
+      fixture.cleanup_reserve_ns,
+      fixture.maximum_cycle_duration_ns,
+      fixture.maximum_cost_micro_usd,
+    ],
+    [36_000_000_000_000, 28_800_000_000_000, 1_800_000_000_000, 9_000_000_000_000, 1_100_000],
+  );
+  for (const [field, old] of [
+    ["effect_deadline_ns", 220 * 60 * 1_000_000_000],
+    ["cleanup_reserve_ns", 25 * 60 * 1_000_000_000],
+    ["maximum_cost_micro_usd", 499_999],
+  ] as const)
+    assert.equal(validate({ ...fixture, [field]: old }), false, `old ${field}`);
   for (const version of [1, 2, 3, 4]) {
     assert.ok(ajv.getSchema(`https://cogs.dev/schemas/aws-stage2-completion-production-approval-v${version}.json`));
     assert.equal(validate({ ...fixture, version: `cogs.stage2-completion-production-approval/v${version}` }), false);

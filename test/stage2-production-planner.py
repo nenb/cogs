@@ -239,6 +239,11 @@ with tempfile.TemporaryDirectory() as temporary:
     assert (draft["implementation_revision"], draft["control_revision"],
             draft["qualification_revision"]) == (h, g, q)
     assert draft["runtime_manifest_sha256"] == bindings["runtime_manifest_sha256"]
+    assert draft["effect_deadline_ns"] == 480 * 60 * 10**9
+    assert draft["cleanup_reserve_ns"] == 30 * 60 * 10**9
+    assert draft["expires_unix_ns"] - draft["not_before_unix_ns"] == 10 * 60 * 60 * 10**9
+    assert draft["maximum_cycle_duration_ns"] == 150 * 60 * 10**9
+    assert draft["maximum_cost_micro_usd"] == 1_100_000
     assert "runtime_commitment" not in draft
     assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).read_bytes() == package_path.read_bytes()
     assert (output / planner.production.QUALIFICATION_PACKAGE_NAME).stat().st_mode & 0o777 == 0o600

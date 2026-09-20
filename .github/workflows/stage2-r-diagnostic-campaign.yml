@@ -284,7 +284,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-            COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
+            COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 COGS_STAGE2_CAMPAIGN_SEGMENT=diagnostic \
+            COGS_STAGE2_GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            COGS_STAGE2_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
             /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_entry.py
 
       - name: Invoke cleanup-only recovery after any uncertain diagnostic outcome

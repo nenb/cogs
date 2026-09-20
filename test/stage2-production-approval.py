@@ -113,9 +113,11 @@ def draft_for(package):
         "ami_architecture": "x86_64", "ami_virtualization_type": "hvm",
         "ami_root_device_type": "ebs", "ami_state": "available",
         "plan_sha256s": [d(f"plan-{index}") for index in range(7)],
-        "not_before_unix_ns": 1, "effect_deadline_ns": 90 * 60 * 10**9,
-        "cleanup_reserve_ns": 10 * 60 * 10**9, "expires_unix_ns": 101 * 60 * 10**9,
-        "maximum_cycle_duration_ns": 10 * 60 * 10**9, "maximum_cost_micro_usd": 499_999,
+        "not_before_unix_ns": 1, "effect_deadline_ns": 480 * 60 * 10**9,
+        "cleanup_reserve_ns": 30 * 60 * 10**9,
+        "expires_unix_ns": 1 + 10 * 60 * 60 * 10**9,
+        "maximum_cycle_duration_ns": 150 * 60 * 10**9,
+        "maximum_cost_micro_usd": 1_100_000,
         "executor_principal_commitment": d("executor"),
         "inventory_observer_principal_commitment": d("observer"),
     }
@@ -299,7 +301,7 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
 
     harness = ComposedHarness(approval_value=approval)
     controller = production.ProductionCampaignController(harness.ports())
-    candidate = controller.run()
+    candidate = controller.run_test_campaign()
     assert candidate.approval is approval and harness.consumed
     assert len(private_raws) == len(set(rootfs_tokens)) == 7 and harness.inventory_count == 8
     assert not set(rootfs_tokens) & {row["identities"]["rootfs"] for row in package["cycles"]}
@@ -332,7 +334,7 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
     assert evidence["bindings"]["approval_authentication_commitment"] == hashlib.sha256(authentication_raw).hexdigest()
     assert [row["remote"]["host_receipt_commitment"] for row in evidence["cycles"]] == [
         remote.host_receipt_commitment for remote in candidate.remotes]
-    try: controller.run()
+    try: controller.run_test_campaign()
     except production.ProductionCampaignError: pass
     else: raise AssertionError("composition replay accepted")
     return {"package": package_raw.decode(), "approval": approval_raw.decode(),
