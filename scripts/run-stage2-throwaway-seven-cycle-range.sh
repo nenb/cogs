@@ -29,6 +29,9 @@ export TF_VAR_batch_commitment="$batch"
 export TF_VAR_source_revision="$H" TF_VAR_control_revision="$G"
 export TF_VAR_rootfs_descriptor_sha256="$ROOTFS_DESCRIPTOR_SHA256"
 export TF_VAR_budget_alert_email="$BUDGET_EMAIL"
+AWS_PROFILE=nebula bash deploy/aws-feasibility/inventory.sh \
+  >"$trace_root/preflight-zero-inventory.json"
+[[ $(jq -r .total "$trace_root/preflight-zero-inventory.json") == 0 ]]
 tofu=$(COGS_TOFU_BIN="$RUNNER_TEMP/tofu" scripts/install-opentofu.sh)
 "$tofu" -chdir="$work" init -input=false
 

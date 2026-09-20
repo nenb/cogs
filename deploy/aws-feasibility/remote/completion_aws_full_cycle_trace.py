@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import traceback
 
@@ -238,6 +239,31 @@ def main() -> None:
 
     process._prepare_cgroup = traced_prepare_cgroup
     coordinator._owners = _TracingOwners(coordinator._owners)
+
+    fwupd_states = {}
+    for unit in ("fwupd-refresh.timer", "fwupd-refresh.service", "fwupd.service"):
+        loaded = subprocess.run(
+            ("/usr/bin/systemctl", "show", "--property=LoadState", "--value", unit),
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=30).stdout.strip()
+        if loaded == "not-found":
+            fwupd_states[unit] = "not-found"
+            continue
+        masked = subprocess.run(
+            ("/usr/bin/systemctl", "mask", "--runtime", "--now", unit),
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            text=True, timeout=30)
+        if masked.returncode != 0:
+            raise RuntimeError("failed to quiesce fwupd unit: " + unit)
+        active = subprocess.run(
+            ("/usr/bin/systemctl", "is-active", unit), check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=30).stdout.strip()
+        if active in {"active", "activating", "reloading", "deactivating"}:
+            raise RuntimeError("fwupd unit remained active: " + unit)
+        fwupd_states[unit] = active
+    _emit("diagnostic-hotpatch", owner_call="host-preparation",
+          fwupd_units=fwupd_states)
     forwarding_path = "/proc/sys/net/ipv4/ip_forward"
 
     def read_forwarding() -> bytes:
