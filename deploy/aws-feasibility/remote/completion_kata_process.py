@@ -70,6 +70,13 @@ class ProcessError(Exception):
 
 CommandId = actions.CommandId
 COMMAND_IDS = actions.COMMAND_IDS | {"TEST_HELPER"}
+CHILD_UMASK_022_IDS = frozenset({
+    CommandId.CONTAINERD_START.value,
+    CommandId.SSH_KEYGEN_CLIENT.value,
+    CommandId.SSH_KEYGEN_SERVER.value,
+    CommandId.SSH_PUBLIC_CLIENT.value,
+    CommandId.SSH_PUBLIC_SERVER.value,
+})
 
 
 class _TestAction(Enum):
@@ -83,6 +90,7 @@ class _TestAction(Enum):
     FD = "fd"
     HIGH_FD = "high-fd"
     INHERITED = "inherited"
+    UMASK = "umask"
 
 
 class ObservationKind(Enum):
@@ -841,6 +849,8 @@ def _child(executable_fd, spec, release_r, setup_w, status_w, stdout_w, stderr_w
         _close_except(allowed)
         if os.read(release_r, 1) != b"R":
             os._exit(125)
+        if spec.command_id in CHILD_UMASK_022_IDS:
+            os.umask(0o022)
         argv = tuple(item.replace("{command-parent-pid}", str(os.getppid())) for item in spec.argv)
         if network_fd is not None:
             if network_fd != kata_runtime.CTR_NS_FD:

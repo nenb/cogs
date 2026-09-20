@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shlex
 import signal
 import stat
 import subprocess
@@ -305,6 +306,39 @@ INVENTORY_QUERIES = (
     ("ssm_managed_instances", "ssm", "describe-instance-information", "account-region-wide-related-instance"),
 )
 assert tuple(row[0] for row in INVENTORY_QUERIES) == production.INVENTORY_CATEGORIES
+
+
+def _fwupd_quiescence_guard(systemctl_path: str = "/usr/bin/systemctl",
+                            runtime_root: str = "/run/systemd/system") -> str:
+    systemctl = shlex.quote(systemctl_path)
+    runtime = shlex.quote(runtime_root)
+    return (
+        f"fwupd_systemctl={systemctl}; fwupd_runtime={runtime}; "
+        "for unit in fwupd-refresh.timer fwupd-refresh.service fwupd.service; do "
+        "load_state=$(\"$fwupd_systemctl\" show --property=LoadState --value \"$unit\" 2>/dev/null) || exit 126; "
+        "if test \"$load_state\" = not-found; then continue; fi; "
+        "case \"$load_state\" in loaded|masked) ;; *) exit 126 ;; esac; "
+        "\"$fwupd_systemctl\" mask --runtime --now \"$unit\" >/dev/null 2>&1 || exit 126; "
+        "test -L \"$fwupd_runtime/$unit\"; "
+        "test \"$(/usr/bin/readlink \"$fwupd_runtime/$unit\")\" = /dev/null; "
+        "unit_state=$(\"$fwupd_systemctl\" show --property=ActiveState --value \"$unit\" 2>/dev/null) || exit 126; "
+        "case \"$unit_state\" in inactive|failed) ;; *) exit 126 ;; esac; done; ")
+
+
+def _forwarding_guard(command: str,
+                      forward_path: str = "/proc/sys/net/ipv4/ip_forward") -> str:
+    quoted_path = shlex.quote(forward_path)
+    return (
+        f"forward_path={quoted_path}; "
+        "forward_before=$(/bin/cat \"$forward_path\"); "
+        "test \"$forward_before\" = 0; "
+        "restore_forwarding() { rc=$1; trap - EXIT; trap '' HUP INT TERM; "
+        "if ! { printf '%s\\n' \"$forward_before\" >\"$forward_path\" && "
+        "test \"$(/bin/cat \"$forward_path\")\" = \"$forward_before\"; }; then rc=126; fi; "
+        "exit \"$rc\"; }; "
+        "trap 'restore_forwarding \"$?\"' EXIT; trap 'exit 125' HUP INT TERM; "
+        "printf '1\\n' >\"$forward_path\"; "
+        "test \"$(/bin/cat \"$forward_path\")\" = 1; " + command)
 
 
 class FixedProvider:
@@ -683,7 +717,7 @@ class FixedProvider:
         encoded = base64.b64encode(grant_raw).decode("ascii")
         remote_shell = (
             "set -eu; umask 077; test ! -e /var/lib/cogs; "
-            "for x in git python3 tar zstd; do command -v \"$x\" >/dev/null; done; "
+            "for x in git python3 systemctl tar zstd; do command -v \"$x\" >/dev/null; done; "
             "w=/root/cogs-stage2-bootstrap; owned=0; "
             "trap 'test \"$owned\" != 1 || test \"$(stat -c %U:%G:%a \"$w\" 2>/dev/null)\" != root:root:700 || rm -rf -- \"$w\"' EXIT; "
             "trap 'exit 125' HUP INT TERM; test ! -e \"$w\"; test ! -L \"$w\"; owned=1; mkdir -m 700 \"$w\"; "
@@ -697,7 +731,8 @@ class FixedProvider:
             "install -d -m 755 /run/netns; chmod 755 /opt; "
             "python3 -I -B \"$w/H/scripts/prepare-stage2-fixed-source.py\" >/dev/null; "
             "python3 -I -B \"$w/H/scripts/stage2-stage-prebuilt-control.py\" stage-qualification >/dev/null; "
-            "rm -rf -- \"$w\"; owned=0; trap - EXIT HUP INT TERM; "
+            "rm -rf -- \"$w\"; owned=0; trap - EXIT HUP INT TERM; " +
+            _fwupd_quiescence_guard() +
             "/usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC "
             "/usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/"
             "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py >/dev/null; "
@@ -705,7 +740,7 @@ class FixedProvider:
             "provision-stage2-nft-owner.py; "
             "d=/var/lib/cogs/stage2-completion-v1/cycle-authority-v1; install -d -m 700 \"$d\"; "
             f"printf '%s' '{encoded}' | base64 -d >\"$d/grant.json\"; "
-            "chmod 400 \"$d/grant.json\"; " + command)
+            "chmod 400 \"$d/grant.json\"; " + _forwarding_guard(command))
         parameters = directory / "ssm-parameters.json"
         _write_once(parameters, canonical({
             "commands": [remote_shell], "executionTimeout": [str(authorized_timeout)]}))

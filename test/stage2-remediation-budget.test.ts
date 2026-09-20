@@ -8,20 +8,20 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0348 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0351 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,4100000),(1800,7600000),(5300,5500000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(5400,1100000),(5200,3200000),(4457,3800000),(1800,7900000),(5300,5500000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
-assert len(tasks[-1]['paths']) == 40
+assert len(tasks[-1]['paths']) == 42
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
-for path in ['config/stage2-retired-revisions-v2.json','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-revision-retirement.py','test/stage2-prebuilt-rehearsal-grant.py']:
+for path in ['config/stage2-retired-revisions-v2.json','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 13
@@ -36,6 +36,7 @@ assert 'docs/adr/0345-row4-sixth-runtime-correction.md' in tasks[0]['paths']
 assert 'docs/adr/0346-row4-post-merge-product-correction.md' in tasks[0]['paths']
 assert 'docs/adr/0347-add-direct-kvm-diagnostic-lane.md' in tasks[0]['paths']
 assert 'docs/adr/0348-retire-transient-H-producer.md' in tasks[0]['paths']
+assert 'docs/adr/0351-correct-aws-host-boundaries-before-new-h.md' in tasks[0]['paths']
 assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-driver-diagnostic.yml','.github/workflows/kvm-qualification.yml','.github/workflows/release-images.yml','config/release-image-set-pins-v1.json','IMPLEMENTATION.md','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','docs/operations/release-image-publication.md','docs/operations/production-runtime-foundation.md','docs/operations/stage-4-offline-readiness.md','docs/security-evidence/release-image-set-assertion-34774398155.canonical.json','docs/security-evidence/release-image-set-review-34774398155.canonical.json','docs/test-reports/stage-4-offline-readiness.md','images/sandbox/entrypoint.sh','schemas/release-image-set-assertion-v1.json','schemas/release-image-set-review-v3.json','schemas/stage4-authenticated-runtime-artifact-evidence-v4.json','schemas/stage4-offline-readiness-package-v5.json','scripts/release-image-set-review-v2.ts','scripts/release-image-set-review-v3.ts','scripts/stage4-offline-readiness-regenerate.ts','src/egress/otlp-telemetry.ts','src/egress/runtime-manager.ts','src/runtime/compose.ts','src/skills/snapshot-session-preparer.ts','src/ssh/connection.ts','src/telemetry/otlp-http.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/egress-runtime-manager.test.ts','test/launcher-smoke-evidence.test.ts','test/linux-kvm-git-tools.test.ts','test/otlp-http.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts','test/production-sandbox-image.test.ts','test/release-image-set-assertion.test.ts','test/aws-stage2-completion-final-integration-linux.test.ts','test/aws-stage2-completion-immutable-preparation.test.ts','test/release-image-set-review-v2.test.ts','test/release-image-set-review-v3.test.ts','test/stage4-offline-readiness.test.ts','test/stage4-runtime-artifact-closure.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
 local=tasks[2]['paths']
@@ -46,11 +47,11 @@ assert 'scripts/stage2-cosign-keyless-sign.sh' in local
 assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in local
 assert 'test/stage2-production-workflows.test.ts' in local
-assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 4100000
-assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 7600000
+assert tasks[2]['gross_lines'] == 4457 and tasks[2]['gross_bytes'] == 3800000
+assert tasks[3]['gross_lines'] == 1800 and tasks[3]['gross_bytes'] == 7900000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':1800,'gross_bytes':2000000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
-assert b['source_limits'] == {'tracked_files':1545,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1546,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})
@@ -568,6 +569,25 @@ test("ADR0350 binds the replacement static observation and authorizes qualificat
     readFileSync("docs/adr/README.md", "utf8").includes(
       "[0350](0350-establish-replacement-Q-and-authorize-qualification.md)",
     ),
+  );
+});
+
+test("ADR0351 authorizes only bounded AWS host corrections before a new H", () => {
+  const adr = readFileSync("docs/adr/0351-correct-aws-host-boundaries-before-new-h.md", "utf8").replace(/\s+/gu, " ");
+  for (const phrase of [
+    "umask 022",
+    "fwupd-refresh.timer",
+    "/proc/sys/net/ipv4/ip_forward",
+    "Preserve the cgroup implementation byte-for-byte",
+    "non-authoritative static observation/control package",
+    "complete seven-cycle AWS rehearsal",
+    "clean rehearsal cannot itself authorize or produce H",
+    "G must then have that exact H as its sole parent",
+    "Q must have that exact fresh G as its sole parent",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes("[0351](0351-correct-aws-host-boundaries-before-new-h.md)"),
   );
 });
 

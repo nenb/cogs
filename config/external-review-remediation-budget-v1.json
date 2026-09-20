@@ -9,7 +9,7 @@
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1545,
+    "tracked_files": 1546,
     "source_inventory_bytes": 34000000,
     "serialized_source_inventory_bytes": 262144
   },
@@ -48,6 +48,7 @@
             "docs/adr/0346-row4-post-merge-product-correction.md",
             "docs/adr/0347-add-direct-kvm-diagnostic-lane.md",
             "docs/adr/0348-retire-transient-H-producer.md",
+            "docs/adr/0351-correct-aws-host-boundaries-before-new-h.md",
             "docs/adr/README.md",
             "scripts/check-stage2-retained-lines.py",
             "test/stage2-remediation-budget.test.ts"
@@ -115,7 +116,7 @@
         {
           "name": "local-tofu-ssm",
           "gross_lines": 4457,
-          "gross_bytes": 4100000,
+          "gross_bytes": 3800000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
             ".github/workflows/stage2-production-approval.yml",
@@ -142,7 +143,7 @@
         {
           "name": "readiness-ci",
           "gross_lines": 1800,
-          "gross_bytes": 7600000,
+          "gross_bytes": 7900000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -175,6 +176,7 @@
             ".github/workflows/stage2-prebuilt-rootfs-publisher.yml",
             ".github/workflows/stage2-production-plan.yml",
             "config/stage2-retired-revisions-v2.json",
+            "deploy/aws-feasibility/remote/completion_kata_process.py",
             "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/00-ip.json",
             "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/01-tc.json",
             "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/02-nft.json",
@@ -194,6 +196,7 @@
             "scripts/stage2-prebuilt-mixed-hg-preflight.sh",
             "scripts/stage2-revision-retirement.py",
             "test/aws-stage2-completion-kata-mutable-bridges.test.ts",
+            "test/aws-stage2-completion-kata-process.py",
             "test/aws-stage2-completion-kata-runtime.py",
             "test/aws-stage2-completion-kata-runtime.test.ts",
             "test/aws-stage2-completion-local-result.py",
@@ -518,6 +521,7 @@
         "deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py",
         "deploy/aws-feasibility/remote/completion_kata_nft_owner.py",
         "deploy/aws-feasibility/remote/completion_kata_preparation.py",
+        "deploy/aws-feasibility/remote/completion_kata_process.py",
         "deploy/aws-feasibility/remote/completion_kata_qualification.py",
         "deploy/aws-feasibility/remote/completion_local_evidence.py",
         "deploy/aws-feasibility/remote/completion_local_full.py",
@@ -644,6 +648,7 @@
         "docs/adr/0348-retire-transient-H-producer.md",
         "docs/adr/0349-freeze-replacement-H-and-authorize-control.md",
         "docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md",
+        "docs/adr/0351-correct-aws-host-boundaries-before-new-h.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",
@@ -742,6 +747,7 @@
         "test/aws-stage2-completion-kata-coordinator.test.ts",
         "test/aws-stage2-completion-kata-mutable-bridges.test.ts",
         "test/aws-stage2-completion-kata-native-recover.py",
+        "test/aws-stage2-completion-kata-process.py",
         "test/aws-stage2-completion-kata-rehearsal.test.ts",
         "test/aws-stage2-completion-kata-runtime.py",
         "test/aws-stage2-completion-kata-runtime.test.ts",

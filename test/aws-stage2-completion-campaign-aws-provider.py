@@ -115,16 +115,19 @@ class Fake:
             if "send-command" in argv:
                 assert environment["AWS_MAX_ATTEMPTS"] == "1" and environment["AWS_RETRY_MODE"] == "standard"
                 return provider.Completed(raw({"Command": {"CommandId": "command-12345678"}})
-                                          if self.ssm_mode == "success" else raw({}))
+                                          if self.ssm_mode in {"success", "remote-failure"} else raw({}))
             if "get-command-invocation" in argv:
                 self.ssm_reads += 1
                 if self.ssm_reads == 1:
                     return provider.Completed(b"", b"InvocationDoesNotExist", 255)
                 command, instance = argv[argv.index("--command-id") + 1], argv[argv.index("--instance-id") + 1]
                 observed_instance = "i-mismatch" if self.ssm_mode == "mismatch" else instance
+                remote_failure = self.ssm_mode == "remote-failure"
                 return provider.Completed(raw({"CommandId": command, "InstanceId": observed_instance,
-                                                "Status": "Success", "StandardErrorContent": "",
-                                                "StandardOutputContent": "receipt\n"}))
+                                                "Status": "Failed" if remote_failure else "Success",
+                                                "ResponseCode": 126 if remote_failure else 0,
+                                                "StandardErrorContent": "",
+                                                "StandardOutputContent": "untrusted-receipt\n" if remote_failure else "receipt\n"}))
             # Force a real two-page chain for EIP coverage. Both pages contain
             # unrelated account resources, which may not be relabelled campaign residue.
             if "describe-instances" in argv:
@@ -268,9 +271,16 @@ with tempfile.TemporaryDirectory() as temporary:
     assert all(call[call.index("--command-id") + 1] == "command-12345678"
                and call[call.index("--instance-id") + 1] == f"i-{2:017x}" for call in poll_calls)
     assert (provider.STATE_ROOT / "cycle-2/remote-send.receipt.json").is_file()
+    fake.ssm_mode, fake.ssm_reads = "remote-failure", 1
+    try: boundary.remote(1, grants[1].mode, grants[1].grant_commitment, 60)
+    except provider.ProviderBoundaryError: pass
+    else: raise AssertionError("remote restoration failure accepted")
+    assert (provider.STATE_ROOT / "cycle-1/remote-send.receipt.json").is_file()
+    assert not (provider.STATE_ROOT / "cycle-1/remote-owner-receipt.json").exists()
+    fake.ssm_mode = "success"
     # Exact-instance registrations may be offline, but foreign, duplicate, and
     # malformed rows are never propagation candidates and no failure sends.
-    before_sends = len(send_calls)
+    before_sends = len([call for call, _, _ in fake.calls if "send-command" in call])
     for ordinal, rows in ((3, [{"InstanceId": "i-foreign", "PingStatus": "Online"}]),
                           (4, [{"InstanceId": f"i-{4:017x}", "PingStatus": "Online"}, {"InstanceId": f"i-{4:017x}", "PingStatus": "Online"}]),
                           (5, [{"InstanceId": f"i-{5:017x}"}])):
@@ -301,6 +311,101 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     assert shell.count("completion_kata_immutable_preparation.py") == 1
     assert immutable in shell
+    fwupd_units = ("fwupd-refresh.timer", "fwupd-refresh.service", "fwupd.service")
+    assert all(shell.count(unit) == 1 for unit in fwupd_units)
+    assert 'fwupd_systemctl=/usr/bin/systemctl; fwupd_runtime=/run/systemd/system' in shell
+    assert 'load_state=$("$fwupd_systemctl" show --property=LoadState --value "$unit"' in shell
+    assert 'if test "$load_state" = not-found; then continue; fi' in shell
+    assert 'case "$load_state" in loaded|masked) ;; *) exit 126' in shell
+    assert '"$fwupd_systemctl" mask --runtime --now "$unit" >/dev/null 2>&1 || exit 126' in shell
+    assert 'test -L "$fwupd_runtime/$unit"' in shell
+    assert '$(/usr/bin/readlink "$fwupd_runtime/$unit")" = /dev/null' in shell
+    assert 'unit_state=$("$fwupd_systemctl" show --property=ActiveState --value "$unit"' in shell
+    assert 'case "$unit_state" in inactive|failed) ;; *) exit 126' in shell
+    assert shell.index("for unit in fwupd-refresh.timer") < shell.index(immutable)
+    assert 'forward_path=/proc/sys/net/ipv4/ip_forward' in shell
+    assert 'test "$forward_before" = 0' in shell
+    assert "trap 'restore_forwarding \"$?\"' EXIT; trap 'exit 125' HUP INT TERM" in shell
+    assert "printf '1\\n' >\"$forward_path\"" in shell
+    assert "rc=$1; trap - EXIT; trap '' HUP INT TERM" in shell
+    assert 'then rc=126; fi; exit "$rc"' in shell
+    assert shell.index('provision-stage2-nft-owner.py') < shell.index('forward_path=')
+    assert shell.index('forward_path=') < shell.index(command := provider.remote_adapter.invocation(grants[7]).command)
+    syntax = subprocess.run(("/bin/sh", "-n", "-c", shell), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+    fake_systemctl = Path(temporary) / "systemctl"
+    fake_runtime = Path(temporary) / "systemd"
+    fake_runtime.mkdir()
+    fake_systemctl.write_text("""#!/bin/sh
+set -eu
+mode=${FAKE_SYSTEMCTL_MODE-success}
+if test "$1" = show; then
+  test "$mode" != show-failure || exit 9
+  case "$2:$mode" in
+    --property=LoadState:not-found) printf 'not-found\\n' ;;
+    --property=LoadState:bad-load) printf 'error\\n' ;;
+    --property=LoadState:*) printf 'loaded\\n' ;;
+    --property=ActiveState:active) printf 'active\\n' ;;
+    --property=ActiveState:activating) printf 'activating\\n' ;;
+    --property=ActiveState:bad-active) printf 'surprise\\n' ;;
+    --property=ActiveState:*) printf 'inactive\\n' ;;
+  esac
+  exit 0
+fi
+test "$1" = mask
+test "$mode" != mask-failure || exit 9
+if test "$mode" != no-mask-link; then ln -sf /dev/null "$FAKE_SYSTEMD_RUNTIME/$4"; fi
+""")
+    fake_systemctl.chmod(0o755)
+
+    def run_fwupd(mode):
+        for entry in fake_runtime.iterdir():
+            entry.unlink()
+        return subprocess.run(
+            ("/bin/sh", "-c", "set -eu; " + provider._fwupd_quiescence_guard(
+                str(fake_systemctl), str(fake_runtime)) + "printf reached"),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "FAKE_SYSTEMCTL_MODE": mode, "FAKE_SYSTEMD_RUNTIME": str(fake_runtime)},
+            check=False)
+
+    fwupd_success = run_fwupd("success")
+    assert (fwupd_success.returncode, fwupd_success.stdout, fwupd_success.stderr) == (0, "reached", "")
+    assert sorted(path.name for path in fake_runtime.iterdir()) == sorted(fwupd_units)
+    fwupd_absent = run_fwupd("not-found")
+    assert (fwupd_absent.returncode, fwupd_absent.stdout) == (0, "reached")
+    assert not tuple(fake_runtime.iterdir())
+    for fwupd_failure in ("show-failure", "bad-load", "mask-failure", "no-mask-link",
+                          "active", "activating", "bad-active"):
+        rejected = run_fwupd(fwupd_failure)
+        assert rejected.returncode != 0 and rejected.stdout == "", fwupd_failure
+
+    forwarding_test_path = Path(temporary) / "ip_forward"
+
+    def run_forwarding(body, initial="0\n"):
+        if forwarding_test_path.is_symlink() or forwarding_test_path.is_file():
+            forwarding_test_path.unlink()
+        forwarding_test_path.write_text(initial)
+        return subprocess.run(
+            ("/bin/sh", "-c", "set -eu; " + provider._forwarding_guard(body, str(forwarding_test_path))),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+
+    forward_success = run_forwarding('test "$(cat "$forward_path")" = 1; printf receipt')
+    assert (forward_success.returncode, forward_success.stdout, forward_success.stderr) == (0, "receipt", "")
+    assert forwarding_test_path.read_text() == "0\n"
+    forward_failure = run_forwarding('printf untrusted-receipt; exit 7')
+    assert forward_failure.returncode == 7 and forwarding_test_path.read_text() == "0\n"
+    forward_signal = run_forwarding('kill -TERM "$$"')
+    assert forward_signal.returncode == 125 and forwarding_test_path.read_text() == "0\n"
+    forward_baseline = run_forwarding('printf should-not-run', "1\n")
+    assert forward_baseline.returncode != 0 and forward_baseline.stdout == ""
+    assert forwarding_test_path.read_text() == "1\n"
+    forward_restore_failure = run_forwarding(
+        'rm -f "$forward_path"; ln -s /dev/null "$forward_path"')
+    assert forward_restore_failure.returncode == 126 and forwarding_test_path.is_symlink()
+    forwarding_test_path.unlink()
+
     assert shell.index('$w/Q" fetch') < shell.index('stage-qualification') < shell.index(immutable)
     hostile = {
         **os.environ,
