@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """In-process pure-fixture checks; no command, provider, or network invocation."""
+import base64
 import copy
 import ctypes  # Initialize stdlib before blocking all subsequent native calls.
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 import importlib.util
 import io
@@ -303,7 +304,9 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
 
     harness = ComposedHarness(approval_value=approval)
     controller = production.ProductionCampaignController(harness.ports())
-    candidate = controller.run_test_campaign()
+    composition_run_id = int(os.environ.get("COGS_TEST_COMPOSITION_RUN_ID", "1"))
+    assert composition_run_id > 0
+    candidate = controller.run_test_campaign(composition_run_id)
     assert candidate.approval is approval and harness.consumed
     assert len(private_raws) == len(set(rootfs_tokens)) == 7 and harness.inventory_count == 8
     assert not set(rootfs_tokens) & {row["identities"]["rootfs"] for row in package["cycles"]}
@@ -330,7 +333,49 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
             else: raise AssertionError("composition acquired AWS publication authority")
             assert not list(Path(directory).iterdir())
         finally: os.close(fd)
-    evidence_raw, report_raw = evidence_issuer._project_test_candidate(candidate)
+    # Promote only the deterministic fixture's already-validated raw receipts to
+    # the formal package shape. This constructs no adapter authority, but gives
+    # the golden/package tests exact authenticated continuation bytes.
+    continuation_fields = asdict(candidate.continuation)
+    continuation_fields.pop("continuation_commitment")
+    continuation_fields["execution_authority"] = "authenticated-aws-adapter"
+    continuation_fields["continuation_commitment"] = production._commit(
+        b"cogs.stage2-production-continuation/v1", continuation_fields)
+    continuation_raw = production._canonical(continuation_fields) + b"\n"
+    continuation = production.continuation_from_bytes(
+        continuation_raw, approval, candidate.admission.run_id, 1,
+        "authenticated-aws-adapter")
+    bundle_raw = b"test-formal-continuation-bundle-v1\n"
+    admission_fields = asdict(candidate.admission)
+    admission_fields.pop("admission_commitment")
+    admission_fields.update(
+        continuation_sha256=hashlib.sha256(continuation_raw).hexdigest(),
+        continuation_commitment=continuation.continuation_commitment,
+        bundle_sha256=hashlib.sha256(bundle_raw).hexdigest(),
+        trusted_root_sha256=
+            "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e")
+    admission = production.ContinuationAdmission(
+        **admission_fields, admission_commitment=production._commit(
+            b"cogs.stage2-production-handoff-authentication/v1", admission_fields))
+    custody_root = production._commit(b"cogs.stage2-production-custody/v3", {
+        "execution_authority": "authenticated-aws-adapter",
+        "approval": continuation.approval_commitment,
+        "consumption": candidate.consumption.durable_record_commitment,
+        "cycles": list(candidate.cycle_commitments),
+        "inventories": [item.zero_commitment for item in candidate.inventories],
+        "costs": [item.receipt_commitment for item in candidate.costs],
+        "continuation": continuation.continuation_commitment,
+        "continuation_sha256": admission.continuation_sha256,
+        "continuation_bundle_sha256": admission.bundle_sha256,
+        "handoff_authentication": admission.admission_commitment})
+    formal_candidate = production.CampaignCandidate(
+        "authenticated-aws-adapter", approval, candidate.consumption,
+        candidate.grants, candidate.effects, candidate.remotes,
+        candidate.inventories, candidate.costs, candidate.cycle_commitments,
+        continuation, admission, custody_root)
+    validated = evidence_issuer._validate(formal_candidate)
+    evidence_raw = evidence_issuer._canonical(validated.value)
+    report_raw = evidence_issuer._render(validated)
     evidence = json.loads(evidence_raw)
     assert evidence["bindings"]["pre_aws_package_commitment"] == hashlib.sha256(package_raw).hexdigest()
     assert evidence["bindings"]["approval_authentication_commitment"] == hashlib.sha256(authentication_raw).hexdigest()
@@ -342,6 +387,9 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
     return {"package": package_raw.decode(), "approval": approval_raw.decode(),
         "authentication": authentication_raw.decode(),
         "private_receipts": [raw.decode() for raw in private_raws],
+        "continuation": continuation_raw.decode(),
+        "admission": admission.canonical_bytes().decode(),
+        "bundle_base64": base64.b64encode(bundle_raw).decode("ascii"),
         "evidence": evidence_raw.decode(), "report": report_raw.decode()}
 
 
@@ -367,7 +415,9 @@ def main():
     with patch.object(issuer.os, "write", return_value=0):
         rejected(lambda: issuer.emit(b"bounded-output\n"))
 
+    composition_run_id = os.environ.get("COGS_TEST_COMPOSITION_RUN_ID", "1")
     environment = {"GITHUB_SHA": "4" * 40, "COGS_STAGE2_CONTROL_REVISION": "2" * 40,
+        "COGS_TEST_COMPOSITION_RUN_ID": composition_run_id,
         "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_ACTOR": "nenb",
         "COGS_STAGE2_EXECUTOR_PRINCIPAL_COMMITMENT": d("executor"),
         "COGS_STAGE2_APPROVAL_WORKFLOW_SHA256": d("workflow")}
@@ -407,6 +457,79 @@ def main():
         assert approval.batch_commitment == production.approval_batch_commitment(value)
         assert approval.batch_commitment != production._commit(
             b"cogs.stage2-production-approved-batch/v5", production._approval_fields(value))
+
+        # The direct helper performs exactly one OIDC and one STS exchange,
+        # validates returned expiration/runway, and only then exports masked
+        # short-lived credentials.
+        fixed_now = 1_700_000_000
+        role_approval = Path(temporary) / "role-approval.json"
+        role_approval.write_bytes(canonical({
+            "version": "cogs.stage2-completion-production-approval/v6",
+            "expires_unix_ns": (fixed_now + 30_000) * 1_000_000_000}))
+        github_environment = Path(temporary) / "github-environment"
+        github_environment.touch(mode=0o600)
+        claims = {"aud": "sts.amazonaws.com",
+                  "iss": "https://token.actions.githubusercontent.com",
+                  "sub": "repo:nenb/cogs:ref:refs/heads/main",
+                  "exp": fixed_now + 300}
+        encoded = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+        web_identity = "header." + encoded + ".signature"
+        expiration = issuer.datetime.fromtimestamp(
+            fixed_now + 18_000, issuer.timezone.utc).isoformat().replace("+00:00", "Z")
+        xml = ("<AssumeRoleWithWebIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">"
+               "<AssumeRoleWithWebIdentityResult><Credentials>"
+               f"<AccessKeyId>ASIA{'A' * 16}</AccessKeyId>"
+               f"<SecretAccessKey>{'s' * 40}</SecretAccessKey>"
+               f"<SessionToken>{'t' * 128}</SessionToken><Expiration>{expiration}</Expiration>"
+               "</Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>").encode()
+        class Response:
+            status = 200
+            def __init__(self, response): self.response = response
+            def read(self, maximum): return self.response[:maximum]
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+        requests = []
+        def fake_urlopen(request, timeout):
+            requests.append((request, timeout))
+            return Response(json.dumps({"value": web_identity}).encode() if len(requests) == 1 else xml)
+        real_write = issuer.os.write
+        def masked_write(descriptor, output):
+            return len(output) if descriptor == 1 else real_write(descriptor, output)
+        role_environment = {
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "https://token.actions.githubusercontent.com/oidc?request=1",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "r" * 64,
+            "GITHUB_ENV": str(github_environment)}
+        with patch.dict(os.environ, role_environment, clear=False), \
+                patch.object(issuer, "urlopen", side_effect=fake_urlopen), \
+                patch.object(issuer.time, "time", return_value=fixed_now), \
+                patch.object(issuer.os, "write", side_effect=masked_write):
+            issuer.assume_github_role(
+                "arn:aws:iam::123456789012:role/cogs-stage2", "cogs-stage2-test",
+                "18000", "16200", role_approval)
+        assert len(requests) == 2 and requests[0][1] == 30 and requests[1][1] == 60
+        exported = github_environment.read_text()
+        assert f"AWS_ACCESS_KEY_ID=ASIA{'A' * 16}\n" in exported
+        assert f"AWS_SESSION_TOKEN={'t' * 128}\n" in exported
+        role_approval.write_bytes(canonical({
+            "version": "cogs.stage2-completion-production-approval/v6",
+            "expires_unix_ns": (fixed_now + 18_900) * 1_000_000_000}))
+        late_expiration = issuer.datetime.fromtimestamp(
+            fixed_now + 19_000, issuer.timezone.utc).isoformat().replace("+00:00", "Z")
+        late_xml = xml.replace(expiration.encode(), late_expiration.encode())
+        github_environment.write_bytes(b""); requests.clear()
+        def delayed_urlopen(request, timeout):
+            requests.append((request, timeout))
+            return Response(json.dumps({"value": web_identity}).encode()
+                            if len(requests) == 1 else late_xml)
+        with patch.dict(os.environ, role_environment, clear=False), \
+                patch.object(issuer, "urlopen", side_effect=delayed_urlopen), \
+                patch.object(issuer.time, "time", return_value=fixed_now), \
+                patch.object(issuer.os, "write", side_effect=masked_write):
+            rejected(lambda: issuer.assume_github_role(
+                "arn:aws:iam::123456789012:role/cogs-stage2", "cogs-stage2-test",
+                "18000", "16200", role_approval))
+        assert len(requests) == 2 and github_environment.read_bytes() == b""
+
         for field, impostor in (("maximum_cost_micro_usd", 499_999.5),
                                 ("not_before_unix_ns", 0), ("not_before_unix_ns", -1)):
             hostile = {**issued, field: impostor}

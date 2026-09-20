@@ -131,7 +131,9 @@ maximum. Before approval consumption, at least the full 480-minute effect
 window, 30-minute cleanup reserve, and fixed 15-minute first-plan allowance
 must remain. Job 1 requests exactly 18,000 seconds and job 2 exactly 19,800
 seconds of role lifetime only after proving the signed absolute and inherited
-first-apply deadlines have that runway; an unsupported role maximum fails before
+first-apply deadlines have that runway; each executor and observer uses a fresh
+single-step OIDC/STS exchange that re-samples those deadlines and rejects a
+returned expiration outside them. An unsupported role maximum fails before
 effects. Zero inventory after every cycle, global identity distinctness,
 strict cgroup checks, cleanup certainty, and pass-only evidence issuance after
 cycle 7 and final zero are unchanged. Any publication, verification, download,

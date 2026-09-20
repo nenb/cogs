@@ -36,6 +36,16 @@ test("audit-blocked formal bytes compose through approval, serializers, split co
   const authentication = JSON.parse(samples.authentication);
   assert.equal(approval.pre_aws_package_sha256, sha(samples.package));
   assert.equal(authentication.approval_sha256, sha(samples.approval));
+  assert.equal(
+    samples.evidence,
+    readFileSync("test/fixtures/stage2-completion/production-v4-test-only.json", "utf8"),
+    "formal composition must own the exact committed v4 JSON golden",
+  );
+  assert.equal(
+    samples.report,
+    readFileSync("test/fixtures/stage2-completion/production-v4-test-only.md", "utf8"),
+    "formal composition must own the exact committed v4 Markdown golden",
+  );
   const validated = parseAwsStage2CompletionEvidence(samples.evidence);
   const evidence = validated.evidence;
   assert.equal(renderAwsStage2CompletionReport(validated), samples.report);

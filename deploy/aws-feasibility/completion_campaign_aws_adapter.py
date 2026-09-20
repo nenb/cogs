@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import stat
 import subprocess
 import time
@@ -335,9 +336,11 @@ def _verify_blob(payload, bundle, identity):
     _require(verification.returncode == 0)
 
 
-def _approval():
+def _approval(require_credentials=True):
+    _require(type(require_credentials) is bool)
     raw = _read_fixed(APPROVAL, 64 * 1024)
-    _read_fixed(AWS_CONFIG, 4096); _read_fixed(AWS_CREDENTIALS, 16 * 1024)
+    _read_fixed(AWS_CONFIG, 4096)
+    if require_credentials: _read_fixed(AWS_CREDENTIALS, 16 * 1024)
     authentication_raw = _read_fixed(AUTHENTICATION, 64 * 1024)
     bundle_raw = _read_fixed(AUTHENTICATION_BUNDLE, 1024 * 1024)
     cosign_raw = _read_fixed(COSIGN, 160 * 1024 * 1024, (0o555,))
@@ -567,14 +570,37 @@ class AwsCampaignCustodian:
                  and command.is_file() and os.access(command, os.X_OK)
                  and type(arguments) is tuple
                  and all(type(item) is str and "\0" not in item for item in arguments))
-        result = self.executor(
-            ["/usr/bin/timeout", "--signal=TERM", "--kill-after=10s",
-             f"{timeout}s", str(command), *arguments],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env=FIXED_ENV, cwd=SOURCE, timeout=timeout + 15, check=False)
-        _require(result.returncode == 0 and not result.stderr
-                 and 0 < len(result.stdout) <= MAX_JSON_BYTES)
-        return result.stdout
+        # The workflow's outer GNU timeout owns the campaign process group.
+        # --foreground prevents this inner timeout from escaping that group.
+        # Defer controller termination until inner timeout has reaped the
+        # provider; the provider's reviewed handlers kill/wait its own session.
+        handled = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
+        previous_handlers = {}
+        interrupted = [False]
+        def interrupt(_number, _frame):
+            interrupted[0] = True
+        unblocked = False
+        try:
+            for number in handled:
+                previous_handlers[number] = signal.signal(number, interrupt)
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            unblocked = True
+            if interrupted[0]: raise AwsAdapterError()
+            result = self.executor(
+                ["/usr/bin/timeout", "--foreground", "--signal=TERM",
+                 "--kill-after=10s", f"{timeout}s", str(command), *arguments],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=FIXED_ENV, cwd=SOURCE, timeout=timeout + 15, check=False)
+            _require(not interrupted[0] and result.returncode == 0 and not result.stderr
+                     and 0 < len(result.stdout) <= MAX_JSON_BYTES)
+            return result.stdout
+        finally:
+            if unblocked:
+                signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
+            for number, handler in previous_handlers.items():
+                signal.signal(number, handler)
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
     def _ensure_grant(self, grant):
         directory = STATE_ROOT / f"cycle-{grant.ordinal}"
@@ -778,7 +804,10 @@ def _settle_cleanup_transition(custodian, grant_commitment, state_commitment,
 
 
 def _retire_credentials():
-    descriptor = os.open(AWS_CREDENTIALS, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        descriptor = os.open(AWS_CREDENTIALS, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return
     try:
         before = os.fstat(descriptor)
         _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0
@@ -1108,12 +1137,31 @@ def _validated_recovery_receipt(receipt, grant, state, approval):
         raise production.ProductionUncertainty() from error
 
 
+def _no_active_cleanup_raw(approval, last):
+    _require(type(approval) is production.ProductionApproval and type(last) is dict
+             and type(last.get("sequence")) is int)
+    fields = {
+        "version": "cogs.stage2-cleanup-complete/v3",
+        "terminal_state": "no-active",
+        "batch_commitment": approval.batch_commitment,
+        "journal_sequence": last["sequence"] + 1,
+        "journal_tip_sha256": hashlib.sha256(_canonical(last)).hexdigest(),
+        "reconciliation_commitment": production._commit(
+            b"cogs.stage2-no-active-cleanup/v1",
+            {"batch": approval.batch_commitment}),
+        "certain_zero": True,
+    }
+    fields["completion_commitment"] = production._commit(
+        b"cogs.stage2-no-active-cleanup-complete/v1", fields)
+    return _canonical(fields)
+
+
 def recover_fixed_campaign():
     """Cleanup-only crash entry; it cannot resume cycles or mint a candidate."""
     _admit_root()
     lock = _root_lock()
     try:
-        approval, authentication_sha256 = _approval()
+        approval, authentication_sha256 = _approval(not CLEANUP_COMPLETE.exists())
         if not CONSUMED.exists():
             _require(not JOURNAL.exists() and not ACTIVE.exists()
                      and not any(STATE_ROOT.glob("cycle-*/[a-z]*.intent.json")))
@@ -1158,13 +1206,18 @@ def recover_fixed_campaign():
                             ("cleanup", "settled")})
                 finally:
                     os.close(descriptor)
+            _require(last is not None)
+            no_active_raw = _no_active_cleanup_raw(approval, last)
             reconciliation = production._commit(
                 b"cogs.stage2-no-active-cleanup/v1",
                 {"batch": approval.batch_commitment})
             if CLEANUP_COMPLETE.exists():
                 complete_raw = _read_fixed(CLEANUP_COMPLETE, 64 * 1024, (0o600,))
                 complete = _decode(complete_raw)
-                if complete.get("version") == "cogs.stage2-cleanup-complete/v2":
+                if complete.get("version") == "cogs.stage2-cleanup-complete/v3":
+                    _require(complete_raw == no_active_raw)
+                    reconciliation = complete["reconciliation_commitment"]
+                elif complete.get("version") == "cogs.stage2-cleanup-complete/v2":
                     _require(last is not None
                              and (last["category"], last["event"]) ==
                                 ("cleanup", "settled")
@@ -1193,6 +1246,31 @@ def recover_fixed_campaign():
                         and complete["certain_zero"] is True)
                     reconciliation = production._digest(
                         complete["reconciliation_commitment"])
+                    permitted = {
+                        production._commit(
+                            b"cogs.stage2-inactive-root-retirement/v1",
+                            {"root": str(ROOT)}),
+                        production._commit(
+                            b"cogs.stage2-diagnostic-inactive-retirement/v1",
+                            {"root": str(ROOT)}),
+                    }
+                    final_receipt = ROOT / "inventory/observation-8/inventory.receipt.json"
+                    if final_receipt.exists():
+                        inventory = _decode_inventory(_decode(
+                            _read_fixed(final_receipt, MAX_JSON_BYTES, (0o400,))))
+                        _require(inventory.batch_commitment == approval.batch_commitment
+                                 and inventory.observation_sequence == 8
+                                 and inventory.cycle_ordinal is None
+                                 and inventory.account_commitment ==
+                                    approval.account_commitment
+                                 and inventory.region == approval.region
+                                 and inventory.certain is True
+                                 and inventory.observed_ended_unix_ns <
+                                    approval.expires_unix_ns)
+                        permitted.add(inventory.zero_commitment)
+                    _require(reconciliation in permitted)
+            else:
+                _write_once(CLEANUP_COMPLETE, no_active_raw)
             _retire_credentials()
             return NoActiveCleanupReceipt(
                 "cogs.stage2-cleanup-complete/v1", reconciliation, True)

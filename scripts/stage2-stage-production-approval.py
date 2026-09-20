@@ -29,6 +29,16 @@ PACKAGE_PREFIX = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"
 PACKAGE_MANIFEST = "provider-package.json"
 PACKAGE_ARCHIVE = "provider-package.tar"
 PACKAGE_ARCHIVE_DIGEST = "provider-package.tar.sha256"
+EVIDENCE_SOURCE = DESTINATION / "evidence-publication"
+EVIDENCE_SNAPSHOT_ROOT = Path("/var/lib/cogs/stage2-aws-evidence-v2")
+EVIDENCE_MEMBERS = {
+    "aws-stage2-completion-evidence-v4.json": 8 * 1024 * 1024,
+    "aws-stage2-completion-publication-v2.json": 64 * 1024,
+    "aws-stage2-completion-report-v4.md": 8 * 1024 * 1024,
+    "aws-stage2-production-continuation-admission-v1.json": 64 * 1024,
+    "aws-stage2-production-continuation-v1.bundle.json": 1024 * 1024,
+    "aws-stage2-production-continuation-v1.json": 8 * 1024 * 1024,
+}
 
 
 class StagingError(Exception): pass
@@ -497,9 +507,94 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
         raise
 
 
+def snapshot_evidence_package(source, label):
+    """Capture one immutable six-member package into public root custody."""
+    require(os.geteuid() == 0 and label in {"first", "readback"})
+    source = Path(source)
+    if label == "first":
+        require(source == EVIDENCE_SOURCE)
+        EVIDENCE_SNAPSHOT_ROOT.mkdir(mode=0o755, exist_ok=False)
+        os.chown(EVIDENCE_SNAPSHOT_ROOT, 0, 0)
+        os.chmod(EVIDENCE_SNAPSHOT_ROOT, 0o755)
+    else:
+        require(source.is_absolute()
+                and str(source).startswith("/home/runner/work/_temp/")
+                and EVIDENCE_SNAPSHOT_ROOT.is_dir())
+    root_info = EVIDENCE_SNAPSHOT_ROOT.lstat()
+    require(stat.S_ISDIR(root_info.st_mode) and root_info.st_uid == 0
+            and root_info.st_gid == 0 and stat.S_IMODE(root_info.st_mode) == 0o755)
+    source_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY |
+                       os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptors = {}
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns,
+                info.st_ctime_ns)
+    try:
+        require(set(os.listdir(source_fd)) == set(EVIDENCE_MEMBERS))
+        for name, maximum in EVIDENCE_MEMBERS.items():
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW |
+                                 os.O_CLOEXEC, dir_fd=source_fd)
+            info = os.fstat(descriptor)
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                    and 0 < info.st_size <= maximum
+                    and stat.S_IMODE(info.st_mode) & 0o022 == 0)
+            descriptors[name] = (descriptor, identity(info), maximum)
+        # All names must still select the exact inodes now held open.
+        for name, (_descriptor, expected, _maximum) in descriptors.items():
+            require(identity(os.stat(name, dir_fd=source_fd,
+                                     follow_symlinks=False)) == expected)
+        captured = {}
+        for name, (descriptor, expected, maximum) in descriptors.items():
+            parts = []
+            while True:
+                part = os.read(descriptor, min(1024 * 1024,
+                                               maximum + 1 - sum(map(len, parts))))
+                if not part: break
+                parts.append(part); require(sum(map(len, parts)) <= maximum)
+            captured[name] = b"".join(parts)
+            require(identity(os.fstat(descriptor)) == expected)
+        for name, (_descriptor, expected, _maximum) in descriptors.items():
+            require(identity(os.stat(name, dir_fd=source_fd,
+                                     follow_symlinks=False)) == expected)
+    finally:
+        for descriptor, _expected, _maximum in descriptors.values():
+            os.close(descriptor)
+        os.close(source_fd)
+    destination = EVIDENCE_SNAPSHOT_ROOT / label
+    destination.mkdir(mode=0o700, exist_ok=False); os.chown(destination, 0, 0)
+    destination_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY |
+                             os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for name, raw in captured.items():
+            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                                 os.O_NOFOLLOW | os.O_CLOEXEC, 0o400,
+                                 dir_fd=destination_fd)
+            try:
+                os.fchmod(descriptor, 0o444)
+                offset = 0
+                while offset < len(raw): offset += os.write(descriptor, raw[offset:])
+                os.fsync(descriptor)
+            finally: os.close(descriptor)
+        os.fsync(destination_fd)
+    finally: os.close(destination_fd)
+    os.chmod(destination, 0o555)
+    parent_fd = os.open(EVIDENCE_SNAPSHOT_ROOT, os.O_RDONLY | os.O_DIRECTORY |
+                        os.O_NOFOLLOW | os.O_CLOEXEC)
+    try: os.fsync(parent_fd)
+    finally: os.close(parent_fd)
+    return destination
+
+
 if __name__ == "__main__":
     try:
-        if len(sys.argv) == 3 and sys.argv[1] == "verify-provider-package":
+        if len(sys.argv) in {3, 4} and sys.argv[1] == "snapshot-evidence":
+            label = sys.argv[2]
+            require((label == "first" and len(sys.argv) == 3)
+                    or (label == "readback" and len(sys.argv) == 4))
+            source = EVIDENCE_SOURCE if label == "first" else Path(sys.argv[3])
+            result = str(snapshot_evidence_package(source, label))
+        elif len(sys.argv) == 3 and sys.argv[1] == "verify-provider-package":
             raw = read(Path(sys.argv[2]) / PACKAGE_MANIFEST, 64 * 1024)
             manifest = json.loads(raw)
             require(json.dumps(manifest, sort_keys=True, separators=(",", ":"),

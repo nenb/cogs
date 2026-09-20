@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noExplicitAny: hostile canonical package fixtures require deliberate dynamic mutation.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs, { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,233 +50,42 @@ function hash(raw: string | Buffer): string {
   return createHash("sha256").update(raw).digest("hex");
 }
 
-// Build all six members from one validated public projection. The opaque test
-// bundle is hash-bound here; workflow tests separately require offline cosign.
-function packageFixture(directory: string, producerJobId = 20): void {
-  fs.mkdirSync(directory, { mode: 0o700 });
-  const evidence = fixture();
-  const batch = evidence.batch;
-  const bindings = evidence.bindings;
-  const oldHandoff = evidence.custody.handoff;
-  const rawEffect = (cycle: Record<string, any>, kind: string) => {
-    const item = cycle.effects[kind];
-    const resources =
-      kind === "running"
-        ? ["instance", "root_volume", "launch_template_generation"].map((name) => [name, cycle.freshness[name]])
-        : kind === "destroy"
-          ? [["pre_destroy_receipt", cycle.freshness.pre_destroy_receipt]]
-          : [];
-    return {
-      kind,
-      grant_commitment: cycle.grant_commitment,
-      batch_commitment: batch.commitment,
-      ordinal: cycle.ordinal,
-      mode: cycle.mode,
-      state_commitment: item.state_commitment,
-      state_bytes_sha256: hash(`state-bytes-${cycle.ordinal}`),
-      state_lineage_commitment: item.state_lineage_commitment,
-      identity_commitment: item.identity_commitment,
-      intent_commitment: item.intent_commitment,
-      settlement_commitment: item.settlement_commitment,
-      ami_commitment: bindings.ami_commitment,
-      resource_commitments: resources,
-      observed_started_unix_ns: Number(item.observed_started_unix_ns),
-      observed_ended_unix_ns: Number(item.observed_ended_unix_ns),
-      invocation_count: 1,
-      certain: true,
-    };
-  };
-  const rawInventory = (inventory: Record<string, any>) => ({
-    batch_commitment: batch.commitment,
-    observation_sequence: inventory.observation_sequence,
-    cycle_ordinal: inventory.cycle_ordinal,
-    observer_commitment: inventory.observer_commitment,
-    session_commitment: inventory.session_commitment,
-    run_commitment: inventory.run_commitment,
-    account_commitment: inventory.account_commitment,
-    region: "us-east-1",
-    destroyed_state_commitment: inventory.destroyed_state_commitment,
-    observed_started_unix_ns: Number(inventory.observed_started_unix_ns),
-    observed_ended_unix_ns: Number(inventory.observed_ended_unix_ns),
-    pages: inventory.pages.map((page: Record<string, any>) => ({
-      ...page,
-      service: "test",
-      operation: "test",
-      query_scope: "test",
-      response_commitment: hash(`response-${inventory.observation_sequence}-${page.category}-${page.ordinal}`),
-      resources: page.resources.map((resource: Record<string, any>) => ({ ...resource, category: page.category })),
-    })),
-    zero_commitment: inventory.zero_commitment,
-    certain: true,
-  });
-  const phaseCycles = evidence.cycles.slice(0, 3);
-  const continuation: Record<string, any> = {
-    version: "cogs.stage2-production-continuation/v1",
-    execution_authority: "test-only",
-    repository: "nenb/cogs",
-    workflow_path: ".github/workflows/stage2-production-campaign.yml",
-    workflow_ref: "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
-    workflow_revision: oldHandoff.workflow_revision,
-    event: "workflow_dispatch",
-    ref: "refs/heads/main",
-    producer_job_name: "cycles_1_3",
-    producer_job_id: producerJobId,
-    github_run_id: oldHandoff.workflow_run_id,
-    github_run_attempt: 1,
-    approval_artifact_run_id: 10,
-    approval_artifact_id: 11,
-    approval_artifact_digest: `sha256:${"5".repeat(64)}`,
-    approval_artifact_name: `stage2-production-approval-${oldHandoff.workflow_revision}-10`,
-    approval_commitment: bindings.approval_commitment,
-    batch_commitment: batch.commitment,
-    implementation_revision: batch.implementation_revision,
-    control_revision: batch.control_revision,
-    qualification_revision: "3".repeat(40),
-    source_manifest_sha256: bindings.source_manifest_commitment,
-    phase_boundary_ordinal: 3,
-    active_resource: false,
-    certain_zero: true,
-    credentials_retired: true,
-    consumption: {
-      approval_commitment: bindings.approval_commitment,
-      authentication_receipt_sha256: bindings.approval_authentication_commitment,
-      durable_record_commitment: batch.consumption_commitment,
-      consumed_unix_ns: 1000,
-      first_created: true,
+// Build all six members from the canonical formal composition producer. The
+// test bundle is opaque; the production workflow additionally requires offline
+// Cosign verification over the same immutable snapshot.
+const formalPackages = new Map<number, Record<string, any>>();
+function formalPackage(runId: number): Record<string, any> {
+  const existing = formalPackages.get(runId);
+  if (existing) return existing;
+  const result = spawnSync("python3", ["-I", "-B", "test/stage2-production-approval.py", "--composition-samples"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      TMPDIR: tmpdir(),
+      COGS_TEST_COMPOSITION_RUN_ID: String(runId),
     },
-    grants: phaseCycles.map((cycle: Record<string, any>) => ({
-      batch_commitment: batch.commitment,
-      ordinal: cycle.ordinal,
-      mode: cycle.mode,
-      implementation_revision: batch.implementation_revision,
-      control_revision: batch.control_revision,
-      static_control_sha256: bindings.static_control_commitment,
-      rootfs_descriptor_sha256: bindings.rootfs_descriptor_commitment,
-      ami_commitment: bindings.ami_commitment,
-      plan_sha256: cycle.plan_sha256,
-      grant_commitment: cycle.grant_commitment,
-    })),
-    effects: phaseCycles.map((cycle: Record<string, any>) =>
-      ["plan", "apply", "running", "destroy"].map((kind) => rawEffect(cycle, kind)),
-    ),
-    remotes: phaseCycles.map((cycle: Record<string, any>) => {
-      const remote = cycle.remote;
-      const { source_bindings: source, ...remoteBindings } = remote.bindings;
-      return {
-        grant_commitment: cycle.grant_commitment,
-        batch_commitment: batch.commitment,
-        ordinal: cycle.ordinal,
-        mode: cycle.mode,
-        state_commitment: cycle.effects.apply.state_commitment,
-        state_lineage_commitment: cycle.effects.apply.state_lineage_commitment,
-        instance_commitment: remote.instance_commitment,
-        host_receipt_commitment: remote.host_receipt_commitment,
-        operation_commitment: remote.operation_commitment,
-        host_boot_commitment: remote.host_boot_commitment,
-        client_key_commitment: cycle.freshness.client_ssh_identity,
-        host_key_commitment: cycle.freshness.host_ssh_identity,
-        rootfs_descriptor_sha256: bindings.rootfs_descriptor_commitment,
-        ami_commitment: bindings.ami_commitment,
-        provider_launch_started_unix_ns: Number(cycle.effects.apply.observed_started_unix_ns),
-        provider_running_observed_unix_ns: Number(cycle.effects.running.observed_ended_unix_ns),
-        kata_launch_started_boottime_ns: 1,
-        ssh_ready_observed_boottime_ns: 1 + remote.kata_launch_to_ssh_ready_ns,
-        workloads: cycle.workloads ?? [],
-        bindings: { ...remoteBindings, source },
-        certain: true,
-      };
-    }),
-    inventories: evidence.inventories.slice(0, 3).map(rawInventory),
-    costs: phaseCycles.map((cycle: Record<string, any>) => ({
-      grant_commitment: cycle.grant_commitment,
-      cycle_ordinal: cycle.ordinal,
-      rate_source_commitment: cycle.cost.rate_source_commitment,
-      usage_commitment: cycle.cost.usage_commitment,
-      cost_micro_usd: cycle.cost.cost_micro_usd,
-      receipt_commitment: cycle.cost.receipt_commitment,
-    })),
-    cycle_commitments: phaseCycles.map((cycle: Record<string, any>) => cycle.cycle_commitment),
-    first_apply_unix_ns: Number(evidence.deadlines.first_apply_unix_ns),
-    effect_deadline_unix_ns: Number(evidence.deadlines.effect_deadline_unix_ns),
-    cleanup_deadline_unix_ns:
-      Number(evidence.deadlines.effect_deadline_unix_ns) + evidence.deadlines.cleanup_reserve_ns,
-    cumulative_cost_micro_usd: phaseCycles.reduce(
-      (total: number, cycle: Record<string, any>) => total + cycle.cost.cost_micro_usd,
-      0,
-    ),
-    journal_sequence: oldHandoff.journal_sequence,
-    journal_tip_sha256: oldHandoff.journal_tip_sha256,
-  };
-  continuation.continuation_commitment = commit("cogs.stage2-production-continuation/v1", continuation);
-  const continuationRaw = `${canonical(continuation)}\n`;
-  const bundle = Buffer.from(`bundle-${producerJobId}`, "ascii");
-  const admission: Record<string, any> = {
-    version: "cogs.stage2-production-continuation-admission/v1",
-    repository: "nenb/cogs",
-    workflow_path: ".github/workflows/stage2-production-campaign.yml",
-    workflow_revision: oldHandoff.workflow_revision,
-    ref: "refs/heads/main",
-    run_id: oldHandoff.workflow_run_id,
-    run_attempt: 1,
-    producer_job_name: "cycles_1_3",
-    producer_job_id: producerJobId,
-    consumer_job_name: "cycles_4_7",
-    consumer_job_id: producerJobId + 1,
-    continuation_sha256: hash(continuationRaw),
-    continuation_commitment: continuation.continuation_commitment,
-    bundle_sha256: hash(bundle),
-    trusted_root_sha256: hash("trusted-root"),
-    signer_identity: "https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
-    artifact_id: oldHandoff.continuation_artifact_id,
-    artifact_digest: oldHandoff.continuation_artifact_digest,
-    artifact_name: `stage2-production-continuation-${oldHandoff.workflow_revision}-${oldHandoff.workflow_run_id}-1`,
-    approval_commitment: bindings.approval_commitment,
-    authentication_receipt_sha256: bindings.approval_authentication_commitment,
-    batch_commitment: batch.commitment,
-    implementation_revision: batch.implementation_revision,
-    control_revision: batch.control_revision,
-    qualification_revision: continuation.qualification_revision,
-    journal_sequence: continuation.journal_sequence,
-    journal_tip_sha256: continuation.journal_tip_sha256,
-    cycle3_zero_commitment: evidence.inventories[2].zero_commitment,
-  };
-  admission.admission_commitment = commit("cogs.stage2-production-handoff-authentication/v1", admission);
-  const admissionRaw = `${canonical(admission)}\n`;
-  evidence.custody.handoff = {
-    phase_boundary_ordinal: 3,
-    workflow_revision: admission.workflow_revision,
-    workflow_run_id: admission.run_id,
-    workflow_run_attempt: 1,
-    producer_job_id: admission.producer_job_id,
-    consumer_job_id: admission.consumer_job_id,
-    continuation_commitment: continuation.continuation_commitment,
-    continuation_file_sha256: admission.continuation_sha256,
-    continuation_bundle_sha256: admission.bundle_sha256,
-    continuation_artifact_id: admission.artifact_id,
-    continuation_artifact_digest: admission.artifact_digest,
-    continuation_admission_commitment: admission.admission_commitment,
-    journal_sequence: continuation.journal_sequence,
-    journal_tip_sha256: continuation.journal_tip_sha256,
-    cycle3_zero_commitment: admission.cycle3_zero_commitment,
-  };
-  evidence.batch.custody_root = commit("cogs.stage2-production-custody/v3", {
-    execution_authority: "authenticated-aws-adapter",
-    approval: bindings.approval_commitment,
-    consumption: batch.consumption_commitment,
-    cycles: evidence.cycles.map((cycle: Record<string, any>) => cycle.cycle_commitment),
-    inventories: evidence.inventories.map((inventory: Record<string, any>) => inventory.zero_commitment),
-    costs: evidence.cycles.map((cycle: Record<string, any>) => cycle.cost.receipt_commitment),
-    continuation: continuation.continuation_commitment,
-    continuation_sha256: admission.continuation_sha256,
-    continuation_bundle_sha256: admission.bundle_sha256,
-    handoff_authentication: admission.admission_commitment,
   });
-  const evidenceRaw = `${canonical(evidence)}\n`;
-  const reportRaw = renderAwsStage2CompletionReport(validateAwsStage2CompletionEvidence(evidence));
+  assert.equal(result.status, 0, result.stderr);
+  const value = JSON.parse(result.stdout) as Record<string, any>;
+  formalPackages.set(runId, value);
+  return value;
+}
+function packageFixture(directory: string, runId = 1): void {
+  fs.mkdirSync(directory, { mode: 0o700 });
+  const samples = formalPackage(runId);
+  const evidenceRaw = samples.evidence as string;
+  const reportRaw = samples.report as string;
+  const continuationRaw = samples.continuation as string;
+  const admissionRaw = samples.admission as string;
+  const bundle = Buffer.from(samples.bundle_base64 as string, "base64");
+  const evidence = JSON.parse(evidenceRaw) as Record<string, any>;
+  const admission = JSON.parse(admissionRaw) as Record<string, any>;
   const publication = {
     version: "cogs.aws-stage2-completion-publication/v2",
     result: "pass",
-    batch_commitment: batch.commitment,
+    batch_commitment: evidence.batch.commitment,
     candidate_custody_root: evidence.batch.custody_root,
     handoff_authentication_commitment: admission.admission_commitment,
     evidence_name: "aws-stage2-completion-evidence-v4.json",
@@ -299,6 +109,73 @@ function packageFixture(directory: string, producerJobId = 20): void {
     ["aws-stage2-production-continuation-admission-v1.json", admissionRaw],
   ] as const)
     fs.writeFileSync(join(directory, name), bytes, { mode: 0o400 });
+}
+function rewriteUnsignedPackageClosure(
+  directory: string,
+  mutate: (admission: Record<string, any>, evidence: Record<string, any>) => void,
+): void {
+  const continuationRaw = fs.readFileSync(join(directory, "aws-stage2-production-continuation-v1.json"), "utf8");
+  const continuation = JSON.parse(continuationRaw) as Record<string, any>;
+  const admissionPath = join(directory, "aws-stage2-production-continuation-admission-v1.json");
+  const evidencePath = join(directory, "aws-stage2-completion-evidence-v4.json");
+  const reportPath = join(directory, "aws-stage2-completion-report-v4.md");
+  const publicationPath = join(directory, "aws-stage2-completion-publication-v2.json");
+  const admission = JSON.parse(fs.readFileSync(admissionPath, "utf8")) as Record<string, any>;
+  const evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8")) as Record<string, any>;
+  mutate(admission, evidence);
+  delete admission.admission_commitment;
+  admission.admission_commitment = commit("cogs.stage2-production-handoff-authentication/v1", admission);
+  const handoff = evidence.custody.handoff;
+  Object.assign(handoff, {
+    workflow_revision: admission.workflow_revision,
+    workflow_run_id: admission.run_id,
+    workflow_run_attempt: admission.run_attempt,
+    producer_job_id: admission.producer_job_id,
+    consumer_job_id: admission.consumer_job_id,
+    continuation_commitment: admission.continuation_commitment,
+    continuation_file_sha256: admission.continuation_sha256,
+    continuation_bundle_sha256: admission.bundle_sha256,
+    continuation_artifact_id: admission.artifact_id,
+    continuation_artifact_digest: admission.artifact_digest,
+    continuation_admission_commitment: admission.admission_commitment,
+    journal_sequence: admission.journal_sequence,
+    journal_tip_sha256: admission.journal_tip_sha256,
+    cycle3_zero_commitment: admission.cycle3_zero_commitment,
+  });
+  evidence.batch.custody_root = commit("cogs.stage2-production-custody/v3", {
+    execution_authority: continuation.execution_authority,
+    approval: continuation.approval_commitment,
+    consumption: evidence.batch.consumption_commitment,
+    cycles: evidence.cycles.map((cycle: Record<string, any>) => cycle.cycle_commitment),
+    inventories: evidence.inventories.map((inventory: Record<string, any>) => inventory.zero_commitment),
+    costs: evidence.cycles.map((cycle: Record<string, any>) => cycle.cost.receipt_commitment),
+    continuation: continuation.continuation_commitment,
+    continuation_sha256: admission.continuation_sha256,
+    continuation_bundle_sha256: admission.bundle_sha256,
+    handoff_authentication: admission.admission_commitment,
+  });
+  const admissionRaw = `${canonical(admission)}\n`;
+  const evidenceRaw = `${canonical(evidence)}\n`;
+  const reportRaw = renderAwsStage2CompletionReport(parseAwsStage2CompletionEvidence(evidenceRaw));
+  const publication = JSON.parse(fs.readFileSync(publicationPath, "utf8")) as Record<string, any>;
+  Object.assign(publication, {
+    batch_commitment: evidence.batch.commitment,
+    candidate_custody_root: evidence.batch.custody_root,
+    handoff_authentication_commitment: admission.admission_commitment,
+    evidence_sha256: hash(evidenceRaw),
+    report_sha256: hash(reportRaw),
+    continuation_admission_sha256: hash(admissionRaw),
+  });
+  for (const [path, bytes] of [
+    [admissionPath, admissionRaw],
+    [evidencePath, evidenceRaw],
+    [reportPath, reportRaw],
+    [publicationPath, `${canonical(publication)}\n`],
+  ] as const) {
+    fs.chmodSync(path, 0o600);
+    fs.writeFileSync(path, bytes, { mode: 0o400 });
+    fs.chmodSync(path, 0o400);
+  }
 }
 
 const cliEvidence = join(root, "test/fixtures/stage2-completion/production-v4-test-only.json");
@@ -440,6 +317,75 @@ test("complete six-member package validator rejects coherent cross-package subst
     assert.throws(() => validateAwsStage2CompletionPackage(first), /handoff|producer|admission|continuation/u);
   } finally {
     fs.rmSync(rootDirectory, { recursive: true, force: true });
+  }
+});
+
+test("signed continuation rejects coherent unsigned provenance rewrites", () => {
+  const mutations: Array<[string, (admission: Record<string, any>, evidence: Record<string, any>) => void]> = [
+    [
+      "qualification",
+      (admission, evidence) => {
+        admission.qualification_revision = "4".repeat(40);
+        evidence.batch.qualification_revision = admission.qualification_revision;
+      },
+    ],
+    [
+      "workflow revision",
+      (admission) => {
+        admission.workflow_revision = "5".repeat(40);
+        admission.artifact_name = `stage2-production-continuation-${admission.workflow_revision}-${admission.run_id}-1`;
+      },
+    ],
+    [
+      "run",
+      (admission) => {
+        admission.run_id += 1000;
+        admission.artifact_name = `stage2-production-continuation-${admission.workflow_revision}-${admission.run_id}-1`;
+      },
+    ],
+    [
+      "producer",
+      (admission) => {
+        admission.producer_job_id += 1000;
+      },
+    ],
+    [
+      "artifact relation",
+      (admission) => {
+        admission.artifact_name = `stage2-production-continuation-${admission.workflow_revision}-${admission.run_id + 1}-1`;
+      },
+    ],
+    [
+      "journal",
+      (admission) => {
+        admission.journal_sequence += 1;
+        admission.journal_tip_sha256 = hash("coherent-unsigned-journal-rewrite");
+      },
+    ],
+    [
+      "source manifest",
+      (_admission, evidence) => {
+        evidence.bindings.source_manifest_commitment = hash("coherent-unsigned-source-rewrite");
+        for (const cycle of evidence.cycles) {
+          cycle.remote.bindings.source_bindings.source_manifest_sha256 = evidence.bindings.source_manifest_commitment;
+          evidence.bindings.source_bindings_commitment = commit(
+            "cogs.stage2-source-bindings/v1",
+            cycle.remote.bindings.source_bindings,
+          );
+        }
+      },
+    ],
+  ];
+  for (const [label, mutate] of mutations) {
+    const rootDirectory = fs.mkdtempSync(join(tmpdir(), "cogs-completion-coherent-mutation-"));
+    const directory = join(rootDirectory, "package");
+    try {
+      packageFixture(directory);
+      rewriteUnsignedPackageClosure(directory, mutate);
+      assert.throws(() => validateAwsStage2CompletionPackage(directory), Error, label);
+    } finally {
+      fs.rmSync(rootDirectory, { recursive: true, force: true });
+    }
   }
 });
 

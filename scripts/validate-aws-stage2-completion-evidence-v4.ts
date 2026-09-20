@@ -189,6 +189,7 @@ export type CompletionEvidence = {
     commitment: string;
     implementation_revision: string;
     control_revision: string;
+    qualification_revision: string;
     consumption_commitment: string;
     custody_root: string;
     cycle_count: 7;
@@ -1021,6 +1022,11 @@ const NAMES = Object.freeze({
 const EXPECTED_NAMES: ReadonlySet<string> = new Set(Object.values(NAMES));
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const PACKAGE_MAXIMUM_CYCLE_NS = 150n * 60n * 1_000_000_000n;
+const PACKAGE_EFFECT_WINDOW_NS = 480n * 60n * 1_000_000_000n;
+const PACKAGE_CLEANUP_RESERVE_NS = 30n * 60n * 1_000_000_000n;
+const PINNED_TRUSTED_ROOT_SHA256 = "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e";
+const CAMPAIGN_WORKFLOW = ".github/workflows/stage2-production-campaign.yml";
+const CAMPAIGN_WORKFLOW_REF = "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main";
 
 type JsonObject = Record<string, unknown>;
 type ExactJson = null | boolean | string | bigint | ExactJson[] | { [key: string]: ExactJson };
@@ -1107,6 +1113,15 @@ function equivalent(left: unknown, right: unknown): boolean {
 }
 function requireEquivalent(left: unknown, right: unknown, label: string): void {
   check(equivalent(left, right), label);
+}
+function exactObject(value: JsonObject): { [key: string]: ExactJson } {
+  return value as { [key: string]: ExactJson };
+}
+function commitmentWithout(domain: string, value: JsonObject, key: string): string {
+  return packageCommitment(domain, without(value, key));
+}
+function rawSha256(value: ExactJson): string {
+  return sha256(Buffer.from(packageCanonical(value, true), "ascii"));
 }
 
 function getJsonBig(): JsonBigParser {
@@ -1250,6 +1265,56 @@ function crossValidate(
   const inventories = array(evidence.inventories, "evidence inventories");
   const cost = object(evidence.cost, "evidence cost");
 
+  check(continuation.execution_authority === "authenticated-aws-adapter", "formal continuation authority");
+  check(continuation.repository === "nenb/cogs" && admission.repository === "nenb/cogs", "repository provenance");
+  check(
+    continuation.workflow_path === CAMPAIGN_WORKFLOW &&
+      admission.workflow_path === CAMPAIGN_WORKFLOW &&
+      continuation.workflow_ref === CAMPAIGN_WORKFLOW_REF &&
+      continuation.event === "workflow_dispatch" &&
+      continuation.ref === "refs/heads/main" &&
+      admission.ref === "refs/heads/main",
+    "workflow provenance",
+  );
+  check(
+    continuation.producer_job_name === "cycles_1_3" &&
+      admission.producer_job_name === "cycles_1_3" &&
+      admission.consumer_job_name === "cycles_4_7",
+    "job names",
+  );
+  check(
+    equivalent(continuation.github_run_id, admission.run_id) &&
+      equivalent(continuation.github_run_attempt, admission.run_attempt) &&
+      equivalent(continuation.producer_job_id, admission.producer_job_id),
+    "signed continuation run and producer",
+  );
+  check(
+    continuation.workflow_revision === admission.workflow_revision &&
+      continuation.workflow_revision === custody.workflow_revision,
+    "signed workflow revision",
+  );
+  check(
+    admission.artifact_name ===
+      `stage2-production-continuation-${string(admission.workflow_revision, "artifact revision")}-${integer(
+        admission.run_id,
+        "artifact run",
+      ).toString()}-1`,
+    "relational continuation artifact name",
+  );
+  check(
+    continuation.approval_artifact_name ===
+      `stage2-production-approval-${string(continuation.workflow_revision, "approval revision")}-${integer(
+        continuation.approval_artifact_run_id,
+        "approval run",
+      ).toString()}`,
+    "relational approval artifact name",
+  );
+  check(admission.trusted_root_sha256 === PINNED_TRUSTED_ROOT_SHA256, "pinned trusted root");
+  check(
+    admission.signer_identity === `https://github.com/nenb/cogs/${CAMPAIGN_WORKFLOW}@refs/heads/main`,
+    "signer identity",
+  );
+
   check(sha256(raw.evidence) === publication.evidence_sha256, "publication evidence hash");
   check(sha256(raw.report) === publication.report_sha256, "publication report hash");
   check(sha256(raw.continuation) === publication.continuation_sha256, "publication continuation hash");
@@ -1282,7 +1347,13 @@ function crossValidate(
   check(custody.continuation_commitment === continuationCommitment, "evidence continuation commitment");
   check(custody.continuation_admission_commitment === admissionCommitment, "evidence admission commitment");
 
-  for (const field of ["approval_commitment", "batch_commitment", "implementation_revision", "control_revision"])
+  for (const field of [
+    "approval_commitment",
+    "batch_commitment",
+    "implementation_revision",
+    "control_revision",
+    "qualification_revision",
+  ])
     check(continuation[field] === admission[field], `continuation/admission ${field}`);
   for (const field of ["journal_sequence", "journal_tip_sha256"])
     check(
@@ -1292,6 +1363,8 @@ function crossValidate(
   check(continuation.batch_commitment === batch.commitment, "continuation batch");
   check(continuation.implementation_revision === batch.implementation_revision, "continuation implementation");
   check(continuation.control_revision === batch.control_revision, "continuation control");
+  check(continuation.qualification_revision === batch.qualification_revision, "continuation qualification");
+  check(continuation.source_manifest_sha256 === bindings.source_manifest_commitment, "continuation source manifest");
   check(continuation.approval_commitment === bindings.approval_commitment, "continuation approval");
   const consumption = object(continuation.consumption, "continuation consumption");
   check(consumption.durable_record_commitment === batch.consumption_commitment, "consumption commitment");
@@ -1305,7 +1378,9 @@ function crossValidate(
   );
   check(
     equivalent(admission.run_id, custody.workflow_run_id) &&
-      equivalent(admission.run_attempt, custody.workflow_run_attempt),
+      equivalent(admission.run_attempt, custody.workflow_run_attempt) &&
+      equivalent(continuation.github_run_id, custody.workflow_run_id) &&
+      equivalent(continuation.github_run_attempt, custody.workflow_run_attempt),
     "handoff run",
   );
   check(admission.workflow_revision === custody.workflow_revision, "handoff workflow revision");
@@ -1314,6 +1389,11 @@ function crossValidate(
   check(equivalent(admission.artifact_id, custody.continuation_artifact_id), "handoff artifact id");
   check(admission.artifact_digest === custody.continuation_artifact_digest, "handoff artifact digest");
   check(admission.cycle3_zero_commitment === custody.cycle3_zero_commitment, "handoff cycle-three zero");
+  check(
+    admission.cycle3_zero_commitment ===
+      object(array(continuation.inventories, "continuation inventories")[2], "cycle-three inventory").zero_commitment,
+    "signed cycle-three zero",
+  );
 
   check(
     integer(continuation.first_apply_unix_ns, "continuation first apply").toString() === deadlines.first_apply_unix_ns,
@@ -1325,10 +1405,23 @@ function crossValidate(
     "effect deadline projection",
   );
   check(
+    integer(continuation.effect_deadline_unix_ns, "continuation effect deadline") ===
+      integer(continuation.first_apply_unix_ns, "continuation first apply") + PACKAGE_EFFECT_WINDOW_NS,
+    "exact continuation effect window",
+  );
+  check(
+    integer(deadlines.cleanup_reserve_ns, "cleanup reserve") === PACKAGE_CLEANUP_RESERVE_NS,
+    "exact cleanup reserve",
+  );
+  check(
     integer(continuation.cleanup_deadline_unix_ns, "continuation cleanup deadline") ===
-      integer(continuation.effect_deadline_unix_ns, "continuation effect deadline") +
-        BigInt(deadlines.cleanup_reserve_ns as number),
+      integer(continuation.effect_deadline_unix_ns, "continuation effect deadline") + PACKAGE_CLEANUP_RESERVE_NS,
     "cleanup deadline projection",
+  );
+  check(
+    integer(continuation.cleanup_deadline_unix_ns, "continuation cleanup deadline") <=
+      BigInt(string(deadlines.expires_unix_ns, "approval expiry")),
+    "continuation validity deadline",
   );
 
   const grants = array(continuation.grants, "continuation grants");
@@ -1337,6 +1430,50 @@ function crossValidate(
   const continuationInventories = array(continuation.inventories, "continuation inventories");
   const costs = array(continuation.costs, "continuation costs");
   const cycleCommitments = array(continuation.cycle_commitments, "continuation cycle commitments");
+  check(
+    grants.length === 3 &&
+      effects.length === 3 &&
+      remotes.length === 3 &&
+      continuationInventories.length === 3 &&
+      costs.length === 3 &&
+      cycleCommitments.length === 3,
+    "closed continuation cardinality",
+  );
+  const consumedRecord = {
+    version: "cogs.stage2-production-approval-consumption/v1",
+    approval_commitment: continuation.approval_commitment as ExactJson,
+    batch_commitment: continuation.batch_commitment as ExactJson,
+    consumed_unix_ns: consumption.consumed_unix_ns as ExactJson,
+    first_created: true,
+  };
+  check(consumption.first_created === true, "first approval consumption");
+  check(consumption.approval_commitment === continuation.approval_commitment, "consumed approval");
+  check(consumption.durable_record_commitment === rawSha256(consumedRecord), "durable consumption record");
+  check(
+    integer(consumption.consumed_unix_ns, "consumed time") < integer(continuation.first_apply_unix_ns, "first apply"),
+    "consumption precedes effects",
+  );
+
+  const journalEvents: Array<[string, string, ExactJson, ExactJson, string]> = [
+    ["batch", "consumed", null, null, string(consumption.durable_record_commitment, "consumption commitment")],
+  ];
+  let previousZero: bigint | undefined;
+  const unique: Record<string, string[]> = Object.fromEntries(
+    [
+      "state",
+      "lineage",
+      "instance",
+      "operation",
+      "boot",
+      "runtime",
+      "mapping",
+      "pre",
+      "client",
+      "host",
+      "resource",
+    ].map((name) => [name, []]),
+  );
+  const postSsh: string[] = [];
   for (let index = 0; index < 3; index++) {
     const cycle = object(cycles[index], `evidence cycle ${index + 1}`);
     const grant = object(grants[index], `continuation grant ${index + 1}`);
@@ -1351,19 +1488,147 @@ function crossValidate(
     );
     check(grant.rootfs_descriptor_sha256 === bindings.rootfs_descriptor_commitment, `cycle ${index + 1} grant rootfs`);
     check(grant.ami_commitment === bindings.ami_commitment, `cycle ${index + 1} grant AMI`);
+    check(
+      grant.grant_commitment === commitmentWithout("cogs.stage2-cycle-launch-grant/v1", grant, "grant_commitment"),
+      `cycle ${index + 1} grant commitment preimage`,
+    );
     check(cycleCommitments[index] === cycle.cycle_commitment, `cycle ${index + 1} commitment`);
+    journalEvents.push([
+      "cycle",
+      "opened",
+      grant.ordinal as ExactJson,
+      grant.mode as ExactJson,
+      string(grant.grant_commitment, "grant commitment"),
+    ]);
 
     const cycleEffects = object(cycle.effects, `evidence effects ${index + 1}`);
     const rawEffects = array(effects[index], `continuation effects ${index + 1}`);
+    let previousSettlement: string | null = null;
     for (const [effectIndex, kind] of ["plan", "apply", "running", "destroy"].entries()) {
       const rawEffect = object(rawEffects[effectIndex], `continuation ${kind}`);
       check(rawEffect.kind === kind, `cycle ${index + 1} effect kind`);
+      check(
+        rawEffect.grant_commitment === grant.grant_commitment &&
+          rawEffect.batch_commitment === batch.commitment &&
+          equivalent(rawEffect.ordinal, grant.ordinal) &&
+          rawEffect.mode === grant.mode &&
+          rawEffect.ami_commitment === bindings.ami_commitment &&
+          rawEffect.invocation_count === 1n &&
+          rawEffect.certain === true,
+        `cycle ${index + 1} effect envelope`,
+      );
+      const expectedIntent = packageCommitment("cogs.stage2-provider-effect-intent/v1", {
+        kind,
+        grant: grant.grant_commitment as ExactJson,
+        previous: previousSettlement,
+      });
+      check(rawEffect.intent_commitment === expectedIntent, `cycle ${index + 1} ${kind} intent preimage`);
+      check(
+        rawEffect.settlement_commitment ===
+          commitmentWithout("cogs.stage2-provider-effect-settlement/v1", rawEffect, "settlement_commitment"),
+        `cycle ${index + 1} ${kind} settlement preimage`,
+      );
+      previousSettlement = string(rawEffect.settlement_commitment, "settlement commitment");
+      journalEvents.push([
+        "effect",
+        "intent",
+        grant.ordinal as ExactJson,
+        grant.mode as ExactJson,
+        string(rawEffect.intent_commitment, "intent commitment"),
+      ]);
+      journalEvents.push([
+        "effect",
+        "settled",
+        grant.ordinal as ExactJson,
+        grant.mode as ExactJson,
+        previousSettlement,
+      ]);
+      journalEvents.push(["receipt", kind, grant.ordinal as ExactJson, grant.mode as ExactJson, previousSettlement]);
       requireEquivalent(projectEffect(rawEffect), cycleEffects[kind], `cycle ${index + 1} ${kind} projection`);
     }
+    const plan = object(rawEffects[0], "plan effect");
+    const apply = object(rawEffects[1], "apply effect");
+    const running = object(rawEffects[2], "running effect");
+    const destroy = object(rawEffects[3], "destroy effect");
+    check(
+      plan.identity_commitment === grant.plan_sha256 &&
+        plan.state_commitment === apply.state_commitment &&
+        apply.state_commitment === running.state_commitment &&
+        running.state_commitment === destroy.state_commitment &&
+        plan.state_lineage_commitment === apply.state_lineage_commitment &&
+        apply.state_lineage_commitment === running.state_lineage_commitment &&
+        running.state_lineage_commitment === destroy.state_lineage_commitment &&
+        apply.state_bytes_sha256 !== "0".repeat(64) &&
+        running.state_bytes_sha256 === apply.state_bytes_sha256 &&
+        integer(plan.observed_ended_unix_ns, "plan end") < integer(apply.observed_started_unix_ns, "apply start") &&
+        integer(apply.observed_ended_unix_ns, "apply end") <
+          integer(running.observed_started_unix_ns, "running start") &&
+        integer(running.observed_ended_unix_ns, "running end") <
+          integer(destroy.observed_started_unix_ns, "destroy start") &&
+        (previousZero === undefined || integer(plan.observed_started_unix_ns, "plan start") > previousZero),
+      `cycle ${index + 1} raw effect lineage`,
+    );
 
     const remote = object(remotes[index], `continuation remote ${index + 1}`);
     const evidenceRemote = object(cycle.remote, `evidence remote ${index + 1}`);
     const remoteBindings = object(remote.bindings, `continuation bindings ${index + 1}`);
+    check(
+      remote.grant_commitment === grant.grant_commitment &&
+        remote.batch_commitment === batch.commitment &&
+        equivalent(remote.ordinal, grant.ordinal) &&
+        remote.mode === grant.mode &&
+        remote.state_commitment === apply.state_commitment &&
+        remote.state_lineage_commitment === apply.state_lineage_commitment &&
+        remote.instance_commitment === running.identity_commitment &&
+        equivalent(remote.provider_launch_started_unix_ns, apply.observed_started_unix_ns) &&
+        equivalent(remote.provider_running_observed_unix_ns, running.observed_ended_unix_ns) &&
+        remote.rootfs_descriptor_sha256 === bindings.rootfs_descriptor_commitment &&
+        remote.ami_commitment === bindings.ami_commitment &&
+        remote.certain === true,
+      `cycle ${index + 1} raw remote envelope`,
+    );
+    const source = object(remoteBindings.source, "remote source bindings");
+    const qemu = object(remoteBindings.qemu, "remote qemu bindings");
+    check(
+      packageCommitment("cogs.stage2-source-bindings/v1", exactObject(source)) ===
+        bindings.source_bindings_commitment &&
+        source.source_head === batch.implementation_revision &&
+        source.source_manifest_sha256 === bindings.source_manifest_commitment &&
+        source.runtime_manifest_sha256 === bindings.runtime_manifest_sha256 &&
+        source.rootfs_descriptor_sha256 === bindings.rootfs_descriptor_commitment &&
+        source.rootfs_package_manifest_sha256 === bindings.rootfs_package_manifest_commitment &&
+        source.rootfs_provenance_sha256 === bindings.rootfs_provenance_commitment &&
+        source.rootfs_publication_receipt_sha256 === bindings.rootfs_publication_receipt_commitment &&
+        source.final_pin_sha256 === bindings.fixture_commitment,
+      `cycle ${index + 1} raw source bindings`,
+    );
+    const qemuIdentity: { [key: string]: ExactJson } = {};
+    for (const name of [
+      "qemu_argv_sha256",
+      "qemu_pid",
+      "qemu_starttime",
+      "qemu_executable_device",
+      "qemu_executable_inode",
+      "observer_qmp_device",
+      "observer_qmp_inode",
+      "kvm_device",
+      "kvm_inode",
+      "kvm_rdev",
+      "kvm_api",
+      "qmp_present",
+      "qmp_enabled",
+    ])
+      qemuIdentity[name] = qemu[name] as ExactJson;
+    check(
+      qemu.operation_token === remote.operation_commitment &&
+        qemu.runtime_identity_sha256 === packageCommitment("cogs.stage2-qemu-runtime-identity/v1", qemuIdentity, true),
+      `cycle ${index + 1} raw runtime identity`,
+    );
+    requireEquivalent(
+      array(remote.workloads, "remote workloads"),
+      cycle.workloads === undefined ? [] : cycle.workloads,
+      `cycle ${index + 1} raw workloads`,
+    );
     requireEquivalent(
       {
         host_receipt_commitment: remote.host_receipt_commitment,
@@ -1390,15 +1655,64 @@ function crossValidate(
     );
 
     const continuationInventory = object(continuationInventories[index], `continuation inventory ${index + 1}`);
+    check(
+      continuationInventory.batch_commitment === batch.commitment &&
+        equivalent(continuationInventory.observation_sequence, grant.ordinal) &&
+        equivalent(continuationInventory.cycle_ordinal, grant.ordinal) &&
+        continuationInventory.account_commitment === bindings.account_commitment &&
+        continuationInventory.region === "us-east-1" &&
+        continuationInventory.destroyed_state_commitment === destroy.state_commitment &&
+        integer(continuationInventory.observed_started_unix_ns, "inventory start") >
+          integer(destroy.observed_ended_unix_ns, "destroy end") &&
+        integer(continuationInventory.observed_ended_unix_ns, "inventory end") <
+          integer(continuation.cleanup_deadline_unix_ns, "cleanup deadline") &&
+        (previousZero === undefined ||
+          integer(continuationInventory.observed_started_unix_ns, "inventory start") > previousZero) &&
+        continuationInventory.certain === true,
+      `cycle ${index + 1} raw inventory envelope`,
+    );
+    const rawPages = array(continuationInventory.pages, "raw inventory pages");
+    for (const rawPageValue of rawPages) {
+      const rawPage = object(rawPageValue, "raw inventory page");
+      check(
+        rawPage.page_commitment === commitmentWithout("cogs.stage2-inventory-page/v2", rawPage, "page_commitment"),
+        `cycle ${index + 1} page commitment`,
+      );
+    }
+    const zeroFields: { [key: string]: ExactJson } = {
+      batch_commitment: continuationInventory.batch_commitment as ExactJson,
+      observation_sequence: continuationInventory.observation_sequence as ExactJson,
+      cycle_ordinal: continuationInventory.cycle_ordinal as ExactJson,
+      observer_commitment: continuationInventory.observer_commitment as ExactJson,
+      session_commitment: continuationInventory.session_commitment as ExactJson,
+      run_commitment: continuationInventory.run_commitment as ExactJson,
+      account_commitment: continuationInventory.account_commitment as ExactJson,
+      region: continuationInventory.region as ExactJson,
+      destroyed_state_commitment: continuationInventory.destroyed_state_commitment as ExactJson,
+      observed_started_unix_ns: continuationInventory.observed_started_unix_ns as ExactJson,
+      observed_ended_unix_ns: continuationInventory.observed_ended_unix_ns as ExactJson,
+      page_commitments: rawPages.map((value) => object(value, "raw page").page_commitment as ExactJson),
+    };
+    check(
+      continuationInventory.zero_commitment === packageCommitment("cogs.stage2-zero-inventory/v2", zeroFields),
+      `cycle ${index + 1} zero commitment`,
+    );
     requireEquivalent(
       projectInventory(continuationInventory),
       inventories[index],
       `cycle ${index + 1} inventory projection`,
     );
+    previousZero = integer(continuationInventory.observed_ended_unix_ns, "inventory end");
     const rawCost = object(costs[index], `continuation cost ${index + 1}`);
     const evidenceCost = object(cycle.cost, `evidence cost ${index + 1}`);
     for (const field of ["receipt_commitment", "rate_source_commitment", "usage_commitment", "cost_micro_usd"])
       check(equivalent(rawCost[field], evidenceCost[field]), `cycle ${index + 1} cost ${field}`);
+    check(
+      rawCost.grant_commitment === grant.grant_commitment &&
+        equivalent(rawCost.cycle_ordinal, grant.ordinal) &&
+        rawCost.receipt_commitment === commitmentWithout("cogs.stage2-cost-receipt/v1", rawCost, "receipt_commitment"),
+      `cycle ${index + 1} raw cost receipt`,
+    );
     const duration =
       integer(object(rawEffects[3], "destroy").observed_ended_unix_ns, "destroy end") -
       integer(object(rawEffects[1], "apply").observed_started_unix_ns, "apply start");
@@ -1411,7 +1725,81 @@ function crossValidate(
       rawCost.usage_commitment === packageCommitment("cogs.stage2-provider-usage/v1", { duration_ns: duration }),
       `cycle ${index + 1} usage commitment`,
     );
+    const expectedCycle = packageCommitment("cogs.stage2-production-cycle/v2", {
+      grant: grant.grant_commitment as ExactJson,
+      effects: rawEffects.map((value) => object(value, "raw effect").settlement_commitment as ExactJson),
+      remote: remote.host_receipt_commitment as ExactJson,
+      zero: continuationInventory.zero_commitment as ExactJson,
+      cost: rawCost.receipt_commitment as ExactJson,
+    });
+    check(cycleCommitments[index] === expectedCycle, `cycle ${index + 1} raw cycle commitment`);
+    journalEvents.push([
+      "cycle",
+      "sealed",
+      grant.ordinal as ExactJson,
+      grant.mode as ExactJson,
+      string(cycleCommitments[index], "cycle commitment"),
+    ]);
+    const runningResources = Object.fromEntries(
+      array(running.resource_commitments, "running resources").map((row) => {
+        const pair = array(row, "resource pair");
+        return [string(pair[0], "resource name"), string(pair[1], "resource commitment")];
+      }),
+    );
+    for (const [name, value] of [
+      ["state", apply.state_commitment],
+      ["lineage", apply.state_lineage_commitment],
+      ["instance", remote.instance_commitment],
+      ["operation", remote.operation_commitment],
+      ["boot", remote.host_boot_commitment],
+      ["runtime", qemu.runtime_identity_sha256],
+      ["mapping", qemu.live_mapping_sha256],
+      ["pre", qemu.pre_ssh_runtime_fact_sha256],
+      ["client", remote.client_key_commitment],
+      ["host", remote.host_key_commitment],
+      ["resource", runningResources.instance],
+    ] as const)
+      unique[name]?.push(string(value, `${name} identity`));
+    if (qemu.post_ssh_runtime_fact_sha256 !== null)
+      postSsh.push(string(qemu.post_ssh_runtime_fact_sha256, "post-SSH identity"));
   }
+  check(
+    integer(continuation.first_apply_unix_ns, "continuation first apply") ===
+      integer(
+        object(array(effects[0], "first effects")[1], "first apply").observed_started_unix_ns,
+        "first apply time",
+      ),
+    "first apply raw binding",
+  );
+  let journalSequence = 0n;
+  let journalTip = "0".repeat(64);
+  for (const [category, event, ordinal, mode, commitment] of journalEvents) {
+    const row = {
+      version: "cogs.stage2-production-campaign-journal/v1",
+      sequence: journalSequence,
+      previous_sha256: journalTip,
+      category,
+      event,
+      ordinal,
+      mode,
+      commitment,
+    };
+    journalTip = rawSha256(row);
+    journalSequence += 1n;
+  }
+  check(
+    integer(continuation.journal_sequence, "journal sequence") === journalSequence &&
+      continuation.journal_tip_sha256 === journalTip,
+    "raw journal checkpoint",
+  );
+  check(
+    Object.values(unique).every((values) => values.length === 3 && new Set(values).size === 3) &&
+      postSsh.length === 2 &&
+      new Set(postSsh).size === 2 &&
+      new Set([...(unique.pre ?? []), ...postSsh]).size === 5 &&
+      new Set([...(unique.client ?? []), ...(unique.host ?? [])]).size === 6,
+    "continuation freshness",
+  );
   check(
     integer(continuation.cumulative_cost_micro_usd, "continuation cumulative cost") ===
       costs.reduce<bigint>((sum, item) => sum + integer(object(item, "continuation cost").cost_micro_usd, "cost"), 0n),

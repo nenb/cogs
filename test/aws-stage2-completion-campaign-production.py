@@ -7,9 +7,12 @@ from pathlib import Path
 import json
 import os
 import runpy
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -657,6 +660,53 @@ finally:
                            original_cleanup_paths, strict=True):
         setattr(aws_adapter, name, value)
 
+# A consumed campaign with no ACTIVE record publishes a deterministic terminal
+# proof before credential retirement, and replay validates/reuses exact bytes.
+no_active_names = (
+    "ROOT", "STATE_ROOT", "CONSUMED", "JOURNAL", "ACTIVE", "CLEANUP_COMPLETE",
+    "CONTINUATION", "CONTINUATION_BUNDLE", "CONTINUATION_ADMISSION",
+    "CONTINUATION_ANCHOR", "_admit_root", "_root_lock", "_approval",
+    "_retire_credentials", "_phase_one_consumption", "_repair_first_journal_record",
+    "_read_fixed")
+no_active_original = tuple(getattr(aws_adapter, name) for name in no_active_names)
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory); state_root = root / "state"; state_root.mkdir()
+    paths = {
+        "ROOT": root, "STATE_ROOT": state_root, "CONSUMED": root / "consumed",
+        "JOURNAL": root / "journal", "ACTIVE": root / "active",
+        "CLEANUP_COMPLETE": root / "complete", "CONTINUATION": root / "continuation",
+        "CONTINUATION_BUNDLE": root / "bundle", "CONTINUATION_ADMISSION": root / "admission",
+        "CONTINUATION_ANCHOR": root / "anchor"}
+    for name, value in paths.items(): setattr(aws_adapter, name, value)
+    paths["CONSUMED"].write_bytes(b"consumed\n")
+    row = {"version": "cogs.stage2-production-campaign-journal/v1",
+           "sequence": 0, "previous_sha256": "0" * 64, "category": "batch",
+           "event": "consumed", "ordinal": None, "mode": None,
+           "commitment": resume.consumption.durable_record_commitment}
+    paths["JOURNAL"].write_bytes(aws_adapter._canonical(row)); paths["JOURNAL"].chmod(0o600)
+    aws_adapter._admit_root = lambda: None
+    aws_adapter._root_lock = lambda: os.open(root / "lock", os.O_RDWR | os.O_CREAT, 0o600)
+    aws_adapter._approval = lambda _required=True: (
+        first_job.approval, resume.consumption.authentication_receipt_sha256)
+    aws_adapter._phase_one_consumption = lambda *_args: resume.consumption
+    aws_adapter._repair_first_journal_record = lambda *_args: None
+    aws_adapter._read_fixed = lambda path, *_args: path.read_bytes()
+    retirements = []
+    def retire_after_proof():
+        assert paths["CLEANUP_COMPLETE"].exists()
+        retirements.append(paths["CLEANUP_COMPLETE"].read_bytes())
+    aws_adapter._retire_credentials = retire_after_proof
+    try:
+        first_receipt = aws_adapter.recover_fixed_campaign()
+        first_proof = paths["CLEANUP_COMPLETE"].read_bytes()
+        second_receipt = aws_adapter.recover_fixed_campaign()
+        assert first_proof == paths["CLEANUP_COMPLETE"].read_bytes()
+        assert first_receipt == second_receipt and retirements == [first_proof, first_proof]
+        assert json.loads(first_proof)["terminal_state"] == "no-active"
+    finally:
+        for name, value in zip(no_active_names, no_active_original, strict=True):
+            setattr(aws_adapter, name, value)
+
 # Runner-owned pathname swaps during cosign verification cannot split the
 # verified bytes from the continuation bytes admitted into root custody.
 stager = runpy.run_path(str(ROOT / "scripts/stage2-stage-production-approval.py"))
@@ -723,6 +773,54 @@ with tempfile.TemporaryDirectory() as directory:
                 "CONTINUATION_BUNDLE", "CONTINUATION_ADMISSION", "_approval",
                 "_verify_blob"), original_adapter_routes, strict=True):
             setattr(aws_adapter, name, value)
+
+# The closed evidence package is captured through six already-open descriptors;
+# a runner pathname replacement at the last-open boundary is rejected, while an
+# unchanged source yields root-owned immutable bytes.
+with tempfile.TemporaryDirectory() as directory:
+    base = Path(directory); source = base / "runner-package"; source.mkdir(mode=0o700)
+    expected = {}
+    for index, name in enumerate(stager["EVIDENCE_MEMBERS"]):
+        raw = f"member-{index}\n".encode(); expected[name] = raw
+        path = source / name; path.write_bytes(raw); path.chmod(0o400)
+    original_geteuid, original_chown, original_open = os.geteuid, os.chown, os.open
+    original_lstat = Path.lstat
+    def root_owned_lstat(path):
+        info = original_lstat(path)
+        if path.name in {"public-hostile", "public"}:
+            values = list(info); values[4:6] = (0, 0); return os.stat_result(values)
+        return info
+    try:
+        stager["snapshot_evidence_package"].__globals__["EVIDENCE_SOURCE"] = source
+        stager["snapshot_evidence_package"].__globals__["EVIDENCE_SNAPSHOT_ROOT"] = base / "public-hostile"
+        os.geteuid = lambda: 0; os.chown = lambda *_args, **_kwargs: None
+        Path.lstat = root_owned_lstat
+        opens = [0]
+        first_name = next(iter(stager["EVIDENCE_MEMBERS"]))
+        def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+            descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+            if dir_fd is not None and path in stager["EVIDENCE_MEMBERS"]:
+                opens[0] += 1
+                if opens[0] == len(stager["EVIDENCE_MEMBERS"]):
+                    first = source / first_name
+                    first.rename(source / "displaced")
+                    first.write_bytes(b"hostile replacement\n"); first.chmod(0o400)
+            return descriptor
+        os.open = swapping_open
+        try: stager["snapshot_evidence_package"](source, "first")
+        except stager["StagingError"]: pass
+        else: raise AssertionError("evidence snapshot accepted a pathname swap")
+        os.open = original_open
+        (source / first_name).unlink(); (source / "displaced").rename(source / first_name)
+        shutil.rmtree(base / "public-hostile")
+        stager["snapshot_evidence_package"].__globals__["EVIDENCE_SNAPSHOT_ROOT"] = base / "public"
+        snapshot = stager["snapshot_evidence_package"](source, "first")
+        assert snapshot.stat().st_mode & 0o777 == 0o555
+        assert {path.name: path.read_bytes() for path in snapshot.iterdir()} == expected
+        assert all(path.stat().st_mode & 0o777 == 0o444 for path in snapshot.iterdir())
+    finally:
+        os.open = original_open; os.geteuid = original_geteuid; os.chown = original_chown
+        Path.lstat = original_lstat
 
 for field, hostile in (("ordinal", True), ("ordinal", 1.0),
                        ("observed_started_unix_ns", 0),
@@ -880,11 +978,56 @@ try: production.ProductionCampaignController(h.ports()).run_test_campaign()
 except production.ProductionApprovalError: pass
 else: raise AssertionError("durably consumed approval was reused")
 
+# Linux regression for the exact outer-timeout -> controller -> foreground
+# inner-timeout -> provider -> provider-owned-session hierarchy. The adapter's
+# deferred TERM must not release control until the provider has killed and
+# reaped its descendant.
+if sys.platform == "linux" and Path("/usr/bin/timeout").is_file():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        started, finished, pid_file = (root / name for name in ("started", "finished", "pid"))
+        child = root / "child.py"
+        child.write_text(
+            "import os,time\n"
+            f"open({str(pid_file)!r},'w').write(str(os.getpid()))\n"
+            f"open({str(started)!r},'w').write('started')\n"
+            "time.sleep(3)\n"
+            f"open({str(finished)!r},'w').write('survived')\n")
+        command = root / "provider.py"
+        command.write_text(
+            "#!/usr/bin/python3\nimport pathlib,sys\n"
+            f"sys.path.insert(0,{str(ROOT / 'deploy/aws-feasibility')!r})\n"
+            "import completion_campaign_aws_provider as provider\n"
+            f"provider.SOURCE=pathlib.Path({str(root)!r})\n"
+            "try: provider.subprocess_runner((sys.executable," + repr(str(child)) + "),30)\n"
+            "except provider.ProviderBoundaryError: raise SystemExit(75)\n"
+            "raise SystemExit(76)\n")
+        command.chmod(0o700)
+        harness = root / "controller.py"
+        harness.write_text(
+            "import pathlib,subprocess,sys\n"
+            f"sys.path.insert(0,{str(ROOT / 'deploy/aws-feasibility')!r})\n"
+            "import completion_campaign_aws_adapter as adapter\n"
+            f"adapter.SOURCE=pathlib.Path({str(root)!r})\n"
+            f"adapter.EFFECT_COMMAND=pathlib.Path({str(command)!r})\n"
+            "owner=object.__new__(adapter.AwsCampaignCustodian)\n"
+            "owner.executor=subprocess.run\n"
+            "owner._run(adapter.EFFECT_COMMAND,(),30)\n")
+        cutoff = subprocess.run(
+            ("/usr/bin/timeout", "--signal=TERM", "--kill-after=5s", "1s",
+             sys.executable, str(harness)), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False, timeout=10)
+        assert cutoff.returncode == 124 and started.is_file() and pid_file.is_file(), cutoff.stderr
+        child_pid = int(pid_file.read_text())
+        try: os.kill(child_pid, 0)
+        except ProcessLookupError: pass
+        else: raise AssertionError("provider descendant survived campaign cutoff into cleanup")
+        cleanup_started = root / "cleanup-started"
+        cleanup_started.write_text("cleanup")
+        time.sleep(3.1)
+        assert cleanup_started.is_file() and not finished.exists()
+
 if os.environ.get("COGS_TEST_EMIT_APPROVAL") == "1":
     sys.stdout.buffer.write(production._canonical(approval().__dict__) + b"\n")
-elif os.environ.get("COGS_TEST_EMIT_EVIDENCE") == "1":
-    sys.stdout.buffer.write(evidence_raw)
-elif os.environ.get("COGS_TEST_EMIT_REPORT") == "1":
-    sys.stdout.buffer.write(report_raw)
 else:
     print("stage2 provider-free production campaign controller checks passed")

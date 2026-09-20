@@ -125,30 +125,17 @@ jobs:
           test "$(git -C "$destination" rev-parse HEAD)" = "$h"
           sudo -n /usr/bin/python3 -I -B "$destination/scripts/prepare-stage2-fixed-source.py" >/dev/null
 
-      - name: Derive fresh bounded segment-one executor role duration
-        id: segment_one_executor_duration
+      - name: Acquire fresh bounded segment-one executor credentials
+        timeout-minutes: 10
+        env:
+          ROLE_ARN: ${{ vars.STAGE2_AWS_PRODUCTION_EXECUTOR_ROLE_ARN }}
         run: |
           set -euo pipefail
           expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
-          now_s=$(date +%s)
-          remaining=$(( expiry_s - now_s - 900 ))
-          cap=18000
-          segment_min=16200
-          duration="$remaining"
-          if (( duration > cap )); then duration="$cap"; fi
-          test "$duration" -ge "$segment_min"
-          test "$duration" -le "$cap"
-          test "$duration" -le "$remaining"
-          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
-
-      - name: Acquire fresh segment-one executor credentials
-        timeout-minutes: 10
-        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
-        with:
-          role-to-assume: ${{ vars.STAGE2_AWS_PRODUCTION_EXECUTOR_ROLE_ARN }}
-          role-session-name: cogs-stage2-campaign-s1-${{ github.run_id }}
-          aws-region: us-east-1
-          role-duration-seconds: ${{ steps.segment_one_executor_duration.outputs.role_duration_seconds }}
+          remaining=$(( expiry_s - $(date +%s) - 900 )); cap=18000; minimum=16200; duration="$cap"
+          test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
+          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py assume-github-role "$ROLE_ARN" \
+            "cogs-stage2-campaign-s1-$GITHUB_RUN_ID" "$duration" "$minimum" "$RUNNER_TEMP/approval/approval.json"
 
       - name: Verify executor budget tag-read closure before any resource effect
         run: |
@@ -163,30 +150,17 @@ jobs:
           set -euo pipefail; umask 077
           printf '[nebula]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >"$RUNNER_TEMP/aws-credentials"
 
-      - name: Derive fresh bounded segment-one observer role duration
-        id: segment_one_observer_duration
+      - name: Acquire fresh bounded segment-one inventory-observer credentials
+        timeout-minutes: 10
+        env:
+          ROLE_ARN: ${{ vars.STAGE2_AWS_INVENTORY_OBSERVER_ROLE_ARN }}
         run: |
           set -euo pipefail
           expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
-          now_s=$(date +%s)
-          remaining=$(( expiry_s - now_s - 900 ))
-          cap=18000
-          segment_min=16200
-          duration="$remaining"
-          if (( duration > cap )); then duration="$cap"; fi
-          test "$duration" -ge "$segment_min"
-          test "$duration" -le "$cap"
-          test "$duration" -le "$remaining"
-          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
-
-      - name: Acquire fresh segment-one inventory-observer credentials
-        timeout-minutes: 10
-        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
-        with:
-          role-to-assume: ${{ vars.STAGE2_AWS_INVENTORY_OBSERVER_ROLE_ARN }}
-          role-session-name: cogs-stage2-observer-s1-${{ github.run_id }}
-          aws-region: us-east-1
-          role-duration-seconds: ${{ steps.segment_one_observer_duration.outputs.role_duration_seconds }}
+          remaining=$(( expiry_s - $(date +%s) - 900 )); cap=18000; minimum=16200; duration="$cap"
+          test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
+          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py assume-github-role "$ROLE_ARN" \
+            "cogs-stage2-observer-s1-$GITHUB_RUN_ID" "$duration" "$minimum" "$RUNNER_TEMP/approval/approval.json"
 
       - name: Stage approval, plans, and segment-one credentials
         id: production_staging
@@ -442,32 +416,21 @@ jobs:
           test "$(git -C "$destination" rev-parse HEAD)" = "$h"
           sudo -n /usr/bin/python3 -I -B "$destination/scripts/prepare-stage2-fixed-source.py" >/dev/null
 
-      - name: Derive fresh bounded segment-two executor role duration
-        id: segment_two_executor_duration
+      - name: Acquire fresh bounded segment-two executor credentials
+        timeout-minutes: 10
+        env:
+          ROLE_ARN: ${{ vars.STAGE2_AWS_PRODUCTION_EXECUTOR_ROLE_ARN }}
         run: |
           set -euo pipefail
           now_s=$(date +%s)
           approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 900 ))
           handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 900 ))
-          remaining="$approval_remaining"
-          if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
-          cap=19800
-          segment_min=18000
-          duration="$remaining"
-          if (( duration > cap )); then duration="$cap"; fi
-          test "$duration" -ge "$segment_min"
-          test "$duration" -le "$cap"
-          test "$duration" -le "$remaining"
-          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
-
-      - name: Acquire fresh segment-two executor credentials
-        timeout-minutes: 10
-        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
-        with:
-          role-to-assume: ${{ vars.STAGE2_AWS_PRODUCTION_EXECUTOR_ROLE_ARN }}
-          role-session-name: cogs-stage2-campaign-s2-${{ github.run_id }}
-          aws-region: us-east-1
-          role-duration-seconds: ${{ steps.segment_two_executor_duration.outputs.role_duration_seconds }}
+          remaining="$approval_remaining"; if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
+          cap=19800; minimum=18000; duration="$cap"
+          test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
+          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py assume-github-role "$ROLE_ARN" \
+            "cogs-stage2-campaign-s2-$GITHUB_RUN_ID" "$duration" "$minimum" "$RUNNER_TEMP/approval/approval.json" \
+            "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json"
       - name: Verify segment-two executor budget tag-read closure
         run: |
           set -euo pipefail; umask 077
@@ -480,32 +443,21 @@ jobs:
           set -euo pipefail; umask 077
           printf '[nebula]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >"$RUNNER_TEMP/aws-credentials"
 
-      - name: Derive fresh bounded segment-two observer role duration
-        id: segment_two_observer_duration
+      - name: Acquire fresh bounded segment-two inventory-observer credentials
+        timeout-minutes: 10
+        env:
+          ROLE_ARN: ${{ vars.STAGE2_AWS_INVENTORY_OBSERVER_ROLE_ARN }}
         run: |
           set -euo pipefail
           now_s=$(date +%s)
           approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 900 ))
           handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 900 ))
-          remaining="$approval_remaining"
-          if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
-          cap=19800
-          segment_min=18000
-          duration="$remaining"
-          if (( duration > cap )); then duration="$cap"; fi
-          test "$duration" -ge "$segment_min"
-          test "$duration" -le "$cap"
-          test "$duration" -le "$remaining"
-          printf 'role_duration_seconds=%s\n' "$duration" >>"$GITHUB_OUTPUT"
-
-      - name: Acquire fresh segment-two inventory-observer credentials
-        timeout-minutes: 10
-        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
-        with:
-          role-to-assume: ${{ vars.STAGE2_AWS_INVENTORY_OBSERVER_ROLE_ARN }}
-          role-session-name: cogs-stage2-observer-s2-${{ github.run_id }}
-          aws-region: us-east-1
-          role-duration-seconds: ${{ steps.segment_two_observer_duration.outputs.role_duration_seconds }}
+          remaining="$approval_remaining"; if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
+          cap=19800; minimum=18000; duration="$cap"
+          test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
+          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py assume-github-role "$ROLE_ARN" \
+            "cogs-stage2-observer-s2-$GITHUB_RUN_ID" "$duration" "$minimum" "$RUNNER_TEMP/approval/approval.json" \
+            "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json"
 
       - name: Stage approval, fresh credentials, and root-verified continuation
         id: production_staging
@@ -580,13 +532,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json; sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
-          destination="$RUNNER_TEMP/evidence-publication"; install -d -m 0700 "$destination"
-          sudo -n find /var/lib/cogs/stage2-aws-production-v2/evidence-publication -mindepth 1 -maxdepth 1 -type f -exec cp --no-preserve=ownership {} "$destination"/ \;
-          test "$(find "$destination" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = 'aws-stage2-completion-evidence-v4.json aws-stage2-completion-publication-v2.json aws-stage2-completion-report-v4.md aws-stage2-production-continuation-admission-v1.json aws-stage2-production-continuation-v1.bundle.json aws-stage2-production-continuation-v1.json '
-          sudo -n chown -R "$(id -u):$(id -g)" "$destination"; chmod 0400 "$destination"/*
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
-            /usr/bin/unshare --net -- "$RUNNER_TEMP/approval/cosign" verify-blob \
-            --trusted-root "$RUNNER_TEMP/approval/sigstore-trusted-root.json" \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py snapshot-evidence first
+          destination=/var/lib/cogs/stage2-aws-evidence-v2/first
+          test "$(find "$destination" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = 'aws-stage2-completion-evidence-v4.json aws-stage2-completion-publication-v2.json aws-stage2-completion-report-v4.md aws-stage2-production-continuation-admission-v1.json aws-stage2-production-continuation-v1.bundle.json aws-stage2-production-continuation-v1.json '
+          test "$(stat -c '%U:%G:%a' "$destination" "$destination"/* | sort -u | tr '\n' ' ')" = 'root:root:444 root:root:555 '
+          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            /usr/bin/unshare --net -- /var/lib/cogs/stage2-aws-production-v2/cosign verify-blob \
+            --trusted-root /var/lib/cogs/stage2-aws-production-v2/sigstore-trusted-root.json \
             --bundle "$destination/aws-stage2-production-continuation-v1.bundle.json" \
             --certificate-identity https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -599,7 +552,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stage2-production-evidence-${{ github.sha }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/evidence-publication
+          path: /var/lib/cogs/stage2-aws-evidence-v2/first
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -624,19 +577,23 @@ jobs:
           gh api "repos/nenb/cogs/actions/artifacts/$EVIDENCE_ARTIFACT_ID" >"$RUNNER_TEMP/evidence-artifact.json"
           jq -e --arg d "$final_digest" --argjson r "$GITHUB_RUN_ID" --arg n "stage2-production-evidence-$GITHUB_SHA-$GITHUB_RUN_ID" '.expired == false and .digest == $d and .workflow_run.id == $r and .name == $n and .size_in_bytes > 0' "$RUNNER_TEMP/evidence-artifact.json" >/dev/null
           export EVIDENCE_ARTIFACT_DIGEST="$final_digest"
-          diff -r --no-dereference "$RUNNER_TEMP/evidence-publication" "$RUNNER_TEMP/evidence-readback"
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
-            /usr/bin/unshare --net -- "$RUNNER_TEMP/approval/cosign" verify-blob \
-            --trusted-root "$RUNNER_TEMP/approval/sigstore-trusted-root.json" \
-            --bundle "$RUNNER_TEMP/evidence-readback/aws-stage2-production-continuation-v1.bundle.json" \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py snapshot-evidence readback "$RUNNER_TEMP/evidence-readback"
+          first=/var/lib/cogs/stage2-aws-evidence-v2/first
+          readback=/var/lib/cogs/stage2-aws-evidence-v2/readback
+          diff -r --no-dereference "$first" "$readback"
+          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            /usr/bin/unshare --net -- /var/lib/cogs/stage2-aws-production-v2/cosign verify-blob \
+            --trusted-root /var/lib/cogs/stage2-aws-production-v2/sigstore-trusted-root.json \
+            --bundle "$readback/aws-stage2-production-continuation-v1.bundle.json" \
             --certificate-identity https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$RUNNER_TEMP/evidence-readback/aws-stage2-production-continuation-v1.json" >/dev/null
-          npx tsx scripts/validate-aws-stage2-completion-evidence-v4.ts --package "$RUNNER_TEMP/evidence-readback"
+            "$readback/aws-stage2-production-continuation-v1.json" >/dev/null
+          npx tsx scripts/validate-aws-stage2-completion-evidence-v4.ts --package "$readback"
           install -d -m 0700 "$RUNNER_TEMP/evidence-receipt"
           python3 -I -B - <<'PY' >"$RUNNER_TEMP/evidence-receipt/receipt.json"
           import hashlib,json,os,pathlib
-          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"evidence-readback"; members=[]
+          root=pathlib.Path("/var/lib/cogs/stage2-aws-evidence-v2/readback"); members=[]
           for path in sorted(root.iterdir()):
               if not path.is_file() or path.is_symlink(): raise SystemExit(2)
               raw=path.read_bytes(); members.append({"name":path.name,"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()})

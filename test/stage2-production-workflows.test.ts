@@ -16,6 +16,7 @@ const planner = readFileSync("scripts/stage2-production-planner.py", "utf8");
 const issuer = readFileSync("scripts/stage2-production-approval.py", "utf8");
 const stager = readFileSync("scripts/stage2-stage-production-approval.py", "utf8");
 const campaignEntry = readFileSync("deploy/aws-feasibility/completion_campaign_aws_entry.py", "utf8");
+const campaignAdapter = readFileSync("deploy/aws-feasibility/completion_campaign_aws_adapter.py", "utf8");
 const recoveryEntry = readFileSync("deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py", "utf8");
 const providerEntry = readFileSync("deploy/aws-feasibility/completion_campaign_aws_provider.py", "utf8");
 const fullEntry = readFileSync("deploy/aws-feasibility/remote/completion_cycle_full.py", "utf8");
@@ -192,20 +193,11 @@ test("R diagnostic lane exercises production bytes without creating evidence aut
   assert.match(diagnosticCampaign, /completion_campaign_aws_recovery_entry\.py/u);
   assert.doesNotMatch(diagnosticCampaign, /validate-aws-stage2-completion-evidence/u);
   assert.doesNotMatch(diagnosticCampaign, /aws-stage2-completion-evidence-v[0-9]/u);
-  assert.equal((diagnosticCampaign.match(/aws-actions\/configure-aws-credentials@[0-9a-f]{40}/gu) ?? []).length, 2);
+  assert.doesNotMatch(diagnosticCampaign, /aws-actions\/configure-aws-credentials/u);
+  assert.equal((diagnosticCampaign.match(/assume-github-role/gu) ?? []).length, 2);
   assert.equal((diagnosticCampaign.match(/expiry_s - \$\(date \+%s\) - 900/gu) ?? []).length, 2);
-  assert.equal(
-    (diagnosticCampaign.match(/timeout-minutes: 10\n {8}uses: aws-actions\/configure-aws-credentials/gu) ?? []).length,
-    2,
-  );
-  assert.match(
-    diagnosticCampaign,
-    /id: diagnostic_executor_duration[\s\S]*role-duration-seconds: \$\{\{ steps\.diagnostic_executor_duration\.outputs\.role_duration_seconds \}\}/u,
-  );
-  assert.match(
-    diagnosticCampaign,
-    /id: diagnostic_observer_duration[\s\S]*role-duration-seconds: \$\{\{ steps\.diagnostic_observer_duration\.outputs\.role_duration_seconds \}\}/u,
-  );
+  assert.equal((diagnosticCampaign.match(/timeout-minutes: 10\n {8}env:\n {10}ROLE_ARN:/gu) ?? []).length, 2);
+  assert.equal((diagnosticCampaign.match(/cap=21600; minimum=16500/gu) ?? []).length, 2);
   assert.match(diagnosticCampaign, /cogs\.stage2-r-diagnostic-result\/v2/u);
   assert.match(diagnosticCampaign, /NON-AUTHORITATIVE-stage2-r-diagnostic-result/u);
   assert.match(diagnosticCampaign, /test ! -e \/var\/lib\/cogs\/stage2-aws-production-v2\/evidence-publication/u);
@@ -290,9 +282,10 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.doesNotMatch(campaign, /COGS_STAGE2_CONTINUATION_SHA256=/u);
   assert.match(campaign, /COGS_STAGE2_WORKFLOW_REVISION/u);
   assert.match(campaign, /aws-stage2-production-continuation-admission-v1\.json/u);
-  assert.equal((campaign.match(/aws-actions\/configure-aws-credentials@[0-9a-f]{40}/gu) ?? []).length, 4);
+  assert.doesNotMatch(campaign, /aws-actions\/configure-aws-credentials/u);
+  assert.equal((campaign.match(/assume-github-role/gu) ?? []).length, 4);
   for (const session of ["campaign-s1", "observer-s1", "campaign-s2", "observer-s2"])
-    assert.match(campaign, new RegExp(`cogs-stage2-${session}-\\$\\{\\{ github.run_id \\}\\}`, "u"));
+    assert.match(campaign, new RegExp(`cogs-stage2-${session}-\\$GITHUB_RUN_ID`, "u"));
   assert.equal((campaign.match(/prepare-stage2-fixed-source\.py/gu) ?? []).length, 2);
   assert.equal((campaign.match(/budgets list-tags-for-resource/gu) ?? []).length, 2);
   assert.match(campaign, /NotFoundException/u);
@@ -333,35 +326,25 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.doesNotMatch(campaign, /steps\.approval_verification\.outputs\.role_duration_seconds/u);
 
   const roleAssumptions = [
-    ["Acquire fresh segment-one executor credentials", "segment_one_executor_duration", 18000, 16200],
-    ["Acquire fresh segment-one inventory-observer credentials", "segment_one_observer_duration", 18000, 16200],
-    ["Acquire fresh segment-two executor credentials", "segment_two_executor_duration", 19800, 18000],
-    ["Acquire fresh segment-two inventory-observer credentials", "segment_two_observer_duration", 19800, 18000],
+    ["Acquire fresh bounded segment-one executor credentials", 18000, 16200],
+    ["Acquire fresh bounded segment-one inventory-observer credentials", 18000, 16200],
+    ["Acquire fresh bounded segment-two executor credentials", 19800, 18000],
+    ["Acquire fresh bounded segment-two inventory-observer credentials", 19800, 18000],
   ] as const;
-  assert.equal((campaign.match(/^ {8}id: segment_(?:one|two)_(?:executor|observer)_duration$/gmu) ?? []).length, 4);
-  for (const [name, id, cap, segmentMinimum] of roleAssumptions) {
-    const actionMarker = `      - name: ${name}\n        timeout-minutes: 10\n        uses: aws-actions/configure-aws-credentials@`;
-    const actionAt = campaign.indexOf(actionMarker);
+  for (const [name, cap, minimum] of roleAssumptions) {
+    const actionAt = campaign.indexOf(`      - name: ${name}\n`);
     assert.ok(actionAt >= 0, name);
-    const priorStepAt = campaign.lastIndexOf("\n      - name: ", actionAt - 2);
-    const derivation = campaign.slice(priorStepAt, actionAt);
-    assert.match(derivation, new RegExp(`id: ${id}`, "u"), name);
-    assert.match(derivation, /expires_unix_ns/u, name);
-    assert.match(derivation, /now_s=\$\(date \+%s\)/u, name);
-    assert.match(derivation, / - now_s - 900 \)\)/u, name);
-    assert.match(derivation, new RegExp(`cap=${cap}`, "u"), name);
-    assert.match(derivation, new RegExp(`segment_min=${segmentMinimum}`, "u"), name);
-    assert.match(derivation, /if \(\( duration > cap \)\); then duration="\$cap"; fi/u, name);
-    assert.match(derivation, /test "\$duration" -ge "\$segment_min"/u, name);
-    assert.match(derivation, /test "\$duration" -le "\$remaining"/u, name);
-    const actionEnd = campaign.indexOf("\n      - name: ", actionAt + actionMarker.length);
+    const actionEnd = campaign.indexOf("\n      - name: ", actionAt + name.length);
     const action = campaign.slice(actionAt, actionEnd);
-    assert.match(
-      action,
-      new RegExp(`role-duration-seconds: \\$\\{\\{ steps\\.${id}\\.outputs\\.role_duration_seconds \\}\\}`, "u"),
-      name,
-    );
     assert.match(action, /timeout-minutes: 10/u, name);
+    assert.match(action, /ROLE_ARN:/u, name);
+    assert.match(action, /expires_unix_ns/u, name);
+    assert.match(action, new RegExp(`cap=${cap}; minimum=${minimum}`, "u"), name);
+    assert.match(action, /duration="\$cap"/u, name);
+    assert.match(action, /test "\$duration" -ge "\$minimum"/u, name);
+    assert.match(action, /test "\$duration" -eq "\$cap"/u, name);
+    assert.match(action, /test "\$duration" -le "\$remaining"/u, name);
+    assert.match(action, /assume-github-role "\$ROLE_ARN"/u, name);
   }
 
   const firstJob = campaign.slice(campaign.indexOf("  cycles_1_3:"), campaign.indexOf("  cycles_4_7:"));
@@ -397,9 +380,17 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /production-evidence-upload-receipt\/v3/u);
   assert.equal((campaign.match(/validate-aws-stage2-completion-evidence-v4\.ts --package/gu) ?? []).length, 2);
   assert.equal(
-    (campaign.match(/\/usr\/bin\/unshare --net -- "\$RUNNER_TEMP\/approval\/cosign" verify-blob/gu) ?? []).length,
+    (
+      campaign.match(/\/usr\/bin\/unshare --net -- \/var\/lib\/cogs\/stage2-aws-production-v2\/cosign verify-blob/gu) ??
+      []
+    ).length,
     2,
   );
+  assert.equal((campaign.match(/snapshot-evidence (?:first|readback)/gu) ?? []).length, 2);
+  assert.match(campaign, /path: \/var\/lib\/cogs\/stage2-aws-evidence-v2\/first/u);
+  assert.match(stager, /def snapshot_evidence_package/u);
+  assert.match(stager, /set\(os\.listdir\(source_fd\)\) == set\(EVIDENCE_MEMBERS\)/u);
+  assert.match(campaignAdapter, /"--foreground"/u);
   assert.ok(
     campaign.indexOf('validate-aws-stage2-completion-evidence-v4.ts --package "$destination"') <
       campaign.indexOf("Upload pass-only canonical evidence after credential retirement"),

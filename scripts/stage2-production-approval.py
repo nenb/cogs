@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Canonical non-AWS v5 approval issuer; requires sibling pre-aws-package-v5.json.
+"""Canonical v6 approval tooling and explicit bounded GitHub OIDC/STS helper.
 
 Package authenticity comes from the separately authenticated workflow artifact;
-these static byte/binding checks never authorize provider effects themselves.
+the static issue/authentication paths never authorize provider effects. Only the
+``assume-github-role`` command performs the one-shot credential exchange.
 """
+import base64
 from dataclasses import fields
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -13,6 +16,10 @@ import re
 import runpy
 import stat
 import sys
+import time
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 _DIAGNOSTIC = b"stage2-production-approval: owner.failed\n"
 
@@ -161,6 +168,116 @@ def issue(path):
     emit(canonical(output))
 
 
+def _bounded_response(response, maximum):
+    raw = response.read(maximum + 1)
+    require(0 < len(raw) <= maximum)
+    return raw
+
+
+def _jwt_claims(token):
+    require(type(token) is str and token.count(".") == 2 and len(token) <= 16 * 1024)
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    try: value = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+    except (ValueError, UnicodeError, json.JSONDecodeError) as error:
+        raise ApprovalIssuerError() from error
+    require(type(value) is dict)
+    return value
+
+
+def assume_github_role(role_arn, session_name, duration_raw, minimum_raw,
+                       approval_path, runway_path=None):
+    """One-shot GitHub OIDC/STS exchange with expiration/runway validation."""
+    require(re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}", role_arn)
+            and re.fullmatch(r"[A-Za-z0-9+=,.@_-]{2,64}", session_name)
+            and POSITIVE.fullmatch(duration_raw) and POSITIVE.fullmatch(minimum_raw))
+    duration, minimum = int(duration_raw), int(minimum_raw)
+    require(900 <= minimum <= duration <= 43200)
+    approval_raw, approval = read(approval_path)
+    require(canonical(approval) == approval_raw
+            and approval.get("version") == "cogs.stage2-completion-production-approval/v6"
+            and type(approval.get("expires_unix_ns")) is int)
+    now = int(time.time())
+    runway_deadline = approval["expires_unix_ns"]
+    if runway_path is not None:
+        runway_raw, runway = read(runway_path)
+        require(canonical(runway) == runway_raw
+                and runway.get("version") == "cogs.stage2-production-continuation/v1"
+                and runway.get("execution_authority") == "authenticated-aws-adapter"
+                and type(runway.get("cleanup_deadline_unix_ns")) is int)
+        runway_deadline = min(runway_deadline, runway["cleanup_deadline_unix_ns"])
+    require(duration <= runway_deadline // 1_000_000_000 - now - 900)
+    request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+    request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+    parsed = urlsplit(request_url)
+    require(parsed.scheme == "https" and parsed.hostname is not None
+            and parsed.hostname.endswith(".actions.githubusercontent.com")
+            and parsed.username is None and parsed.password is None
+            and not parsed.fragment and "\r" not in request_token
+            and "\n" not in request_token and len(request_token) >= 32)
+    query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+    require(not any(name == "audience" for name, _value in query))
+    oidc_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                          urlencode([*query, ("audience", "sts.amazonaws.com")]), ""))
+    request = Request(oidc_url, headers={"Authorization": f"Bearer {request_token}"})
+    with urlopen(request, timeout=30) as response:
+        require(getattr(response, "status", 200) == 200)
+        oidc = json.loads(_bounded_response(response, 24 * 1024))
+    require(type(oidc) is dict and set(oidc) == {"value"})
+    web_identity = oidc["value"]; claims = _jwt_claims(web_identity)
+    audience = claims.get("aud")
+    require((audience == "sts.amazonaws.com"
+             or type(audience) is list and audience == ["sts.amazonaws.com"])
+            and claims.get("iss") == "https://token.actions.githubusercontent.com"
+            and claims.get("sub") == "repo:nenb/cogs:ref:refs/heads/main"
+            and type(claims.get("exp")) is int and claims["exp"] >= now + 60)
+    body = urlencode({
+        "Action": "AssumeRoleWithWebIdentity", "Version": "2011-06-15",
+        "RoleArn": role_arn, "RoleSessionName": session_name,
+        "WebIdentityToken": web_identity, "DurationSeconds": str(duration),
+    }).encode("ascii")
+    sts_request = Request("https://sts.amazonaws.com/", data=body,
+                          headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urlopen(sts_request, timeout=60) as response:
+        require(getattr(response, "status", 200) == 200)
+        sts_raw = _bounded_response(response, 64 * 1024)
+    try: xml = ElementTree.fromstring(sts_raw)
+    except ElementTree.ParseError as error: raise ApprovalIssuerError() from error
+    namespace = {"s": "https://sts.amazonaws.com/doc/2011-06-15/"}
+    def text(name):
+        node = xml.find(f".//s:Credentials/s:{name}", namespace)
+        require(node is not None and type(node.text) is str); return node.text
+    access, secret, token, expiration = (
+        text("AccessKeyId"), text("SecretAccessKey"),
+        text("SessionToken"), text("Expiration"))
+    require(re.fullmatch(r"ASIA[A-Z0-9]{16}", access)
+            and re.fullmatch(r"[A-Za-z0-9/+=]{40,128}", secret)
+            and 100 <= len(token) <= 8192 and token.isascii()
+            and all("\n" not in item and "\r" not in item and "\0" not in item
+                    for item in (access, secret, token)))
+    try: expires = int(datetime.fromisoformat(expiration.replace("Z", "+00:00")).timestamp())
+    except (ValueError, OverflowError) as error: raise ApprovalIssuerError() from error
+    require(expires >= now + minimum and expires >= now + duration - 60
+            and expires <= now + duration + 300
+            and expires <= runway_deadline // 1_000_000_000)
+    for value in (access, secret, token):
+        command = f"::add-mask::{value}\n".encode("ascii")
+        require(os.write(1, command) == len(command))
+    github_environment = Path(os.environ.get("GITHUB_ENV", ""))
+    descriptor = os.open(github_environment, os.O_WRONLY | os.O_APPEND |
+                         os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(descriptor)
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) & 0o022 == 0)
+        os.fchmod(descriptor, 0o600)
+        output = (f"AWS_ACCESS_KEY_ID={access}\nAWS_SECRET_ACCESS_KEY={secret}\n"
+                  f"AWS_SESSION_TOKEN={token}\nAWS_DEFAULT_REGION=us-east-1\n"
+                  f"AWS_REGION=us-east-1\n").encode("ascii")
+        require(os.write(descriptor, output) == len(output)); os.fsync(descriptor)
+    finally: os.close(descriptor)
+
+
 def authenticate(approval_path):
     revision, control, run_id, actor = environment()
     approval_raw, approval_value = read(approval_path)
@@ -195,8 +312,10 @@ def authenticate(approval_path):
 
 if __name__ == "__main__":
     try:
-        require(len(sys.argv) == 3)
-        if sys.argv[1] == "issue" and len(sys.argv) == 3: issue(sys.argv[2])
+        require(len(sys.argv) in {3, 7, 8})
+        if sys.argv[1] == "assume-github-role" and len(sys.argv) in {7, 8}:
+            assume_github_role(*sys.argv[2:])
+        elif sys.argv[1] == "issue" and len(sys.argv) == 3: issue(sys.argv[2])
         elif sys.argv[1] == "authenticate" and len(sys.argv) == 3:
             authenticate(sys.argv[2])
         elif sys.argv[1] == "eligibility" and len(sys.argv) == 3:

@@ -117,10 +117,24 @@ test("launcher executable dispatch selects only the exact adapter-custody admiss
     mkdirSync(join(source, "deploy/aws-feasibility"), { recursive: true });
     mkdirSync(custody);
     mkdirSync(wrong);
-    const phaseOne = join(source, "deploy/aws-feasibility/completion_campaign_aws_entry.py");
-    const phaseTwo = join(source, "deploy/aws-feasibility/completion_campaign_aws_continuation_entry.py");
-    writeFileSync(phaseOne, "print('phase-one')\n", { mode: 0o700 });
-    writeFileSync(phaseTwo, "print('phase-two')\n", { mode: 0o700 });
+    const entry = join(source, "deploy/aws-feasibility/completion_campaign_aws_entry.py");
+    copyFileSync("deploy/aws-feasibility/completion_campaign_aws_entry.py", entry);
+    chmodSync(entry, 0o700);
+    writeFileSync(
+      join(source, "deploy/aws-feasibility/completion_campaign_aws_adapter.py"),
+      [
+        "from dataclasses import dataclass",
+        "from pathlib import Path",
+        "@dataclass(frozen=True)",
+        "class Receipt: route: str",
+        `CONTINUATION_ADMISSION=Path(${JSON.stringify(join(custody, "aws-stage2-production-continuation-admission-v1.json"))})`,
+        "def run_fixed_second_segment(): return Receipt('phase-two')",
+        "def run_fixed_first_segment(*_args): return Receipt('phase-one')",
+        "def run_fixed_diagnostic_campaign(): return Receipt('diagnostic')",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
     const fakeSudo = join(root, "sudo");
     writeFileSync(fakeSudo, '#!/bin/bash\ntest "$1" = -n || exit 90\nshift\nexec "$@"\n', { mode: 0o700 });
     const executable = join(root, "launcher.sh");
@@ -136,13 +150,27 @@ test("launcher executable dispatch selects only the exact adapter-custody admiss
     writeFileSync(join(custody, admission), "{}\n");
     let result = spawnSync(executable, [], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, "phase-one\n");
+    assert.equal(result.stdout, '{"route":"phase-two"}\n');
 
     rmSync(join(custody, admission));
     writeFileSync(join(wrong, admission), "{}\n");
     result = spawnSync(executable, [], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
     assert.equal(result.status, 64);
     assert.equal(result.stdout, "");
+
+    const firstEnvironment = {
+      PATH: "/usr/bin:/bin",
+      COGS_STAGE2_WORKFLOW_REVISION: "4".repeat(40),
+      COGS_STAGE2_GITHUB_RUN_ID: "101",
+      COGS_STAGE2_PRODUCER_JOB_ID: "20",
+      COGS_STAGE2_APPROVAL_ARTIFACT_RUN_ID: "10",
+      COGS_STAGE2_APPROVAL_ARTIFACT_ID: "11",
+      COGS_STAGE2_APPROVAL_ARTIFACT_DIGEST: `sha256:${"5".repeat(64)}`,
+      COGS_STAGE2_APPROVAL_ARTIFACT_NAME: `stage2-production-approval-${"4".repeat(40)}-10`,
+    };
+    result = spawnSync(executable, [], { encoding: "utf8", env: firstEnvironment });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '{"route":"phase-one"}\n');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
