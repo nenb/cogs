@@ -120,6 +120,17 @@ Required follow-up:
   foreign cgroup state.
 - Add a deterministic regression test and repeat the AWS cycles.
 
+Two bounded stress diagnostics did not reproduce the mismatch. Run
+`35500036295` passed a full cycle with a three-second delay immediately before
+cgroup preparation. Run `35504647304` passed a full cycle with a ten-second
+stale-profile interval before each runtime transaction deadline began. Both
+ended with zero inventory. Run `35503218641` used a thirty-second delay after
+the transaction deadline was already established and failed closed at the
+expected `work cutoff reached`; it was a rejected stress-harness arrangement,
+not a cgroup recurrence, and cleanup again returned inventory to zero. These
+results narrow the likely transition window but do not turn non-recurrence into
+an identified cgroup correction.
+
 ## Cleanup limitation requiring correction
 
 Hard cancellation of the former single-job workflow terminated its instance but
