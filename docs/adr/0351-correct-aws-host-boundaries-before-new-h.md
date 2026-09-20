@@ -105,8 +105,8 @@ this ADR to governance. Admit only
 focused Python test to the pre-H portion of `final-HGQ`; the provider and its
 existing fake test remain in `local-tofu-ssm`. The new ADR raises the tracked
 file high from 1,545 to 1,546. The deterministic readiness refresh receives no
-deletion credit: reallocate 300,000 prospective bytes from `local-tofu-ssm` to
-`readiness-ci`, making their active highs 3,800,000 and 7,900,000 bytes. No task
+deletion credit: reallocate 600,000 prospective bytes from `local-tofu-ssm` to
+`readiness-ci`, making their active highs 3,500,000 and 8,200,000 bytes. No task
 line high, tranche total, global forecast, serialized-inventory limit, or
 source-byte limit changes. Deletions and rewrites provide no credit.
 

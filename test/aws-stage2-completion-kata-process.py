@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Portable contract snapshots and Linux direct-child supervisor tests."""
+from contextlib import nullcontext
 import errno
 import hashlib
 import json
@@ -721,8 +722,10 @@ def linux_supervisor_tests():
             )
             owner = process._CgroupOwner("", leaf_generation, (), False, {})
             patches = cgroup_patches(owner)
+            attestation = (patch.object(process, "_require_attested_executable", return_value=None)
+                           if command_id is process.CommandId.SSH_KEYGEN_CLIENT else nullcontext())
             try:
-                with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                with patches[0], patches[1], patches[2], patches[3], patches[4], attestation, \
                      patch.object(process, "_host_generation", side_effect=normalized_generation), \
                      patch.object(process.kata_operation, "_cycle_route", return_value=None):
                     outcome, _durable = process._transact_fixed(
