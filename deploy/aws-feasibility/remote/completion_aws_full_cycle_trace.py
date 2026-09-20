@@ -204,9 +204,9 @@ def main() -> None:
         if daemon_profile is not None and daemon_profile.runtime_leaf_name is not None:
             if not _cgroup_stress_announced:
                 _emit("diagnostic-hotpatch", owner_call="cgroup-race-stress",
-                      delay_milliseconds=3000)
+                      delay_milliseconds=30000)
                 _cgroup_stress_announced = True
-            time.sleep(3)
+            time.sleep(30)
         try:
             return original_prepare_cgroup(context, daemon_profile)
         except BaseException:
