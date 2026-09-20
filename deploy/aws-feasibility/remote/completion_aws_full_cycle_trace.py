@@ -197,16 +197,23 @@ def main() -> None:
             raise
 
     network.prove_causal_network = traced_causal_proof
+    original_daemon_profile = process._fixed_daemon_transaction_profile
+
+    def stressed_daemon_profile(owner, journal):
+        global _cgroup_stress_announced
+        profile = original_daemon_profile(owner, journal)
+        if profile.runtime_leaf_name is not None:
+            if not _cgroup_stress_announced:
+                _emit("diagnostic-hotpatch", owner_call="cgroup-race-stress",
+                      delay_milliseconds=10000)
+                _cgroup_stress_announced = True
+            time.sleep(10)
+        return profile
+
+    process._fixed_daemon_transaction_profile = stressed_daemon_profile
     original_prepare_cgroup = process._prepare_cgroup
 
     def traced_prepare_cgroup(context, daemon_profile=None):
-        global _cgroup_stress_announced
-        if daemon_profile is not None and daemon_profile.runtime_leaf_name is not None:
-            if not _cgroup_stress_announced:
-                _emit("diagnostic-hotpatch", owner_call="cgroup-race-stress",
-                      delay_milliseconds=30000)
-                _cgroup_stress_announced = True
-            time.sleep(30)
         try:
             return original_prepare_cgroup(context, daemon_profile)
         except BaseException:
