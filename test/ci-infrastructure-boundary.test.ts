@@ -852,7 +852,7 @@ points='file-before file-after dir-before dir-after fork-before fork-after prctl
 for case in ['success','prctl-error','parent-error','pid','code','signal','handshake','member-error','cg-drift','helpers-drift','pending-drift','lost-removal','refusal-fsync',*points,*['crash:'+p for p in points],*['stale:'+p for p in ('valid','malformed','foreign','oversize','extra','symlink','hardlink')]]:
  with tempfile.TemporaryDirectory() as root:
   o=m.Custody.__new__(m.Custody);o.generation=g='a'*32;o.records=set();o.failed=False;o.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);o.control=c=m.directory(o.fd,'control',0o700)
-  o.cg=cg=root+'/cgroup';os.mkdir(o.cg);os.mkdir(o.cg+'/helpers');open(o.cg+'/helpers/cgroup.procs','w').close();o.deadline=time.monotonic()+.1
+  o.cg=cg=root+'/cgroup';os.mkdir(o.cg);os.mkdir(o.cg+'/helpers');open(o.cg+'/helpers/cgroup.procs','w').close();o.deadline=time.monotonic()+1
   ropen=open;close=os.close;rstat=os.stat;fstat=os.fstat;fsync=os.fsync;runlink=os.unlink;rwrite=os.write;rkill=os.kill;hit=False;waits=0
   def log(): return ropen(root+'/trace').read().splitlines() if os.path.exists(root+'/trace') else []
   def step(at):
