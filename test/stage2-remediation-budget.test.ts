@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const runPython = (program: string) => {
@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0351 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0352 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -18,10 +18,10 @@ assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','r
 assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8400,1300000),(5050,2200000),(6800,3300000),(400,9500000),(1507,5200000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
-assert len(tasks[-1]['paths']) == 42
+assert len(tasks[-1]['paths']) == 44
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
-for path in ['config/stage2-retired-revisions-v2.json','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/stage2-prebuilt-rehearsal-grant.py']:
+for path in ['config/stage2-retired-revisions-v2.json','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-establish-fresh-Q-and-authorize-qualification.md','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 13
@@ -39,6 +39,9 @@ assert 'docs/adr/0348-retire-transient-H-producer.md' in tasks[0]['paths']
 assert 'docs/adr/0351-correct-aws-host-boundaries-before-new-h.md' in tasks[0]['paths']
 assert tasks[1]['paths'] == ['.github/workflows/insecure-container.yml','.github/workflows/kvm-driver-diagnostic.yml','.github/workflows/kvm-qualification.yml','.github/workflows/release-images.yml','config/release-image-set-pins-v1.json','IMPLEMENTATION.md','dev/linux-kvm/driver.sh','dev/linux-kvm/bounded-command.py','dev/linux-kvm/qualification-owner.py','dev/linux-kvm/qualify.sh','dev/product-test/host-custody.py','dev/product-test/runner.ts','dev/product-test/snapshot-owner.ts','docs/adr/0337-correct-protected-product-runtime-ancestry.md','docs/operations/release-image-publication.md','docs/operations/production-runtime-foundation.md','docs/operations/stage-4-offline-readiness.md','docs/security-evidence/release-image-set-assertion-34774398155.canonical.json','docs/security-evidence/release-image-set-review-34774398155.canonical.json','docs/security-evidence/stage4-offline-readiness-package.json','docs/test-reports/stage-4-offline-readiness.md','images/sandbox/entrypoint.sh','schemas/release-image-set-assertion-v1.json','schemas/release-image-set-review-v3.json','schemas/stage4-authenticated-runtime-artifact-evidence-v4.json','schemas/stage4-offline-readiness-package-v5.json','scripts/release-image-set-review-v2.ts','scripts/release-image-set-review-v3.ts','scripts/stage4-offline-readiness-regenerate.ts','src/egress/otlp-telemetry.ts','src/egress/runtime-manager.ts','src/runtime/compose.ts','src/skills/snapshot-session-preparer.ts','src/ssh/connection.ts','src/telemetry/otlp-http.ts','src/telemetry/worker-telemetry.ts','test/egress-otlp-telemetry.test.ts','test/egress-runtime-manager.test.ts','test/launcher-smoke-evidence.test.ts','test/linux-kvm-git-tools.test.ts','test/otlp-http.test.ts','test/ssh-connection.test.ts','test/worker-telemetry.test.ts','test/dev-launcher-profiles.test.ts','test/production-compose.test.ts','test/production-sandbox-image.test.ts','test/release-image-set-assertion.test.ts','test/aws-stage2-completion-final-integration-linux.test.ts','test/aws-stage2-completion-immutable-preparation.test.ts','test/release-image-set-review-v2.test.ts','test/release-image-set-review-v3.test.ts','test/stage4-offline-readiness.test.ts','test/stage4-runtime-artifact-closure.test.ts']
 assert paths['.gitleaksignore'] == 'integration'
+integration=next(owner for owner in b['owners'] if owner['name']=='integration')['paths']
+assert 'docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md' in integration
+assert 'docs/adr/0353-establish-fresh-Q-and-authorize-qualification.md' in integration
 local=tasks[2]['paths']
 assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
 assert '.github/workflows/stage2-r-diagnostic-campaign.yml' in local
@@ -52,7 +55,7 @@ assert tasks[2]['gross_lines'] == 6800 and tasks[2]['gross_bytes'] == 3300000
 assert tasks[3]['gross_lines'] == 400 and tasks[3]['gross_bytes'] == 9500000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':607,'gross_bytes':1700000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':900,'gross_bytes':3500000}
-assert b['source_limits'] == {'tracked_files':1558,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1559,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})
@@ -62,6 +65,35 @@ bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['alloc
 try: m['_product_test_budget'](bad,{})
 except m['LineBudgetError']: pass
 else: raise AssertionError('path mutation accepted')
+`);
+});
+
+test("final-HGQ enforcement freezes exact H and separately consumes the post-H reserve", () => {
+  runPython(`
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py')
+assert m['PRODUCT_TEST_FINAL_H_REVISION'] == '5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c'
+assert m['PRODUCT_TEST_FINAL_H_PARENT'] == 'ede3c228eea1efb4cd3a435b969f59aeb7f71c10'
+assert m['PRODUCT_TEST_FINAL_H_TREE'] == 'b8734d91e693a01a29d49a9a4d5f9eb3843ad374'
+assert m['PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP'] == (607,1700000)
+assert m['PRODUCT_TEST_FINAL_HGQ_POST_H_CAP'] == (900,3500000)
+names=m['PRODUCT_TEST_TASK_MAXIMA']
+def empty(): return {name:0 for name in names}
+pre_lines=empty(); pre_bytes=empty(); post_lines=empty(); post_bytes=empty()
+pre_lines['final-HGQ']=607; pre_bytes['final-HGQ']=1700000
+post_lines['final-HGQ']=900; post_bytes['final-HGQ']=3500000
+lines,raw=m['_enforce_product_test_consumption'](pre_lines,pre_bytes,post_lines,post_bytes)
+assert (lines['final-HGQ'],raw['final-HGQ']) == (1507,5200000)
+for position,key,excess in [(0,'final-HGQ',608),(1,'final-HGQ',1700001),(2,'final-HGQ',901),(3,'final-HGQ',3500001)]:
+ values=[empty(),empty(),empty(),empty()]; values[position][key]=excess
+ try: m['_enforce_product_test_consumption'](*values)
+ except m['LineBudgetError']: pass
+ else: raise AssertionError((position,excess))
+b,_,_,_,_=m['_remediation_budget']()
+_,_,observed_pre_lines,observed_pre_bytes,observed_post_lines,observed_post_bytes=m['_product_test_consumption_segments'](b)
+assert (observed_pre_lines['final-HGQ'],observed_pre_bytes['final-HGQ']) == (576,241849)
+assert 0 < observed_post_lines['final-HGQ'] <= 900
+assert observed_post_bytes['final-HGQ'] <= 3500000
 `);
 });
 
@@ -626,6 +658,35 @@ test("ADR0351 authorizes bounded host corrections, a direct fresh chain, and one
   assert.ok(
     readFileSync("docs/adr/README.md", "utf8").includes("[0351](0351-correct-aws-host-boundaries-before-new-h.md)"),
   );
+});
+
+test("ADR0352 freezes fresh H and authorizes only direct-child G controls", () => {
+  const adr = readFileSync("docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md", "utf8").replace(/\s+/gu, " ");
+  for (const phrase of [
+    "5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c",
+    "sole parent is `ede3c228eea1efb4cd3a435b969f59aeb7f71c10`",
+    "b8734d91e693a01a29d49a9a4d5f9eb3843ad374",
+    "35556912716",
+    "35559912972",
+    "35562735335",
+    "10622494382",
+    "sha256:4fabbd57798aec3d5d72ebf5be578f7706c25852f9b115fd16ab0b8093fab535",
+    "4,353 entries and two byte-identical builds",
+    "one commit whose sole parent is exact H",
+    "exactly one first-created attempt-one trusted publisher",
+    "Only after independent audit accepts the publisher's complete exact artifact custody",
+    "exactly one first-created attempt-one no-KVM static observation",
+    "G changes no H-owned executable or runtime behavior, campaign, production, provider, workflow, static package, or qualification constant",
+    "immutable 607-line and 1,700,000-byte cap",
+    "separate 900-line and 3,500,000-byte reserve",
+    "1,507 lines and 5,200,000 bytes",
+    "retires this generation",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes("[0352](0352-freeze-fresh-H-and-authorize-G-control.md)"),
+  );
+  assert.equal(existsSync("docs/adr/0353-establish-fresh-Q-and-authorize-qualification.md"), false);
 });
 
 test("central checker accepts the current cumulative linear plan", () => {
