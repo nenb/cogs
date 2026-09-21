@@ -15,7 +15,7 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(7033,1100000),(5057,2900000),(5446,3300000),(500,9000000),(4121,5200000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8200,1100000),(5050,2600000),(6600,3300000),(400,9300000),(1907,5200000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
 assert len(tasks[-1]['paths']) == 42
@@ -48,10 +48,10 @@ assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in tasks[0]['paths']
 assert 'schemas/aws-stage2-completion-production-approval-v6.json' in tasks[0]['paths']
 assert 'test/stage2-production-workflows.test.ts' in tasks[0]['paths']
-assert tasks[2]['gross_lines'] == 5446 and tasks[2]['gross_bytes'] == 3300000
-assert tasks[3]['gross_lines'] == 500 and tasks[3]['gross_bytes'] == 9000000
-assert tasks[-1]['pre_h_cap'] == {'gross_lines':621,'gross_bytes':1700000}
-assert tasks[-1]['post_h_reserve'] == {'gross_lines':3500,'gross_bytes':3500000}
+assert tasks[2]['gross_lines'] == 6600 and tasks[2]['gross_bytes'] == 3300000
+assert tasks[3]['gross_lines'] == 400 and tasks[3]['gross_bytes'] == 9300000
+assert tasks[-1]['pre_h_cap'] == {'gross_lines':707,'gross_bytes':1700000}
+assert tasks[-1]['post_h_reserve'] == {'gross_lines':1200,'gross_bytes':3500000}
 assert b['source_limits'] == {'tracked_files':1558,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
@@ -63,6 +63,33 @@ try: m['_product_test_budget'](bad,{})
 except m['LineBudgetError']: pass
 else: raise AssertionError('path mutation accepted')
 `);
+});
+
+test("ADR0351 expressly authorizes every R3 task reallocation before merge", () => {
+  const adr = readFileSync("docs/adr/0351-correct-aws-host-boundaries-before-new-h.md", "utf8").replace(/\s+/gu, " ");
+  for (const text of [
+    "`governance` from 6,200 to 7,033 lines (+833)",
+    "`local-tofu-ssm` from 5,100 to 5,446 lines (+346)",
+    "`final-HGQ` from 5,300 to 4,121 lines (-1,179)",
+    "transferred 300,000 prospective bytes from `final-HGQ` to `readiness-ci`",
+    "active byte highs 5,200,000 and 9,000,000",
+    "transfers exactly 2,300 lines out of the provisional `final-HGQ` post-H reserve",
+    "`governance` 7,033 to 8,200 (+1,167)",
+    "`product` 5,057 to 5,050 (-7)",
+    "`local-tofu-ssm` 5,446 to 6,600 (+1,154)",
+    "`readiness-ci` 500 to 400 (-100)",
+    "`final-HGQ` 4,121 to 1,907 (-2,214)",
+    "pre-H cap is 707 lines (+86)",
+    "1,200-line post-H reserve remains",
+    "none is pegged to observed use",
+    "3,500,000-byte post-H reserve is unchanged",
+    "300,000 prospective bytes move from the genuinely unused `product` allocation",
+    "reducing it from 2,900,000 to 2,600,000 bytes",
+    "increasing it from 9,000,000 to 9,300,000 bytes",
+    "tranche remains exactly 22,157 lines and 21,500,000 bytes",
+  ])
+    assert.ok(adr.includes(text), text);
+  assert.doesNotMatch(adr, /No task line high/u);
 });
 
 test("ADR0338 records temporary runner-loss handling without effect authority", () => {

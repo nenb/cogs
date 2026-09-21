@@ -31,6 +31,15 @@ PACKAGE_ARCHIVE = "provider-package.tar"
 PACKAGE_ARCHIVE_DIGEST = "provider-package.tar.sha256"
 EVIDENCE_SOURCE = DESTINATION / "evidence-publication"
 EVIDENCE_SNAPSHOT_ROOT = Path("/var/lib/cogs/stage2-aws-evidence-v2")
+ISSUANCE_ROOT = Path("/var/lib/cogs/stage2-aws-issuance-v1")
+ISSUANCE_APPROVAL_MEMBERS = {
+    "approval.json": 256 * 1024,
+    production.QUALIFICATION_PACKAGE_NAME: 256 * 1024,
+    "approval-authentication.json": 256 * 1024,
+    "approval-authentication.bundle.json": 1024 * 1024,
+    "cosign": 160 * 1024 * 1024,
+    "sigstore-trusted-root.json": 64 * 1024,
+}
 EVIDENCE_MEMBERS = {
     "aws-stage2-completion-evidence-v4.json": 8 * 1024 * 1024,
     "aws-stage2-completion-publication-v2.json": 64 * 1024,
@@ -206,6 +215,299 @@ def remove_partial(expected):
     require(not any(STAGING.iterdir())); STAGING.rmdir(); sync(STAGING.parent)
 
 
+def _capture_named_files(source, members):
+    directory = os.open(Path(source), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    opened = {}
+    identity = lambda item: (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    try:
+        for name, maximum in members.items():
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+            info = os.fstat(descriptor)
+            require(
+                stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and 0 < info.st_size <= maximum
+            )
+            opened[name] = descriptor, info, maximum
+        require(
+            all(
+                identity(os.stat(name, dir_fd=directory, follow_symlinks=False)) == identity(row[1])
+                for name, row in opened.items()
+            )
+        )
+        captured = {}
+        for name, (descriptor, before, maximum) in opened.items():
+            raw = os.read(descriptor, maximum + 1)
+            require(
+                len(raw) == before.st_size and identity(os.fstat(descriptor)) == identity(before)
+            )
+            captured[name] = raw
+        require(
+            all(
+                identity(os.stat(name, dir_fd=directory, follow_symlinks=False)) == identity(row[1])
+                for name, row in opened.items()
+            )
+        )
+        return captured
+    finally:
+        for descriptor, _info, _maximum in opened.values():
+            os.close(descriptor)
+        os.close(directory)
+
+
+def stage_issuance_approval(source):
+    """Authenticate and freeze the exact credential-issuance authority bytes."""
+    require(os.geteuid() == os.getegid() == 0 and not ISSUANCE_ROOT.exists())
+    captured = _capture_named_files(source, ISSUANCE_APPROVAL_MEMBERS)
+    try:
+        value, package, authentication = (
+            json.loads(captured[name])
+            for name in (
+                "approval.json",
+                production.QUALIFICATION_PACKAGE_NAME,
+                "approval-authentication.json",
+            )
+        )
+    except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+        raise StagingError() from error
+    require(
+        all(
+            production._canonical(item) + b"\n" == captured[name]
+            for item, name in (
+                (value, "approval.json"),
+                (package, production.QUALIFICATION_PACKAGE_NAME),
+                (authentication, "approval-authentication.json"),
+            )
+        )
+    )
+    eligible(
+        (
+            value.get("implementation_revision"),
+            value.get("control_revision"),
+            value.get("qualification_revision"),
+        )
+    )
+    value["plan_sha256s"] = tuple(value["plan_sha256s"])
+    value["phase_cycle_counts"] = tuple(value["phase_cycle_counts"])
+    approval = production.ProductionApproval(**value)
+    production.validate_approval_package(
+        approval,
+        package,
+        hashlib.sha256(captured[production.QUALIFICATION_PACKAGE_NAME]).hexdigest(),
+    )
+    auth_fields = {
+        "version",
+        "result",
+        "approval_sha256",
+        "issuer_commitment",
+        "workflow_sha256",
+        "workflow_run_id",
+        "workflow_run_attempt",
+        "control_revision",
+        "approver_principal_commitment",
+        "executor_principal_commitment",
+        "inventory_observer_principal_commitment",
+        "first_created",
+    }
+    require(
+        set(authentication) == auth_fields
+        and authentication.get("version") == "cogs.stage2-production-approval-authentication/v1"
+        and authentication.get("result") == "pass"
+        and authentication.get("first_created") is True
+        and authentication.get("workflow_run_attempt") == 1
+        and authentication.get("approval_sha256")
+        == hashlib.sha256(captured["approval.json"]).hexdigest()
+        and authentication.get("issuer_commitment") == approval.issuer_commitment
+        and authentication.get("control_revision") == approval.control_revision
+        and authentication.get("executor_principal_commitment")
+        == approval.executor_principal_commitment
+        and authentication.get("inventory_observer_principal_commitment")
+        == approval.inventory_observer_principal_commitment
+        and hashlib.sha256(captured["cosign"]).hexdigest() == adapter.COSIGN_SHA256
+        and hashlib.sha256(captured["sigstore-trusted-root.json"]).hexdigest()
+        == adapter.TRUSTED_ROOT_SHA256
+    )
+    ISSUANCE_ROOT.mkdir(mode=0o755)
+    os.chown(ISSUANCE_ROOT, 0, 0)
+    for name, raw in captured.items():
+        write(ISSUANCE_ROOT / name, raw, 0o555 if name == "cosign" else 0o444)
+    result = subprocess.run(
+        (
+            "/usr/bin/unshare",
+            "--net",
+            "--",
+            str(ISSUANCE_ROOT / "cosign"),
+            "verify-blob",
+            "--trusted-root",
+            str(ISSUANCE_ROOT / "sigstore-trusted-root.json"),
+            "--bundle",
+            str(ISSUANCE_ROOT / "approval-authentication.bundle.json"),
+            "--certificate-identity",
+            adapter.approval_identity(),
+            "--certificate-oidc-issuer",
+            "https://token.actions.githubusercontent.com",
+            str(ISSUANCE_ROOT / "approval-authentication.json"),
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        timeout=30,
+        check=False,
+        close_fds=True,
+        start_new_session=True,
+    )
+    require(result.returncode == 0)
+    os.chmod(ISSUANCE_ROOT, 0o555)
+    sync(ISSUANCE_ROOT)
+    sync(ISSUANCE_ROOT.parent)
+    return hashlib.sha256(captured["approval.json"]).hexdigest()
+
+
+def stage_issuance_continuation(
+    source,
+    workflow_revision,
+    run_id_text,
+    producer_job_id_text,
+    consumer_job_id_text,
+    artifact_id_text,
+    artifact_digest,
+    artifact_name,
+    approval_run_id_text,
+    approval_artifact_id_text,
+    approval_artifact_digest,
+    approval_artifact_name,
+):
+    """Freeze the signed continuation and its exact admission before OIDC."""
+    root_info = ISSUANCE_ROOT.lstat()
+    numbers = (
+        run_id_text,
+        producer_job_id_text,
+        consumer_job_id_text,
+        artifact_id_text,
+        approval_run_id_text,
+        approval_artifact_id_text,
+    )
+    require(
+        os.geteuid() == 0
+        and stat.S_ISDIR(root_info.st_mode)
+        and root_info.st_uid == root_info.st_gid == 0
+        and stat.S_IMODE(root_info.st_mode) == 0o555
+        and not (ISSUANCE_ROOT / adapter.CONTINUATION_NAME).exists()
+        and re.fullmatch(r"[0-9a-f]{40}", workflow_revision) is not None
+        and all(re.fullmatch(r"[1-9][0-9]*", item) for item in numbers)
+        and producer_job_id_text != consumer_job_id_text
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", artifact_digest)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", approval_artifact_digest)
+        and artifact_name == f"stage2-production-continuation-{workflow_revision}-{run_id_text}-1"
+    )
+    captured = _capture_named_files(
+        source,
+        {adapter.CONTINUATION_NAME: 4 * 1024 * 1024, adapter.CONTINUATION_BUNDLE_NAME: 1024 * 1024},
+    )
+    for name, raw in captured.items():
+        write(ISSUANCE_ROOT / name, raw)
+    verification = subprocess.run(
+        (
+            "/usr/bin/unshare",
+            "--net",
+            "--",
+            str(ISSUANCE_ROOT / "cosign"),
+            "verify-blob",
+            "--trusted-root",
+            str(ISSUANCE_ROOT / "sigstore-trusted-root.json"),
+            "--bundle",
+            str(ISSUANCE_ROOT / adapter.CONTINUATION_BUNDLE_NAME),
+            "--certificate-identity",
+            adapter.CAMPAIGN_IDENTITY,
+            "--certificate-oidc-issuer",
+            "https://token.actions.githubusercontent.com",
+            str(ISSUANCE_ROOT / adapter.CONTINUATION_NAME),
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        timeout=30,
+        check=False,
+        close_fds=True,
+        start_new_session=True,
+    )
+    require(verification.returncode == 0)
+    approval_value = json.loads(read(ISSUANCE_ROOT / "approval.json", 256 * 1024))
+    approval_value["plan_sha256s"] = tuple(approval_value["plan_sha256s"])
+    approval_value["phase_cycle_counts"] = tuple(approval_value["phase_cycle_counts"])
+    approval = production.ProductionApproval(**approval_value)
+    authentication_sha256 = hashlib.sha256(
+        read(ISSUANCE_ROOT / "approval-authentication.json", 256 * 1024)
+    ).hexdigest()
+    parsed = production.continuation_from_bytes(
+        captured[adapter.CONTINUATION_NAME],
+        approval,
+        int(run_id_text),
+        1,
+        "authenticated-aws-adapter",
+    )
+    require(
+        parsed.consumption.authentication_receipt_sha256 == authentication_sha256
+        and parsed.workflow_revision == workflow_revision
+        and parsed.producer_job_id == int(producer_job_id_text)
+        and parsed.approval_artifact_run_id == int(approval_run_id_text)
+        and parsed.approval_artifact_id == int(approval_artifact_id_text)
+        and parsed.approval_artifact_digest == approval_artifact_digest
+        and parsed.approval_artifact_name == approval_artifact_name
+        and parsed.active_resource is False
+        and parsed.certain_zero is True
+        and parsed.credentials_retired is True
+    )
+    fields = {
+        "version": production.CONTINUATION_ADMISSION_VERSION,
+        "repository": "nenb/cogs",
+        "workflow_path": ".github/workflows/stage2-production-campaign.yml",
+        "workflow_revision": workflow_revision,
+        "ref": "refs/heads/main",
+        "run_id": int(run_id_text),
+        "run_attempt": 1,
+        "producer_job_name": "cycles_1_3",
+        "producer_job_id": int(producer_job_id_text),
+        "consumer_job_name": "cycles_4_7",
+        "consumer_job_id": int(consumer_job_id_text),
+        "continuation_sha256": hashlib.sha256(captured[adapter.CONTINUATION_NAME]).hexdigest(),
+        "continuation_commitment": parsed.continuation_commitment,
+        "bundle_sha256": hashlib.sha256(captured[adapter.CONTINUATION_BUNDLE_NAME]).hexdigest(),
+        "trusted_root_sha256": adapter.TRUSTED_ROOT_SHA256,
+        "signer_identity": adapter.CAMPAIGN_IDENTITY,
+        "artifact_id": int(artifact_id_text),
+        "artifact_digest": artifact_digest,
+        "artifact_name": artifact_name,
+        "approval_commitment": parsed.approval_commitment,
+        "authentication_receipt_sha256": authentication_sha256,
+        "batch_commitment": parsed.batch_commitment,
+        "implementation_revision": parsed.implementation_revision,
+        "control_revision": parsed.control_revision,
+        "qualification_revision": parsed.qualification_revision,
+        "journal_sequence": parsed.journal_sequence,
+        "journal_tip_sha256": parsed.journal_tip_sha256,
+        "cycle3_zero_commitment": parsed.inventories[-1].zero_commitment,
+    }
+    admission = production.ContinuationAdmission(
+        **fields,
+        admission_commitment=production._commit(
+            b"cogs.stage2-production-handoff-authentication/v1", fields
+        ),
+    )
+    production._validate_admission(admission, parsed, approval)
+    write(ISSUANCE_ROOT / adapter.CONTINUATION_ADMISSION_NAME, admission.canonical_bytes(), 0o444)
+    for name in (adapter.CONTINUATION_NAME, adapter.CONTINUATION_BUNDLE_NAME):
+        os.chmod(ISSUANCE_ROOT / name, 0o444)
+    sync(ISSUANCE_ROOT)
+    return admission.admission_commitment
+
 def stage_continuation(source, workflow_revision, run_id_text, producer_job_id_text,
                        consumer_job_id_text, artifact_id_text, artifact_digest,
                        artifact_name, approval_run_id_text, approval_artifact_id_text,
@@ -314,6 +616,13 @@ def stage_continuation(source, workflow_revision, run_id_text, producer_job_id_t
         **fields, admission_commitment=production._commit(
             b"cogs.stage2-production-handoff-authentication/v1", fields))
     production._validate_admission(admission, parsed, approval)
+    # Execution custody must use the same authenticated bytes that authorized
+    # both role exchanges, not a later alternate valid signature/package.
+    require(read(ISSUANCE_ROOT / adapter.CONTINUATION_NAME, 4 * 1024 * 1024) == continuation
+            and read(ISSUANCE_ROOT / adapter.CONTINUATION_BUNDLE_NAME,
+                     1024 * 1024) == bundle
+            and read(ISSUANCE_ROOT / adapter.CONTINUATION_ADMISSION_NAME,
+                     64 * 1024) == admission.canonical_bytes())
     write(adapter.CONTINUATION, continuation)
     write(adapter.CONTINUATION_BUNDLE, bundle)
     write(adapter.CONTINUATION_ADMISSION, admission.canonical_bytes())
@@ -381,6 +690,11 @@ def stage(source, budget_email_path, aws_config_path, aws_credentials_path):
             and type(authentication["workflow_run_id"]) is int
             and authentication["workflow_run_id"] > 0)
     cosign = read(source / "cosign", 160 * 1024 * 1024)
+    # Credential issuance and provider execution must retain one exact signed
+    # approval/package authority preimage across the intervening role exchange.
+    for name, raw in {**fixed, "cosign": cosign}.items():
+        require(read(ISSUANCE_ROOT / name,
+                     ISSUANCE_APPROVAL_MEMBERS[name]) == raw)
     tofu = read(source / "tofu", 140 * 1024 * 1024)
     package_raw = read(source / PACKAGE_MANIFEST, 64 * 1024)
     try: provider_manifest = json.loads(package_raw)
@@ -601,6 +915,10 @@ if __name__ == "__main__":
                                ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n" == raw)
             provider_package_archive(sys.argv[2], manifest)
             result = "verified"
+        elif len(sys.argv) == 3 and sys.argv[1] == "stage-issuance-approval":
+            result = stage_issuance_approval(sys.argv[2])
+        elif len(sys.argv) == 14 and sys.argv[1] == "stage-issuance-continuation":
+            result = stage_issuance_continuation(*sys.argv[2:])
         elif len(sys.argv) == 14 and sys.argv[1] == "stage-continuation":
             result = stage_continuation(*sys.argv[2:])
         else:

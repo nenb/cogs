@@ -129,12 +129,17 @@ retains a 30-minute recovery path and derives a separate short-lived role
 session duration from the remaining approval lifetime within the approved AWS
 maximum. Before approval consumption, at least the full 480-minute effect
 window, 30-minute cleanup reserve, and fixed 15-minute first-plan allowance
-must remain. Job 1 requests exactly 18,000 seconds and job 2 exactly 19,800
-seconds of role lifetime only after proving the signed absolute and inherited
-first-apply deadlines have that runway; each executor and observer uses a fresh
-single-step OIDC/STS exchange that re-samples those deadlines and rejects a
-returned expiration outside them. An unsupported role maximum fails before
-effects. Zero inventory after every cycle, global identity distinctness,
+must remain; the workflow conservatively requires at least 32,400 actual
+seconds before the first credential. Job 1 requests exactly 18,000 seconds and
+job 2 exactly 19,800 seconds of role lifetime only after proving the signed
+absolute and inherited first-apply deadlines have that runway; each executor
+and observer uses a fresh single-step OIDC/STS exchange that re-samples those
+deadlines and rejects a returned expiration outside them. The diagnostic lane
+requests exactly 30,600 seconds for both roles, proves that each lower-bound
+expiration exceeds the absolute 480-minute job end by at least 900 seconds,
+and requires the shared executor and observer roles to have
+`MaxSessionDuration >= 30600` (therefore also satisfying the prior 23,400-second
+formal requirement). An unsupported role maximum fails before effects. Zero inventory after every cycle, global identity distinctness,
 strict cgroup checks, cleanup certainty, and pass-only evidence issuance after
 cycle 7 and final zero are unchanged. Any publication, verification, download,
 admission, campaign, cancellation, or cleanup uncertainty terminates the run;
@@ -160,9 +165,40 @@ file high from 1,545 to 1,546. The deterministic readiness refresh receives no
 deletion credit: the host correction reallocated 600,000 prospective bytes from
 `local-tofu-ssm` to `readiness-ci`. This split implementation reallocates another
 200,000 prospective bytes for the mandatory refreshed tracked-source inventory,
-making their active highs 3,300,000 and 8,400,000 bytes. No task line high,
-tranche total, global forecast, serialized-inventory limit, or source-byte limit
-changes. The 12 additive split-campaign contract, implementation, test, and
+making those intermediate highs 3,300,000 and 8,400,000 bytes.
+
+Because this ADR remains an unmerged draft, its R3 correction expressly
+reallocates task authority before merge. Its first zero-sum amendment raised
+`governance` from 6,200 to 7,033 lines (+833) and `local-tofu-ssm` from 5,100 to
+5,446 lines (+346), funded by reducing `final-HGQ` from 5,300 to 4,121 lines
+(-1,179). It also transferred 300,000 prospective bytes from `final-HGQ` to
+`readiness-ci`, making their active byte highs 5,200,000 and 9,000,000.
+
+The readable final security correction exhausts the 307 lines that remained
+unused across the other pre-H task caps. The draft therefore makes a second,
+explicit zero-sum line amendment rather than compressing security-sensitive
+production code or tests to observed-use highs. It transfers exactly 2,300
+lines out of the provisional `final-HGQ` post-H reserve and reallocates all
+five task highs as follows: `governance` 7,033 to 8,200 (+1,167), `product`
+5,057 to 5,050 (-7), `local-tofu-ssm` 5,446 to 6,600 (+1,154), `readiness-ci`
+500 to 400 (-100), and `final-HGQ` 4,121 to 1,907 (-2,214). Within the new
+`final-HGQ` high, the pre-H cap is 707 lines (+86) and a truthful positive
+1,200-line post-H reserve remains. These rounded, deliberate highs leave
+bounded headroom above measured readable use; none is pegged to observed use.
+The 3,500,000-byte post-H reserve is unchanged. The final deterministic Stage
+4 refresh requires a second explicit byte reallocation: 300,000 prospective
+bytes move from the genuinely unused `product` allocation, reducing it from
+2,900,000 to 2,600,000 bytes, to `readiness-ci`, increasing it from 9,000,000
+to 9,300,000 bytes. This is also zero-sum and leaves deliberate headroom above
+both measured uses.
+
+These are explicit zero-sum reallocations for the reviewed split campaign
+governance/contracts, lifecycle implementation/tests, and generated readiness
+inventory; they are authorization, not a silent adjustment to observed use.
+The tranche remains exactly 22,157 lines and 21,500,000 bytes, the global
+forecast is unchanged, and deletions or rewrites still receive no credit.
+
+The 12 additive split-campaign contract, implementation, test, and
 fixture paths raise the tracked-file high from 1,546 to 1,558. No pre-existing
 tracked file is retired for accounting: historical workflows, tests, evidence
 and approval schemas, validators, renderers, and fixtures--including v3

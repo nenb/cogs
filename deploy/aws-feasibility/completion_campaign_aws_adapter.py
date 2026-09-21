@@ -16,6 +16,8 @@ import re
 import signal
 import stat
 import subprocess
+import sys
+import tempfile
 import time
 
 import completion_campaign_production as production
@@ -72,6 +74,9 @@ INVENTORY_COMMAND = SOURCE / "deploy/aws-feasibility/run-production-inventory.sh
 RECOVERY_COMMAND = SOURCE / "deploy/aws-feasibility/recover-production-campaign.sh"
 MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_JOURNAL_BYTES = 64 * 1024 * 1024
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+COMMAND_CGROUP = CGROUP_ROOT / "cogs-stage2-production-command-v1"
+COMMAND_SCOPE_NAME = "provider-command-cgroup-v1.json"
 FIXED_ENV = {
     "HOME": "/root", "LANG": "C", "LC_ALL": "C",
     "PATH": "/usr/local/bin:/usr/bin:/bin", "TZ": "UTC",
@@ -436,16 +441,258 @@ def _decode_inventory(value):
     return production.InventoryReceipt(**value, pages=tuple(pages))
 
 
+def _read_cgroup_file(path, maximum=4096):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(descriptor)
+        _require(stat.S_ISREG(info.st_mode) and info.st_uid == 0)
+        raw = b""
+        while block := os.read(descriptor, maximum + 1 - len(raw)):
+            raw += block
+            _require(len(raw) <= maximum)
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def _authenticate_cgroup_root():
+    _require(sys.platform == "linux" and os.geteuid() == 0)
+    info = os.lstat(CGROUP_ROOT)
+    _require(
+        stat.S_ISDIR(info.st_mode)
+        and info.st_uid == 0
+        and not stat.S_ISLNK(info.st_mode)
+        and b"pids" in _read_cgroup_file(CGROUP_ROOT / "cgroup.controllers").split()
+    )
+
+
+def _scope_marker_path():
+    return ROOT / COMMAND_SCOPE_NAME
+
+
+class _CommandScope:
+    """Fixed root cgroup-v2 boundary inherited even by detached descendants."""
+
+    def __init__(self, batch_commitment, create=True, marker=True):
+        production._digest(batch_commitment)
+        _authenticate_cgroup_root()
+        self.path, self.marker, self.batch_commitment = (
+            COMMAND_CGROUP,
+            _scope_marker_path() if marker else None,
+            batch_commitment,
+        )
+        if create:
+            os.mkdir(self.path, 0o700)
+            os.chown(self.path, 0, 0)
+            os.chmod(self.path, 0o700)
+        info = os.lstat(self.path)
+        self.identity = info.st_dev, info.st_ino
+        _require(
+            stat.S_ISDIR(info.st_mode)
+            and info.st_uid == info.st_gid == 0
+            and not stat.S_ISLNK(info.st_mode)
+            and stat.S_IMODE(info.st_mode) == 0o700
+        )
+        for name in ("cgroup.procs", "cgroup.events", "cgroup.kill"):
+            item = os.lstat(self.path / name)
+            _require(
+                stat.S_ISREG(item.st_mode) and item.st_uid == 0 and not stat.S_ISLNK(item.st_mode)
+            )
+        if create and self.marker is not None:
+            _write_once(
+                self.marker,
+                _canonical(
+                    {
+                        "version": "cogs.stage2-provider-command-cgroup/v1",
+                        "batch_commitment": batch_commitment,
+                        "cgroup": str(self.path),
+                        "cgroup_st_dev": info.st_dev,
+                        "cgroup_st_ino": info.st_ino,
+                        "supervisor_pid": os.getpid(),
+                    }
+                ),
+            )
+
+    def child_setup(self, previous_mask):
+        def enter_scope():
+            descriptor = os.open(
+                self.path / "cgroup.procs", os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+            try:
+                if os.write(descriptor, b"0\n") != 2:
+                    os._exit(126)
+            finally:
+                os.close(descriptor)
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+        return enter_scope
+
+    def populated(self):
+        values = dict(
+            row.split(" ", 1)
+            for row in _read_cgroup_file(self.path / "cgroup.events").decode().splitlines()
+        )
+        _require(values.get("populated") in {"0", "1"})
+        return values["populated"] == "1"
+
+    def kill(self):
+        info = os.lstat(self.path)
+        _require((info.st_dev, info.st_ino) == self.identity)
+        descriptor = os.open(self.path / "cgroup.kill", os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            _require(os.write(descriptor, b"1\n") == 2)
+        finally:
+            os.close(descriptor)
+
+    def wait_empty(self, seconds=10):
+        deadline = time.monotonic() + seconds
+        while self.populated():
+            _require(time.monotonic() < deadline)
+            time.sleep(0.01)
+
+    def remove(self):
+        info = os.lstat(self.path)
+        _require(not self.populated() and (info.st_dev, info.st_ino) == self.identity)
+        if self.marker is not None:
+            _require(
+                _decode(_read_fixed(self.marker, 4096, (0o600,)), 4096)
+                == {
+                    "version": "cogs.stage2-provider-command-cgroup/v1",
+                    "batch_commitment": self.batch_commitment,
+                    "cgroup": str(self.path),
+                    "cgroup_st_dev": self.identity[0],
+                    "cgroup_st_ino": self.identity[1],
+                    "supervisor_pid": os.getpid(),
+                }
+            )
+        os.rmdir(self.path)
+        _require(not self.path.exists())
+        if self.marker is not None:
+            _remove_scope_marker(self.marker)
+
+
+def _remove_scope_marker(marker):
+    marker.unlink()
+    descriptor = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _drain_stale_command_scope(approval):
+    """Kill only a scope authenticated by its approval-bound marker and inode."""
+    _require(type(approval) is production.ProductionApproval)
+    marker = _scope_marker_path()
+    if marker.exists():
+        value = _decode(_read_fixed(marker, 4096, (0o600,)), 4096)
+        _require(
+            set(value)
+            == {
+                "version",
+                "batch_commitment",
+                "cgroup",
+                "cgroup_st_dev",
+                "cgroup_st_ino",
+                "supervisor_pid",
+            }
+            and value["version"] == "cogs.stage2-provider-command-cgroup/v1"
+            and value["batch_commitment"] == approval.batch_commitment
+            and value["cgroup"] == str(COMMAND_CGROUP)
+            and all(
+                type(value[name]) is int
+                for name in ("cgroup_st_dev", "cgroup_st_ino", "supervisor_pid")
+            )
+            and value["supervisor_pid"] > 0
+        )
+        if COMMAND_CGROUP.exists():
+            info = os.lstat(COMMAND_CGROUP)
+            _require((info.st_dev, info.st_ino) == (value["cgroup_st_dev"], value["cgroup_st_ino"]))
+            scope = _CommandScope(approval.batch_commitment, create=False, marker=False)
+            _require(scope.identity == (value["cgroup_st_dev"], value["cgroup_st_ino"]))
+            scope.kill()
+            scope.wait_empty()
+            scope.remove()
+        _remove_scope_marker(marker)
+    elif COMMAND_CGROUP.exists():
+        scope = _CommandScope(approval.batch_commitment, create=False, marker=False)
+        _require(not scope.populated())
+        scope.remove()  # Never kill an unmarked populated scope.
+
+
+def protected_command_scope_self_test():
+    """Root Linux regression for foreground timeout/provider/detached child."""
+    _authenticate_cgroup_root()
+    directory = Path(tempfile.mkdtemp(prefix="cogs-stage2-cgroup-", dir="/tmp"))
+    marker = directory / "escaped"
+    scope = process = None
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    child = (
+        "import pathlib,time;time.sleep(2);"
+        f"pathlib.Path({str(marker)!r}).write_text('escaped')"
+    )
+    parent = (
+        "import os,subprocess,time;"
+        f"subprocess.Popen([{sys.executable!r},'-I','-B','-c',{child!r}],start_new_session=True);"
+        "os.write(1,b'ready\\n');time.sleep(60)"
+    )
+    try:
+        scope = _CommandScope("0" * 64, marker=False)
+        process = subprocess.Popen(
+            [
+                "/usr/bin/timeout",
+                "--foreground",
+                "--signal=TERM",
+                "--kill-after=10s",
+                "30s",
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                parent,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            start_new_session=False,
+            preexec_fn=scope.child_setup(previous_mask),
+        )
+        _require(process.stdout.readline() == b"ready\n" and scope.populated())
+        scope.kill()
+        process.wait(timeout=10)
+        scope.wait_empty()
+        scope.remove()
+        scope = None
+        time.sleep(2.25)
+        _require(not marker.exists())
+    finally:
+        if scope is not None:
+            try:
+                scope.kill()
+                scope.wait_empty()
+                scope.remove()
+            except BaseException:
+                pass
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        if marker.exists():
+            marker.unlink()
+        directory.rmdir()
+
+
 class AwsCampaignCustodian:
     def __init__(self, seal, approval, authentication_receipt_sha256,
-                 executor=subprocess.run):
+                 executor=subprocess.Popen, scope_factory=_CommandScope):
         _require(seal is _ADAPTER_SEAL and type(approval) is production.ProductionApproval
                  and production._digest(authentication_receipt_sha256) ==
                      authentication_receipt_sha256
-                 and callable(executor))
+                 and callable(executor) and callable(scope_factory))
         self.approval = approval
         self.authentication_receipt_sha256 = authentication_receipt_sha256
         self.executor = executor
+        self.scope_factory = scope_factory
         self.apply_started = {}
         self.first_apply_started = None
 
@@ -565,42 +812,97 @@ class AwsCampaignCustodian:
             hashlib.sha256(raw).hexdigest(), observed, True)
 
     def _run(self, command, arguments, timeout):
-        _require(command in {EFFECT_COMMAND, REMOTE_COMMAND, INVENTORY_COMMAND,
-                             RECOVERY_COMMAND}
-                 and command.is_file() and os.access(command, os.X_OK)
-                 and type(arguments) is tuple
-                 and all(type(item) is str and "\0" not in item for item in arguments))
-        # The workflow's outer GNU timeout owns the campaign process group.
-        # --foreground prevents this inner timeout from escaping that group.
-        # Defer controller termination until inner timeout has reaped the
-        # provider; the provider's reviewed handlers kill/wait its own session.
+        _require(
+            command in {EFFECT_COMMAND, REMOTE_COMMAND, INVENTORY_COMMAND, RECOVERY_COMMAND}
+            and command.is_file()
+            and os.access(command, os.X_OK)
+            and type(arguments) is tuple
+            and all(type(item) is str and "\0" not in item for item in arguments)
+        )
+        # Block termination across cgroup creation and Popen. The child enters
+        # the fixed cgroup in preexec before restoring its signal mask, so even
+        # a TERM pending at the launch boundary cannot create an unowned child.
         handled = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
         previous_handlers = {}
-        interrupted = [False]
+        interrupted, cleanup_failed, scope_holder = [False], [False], [None]
+
         def interrupt(_number, _frame):
             interrupted[0] = True
-        unblocked = False
+            scope = scope_holder[0]
+            if scope is not None:
+                try:
+                    scope.kill()
+                except BaseException:
+                    cleanup_failed[0] = True
+
+        process = None
+        stdout = stderr = b""
+        failure = None
+        mask_restored = False
         try:
             for number in handled:
                 previous_handlers[number] = signal.signal(number, interrupt)
+            scope_holder[0] = self.scope_factory(self.approval.batch_commitment)
+            process = self.executor(
+                [
+                    "/usr/bin/timeout",
+                    "--foreground",
+                    "--signal=TERM",
+                    "--kill-after=10s",
+                    f"{timeout}s",
+                    str(command),
+                    *arguments,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=FIXED_ENV,
+                cwd=SOURCE,
+                close_fds=True,
+                start_new_session=False,
+                preexec_fn=scope_holder[0].child_setup(previous_mask),
+            )
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-            unblocked = True
-            if interrupted[0]: raise AwsAdapterError()
-            result = self.executor(
-                ["/usr/bin/timeout", "--foreground", "--signal=TERM",
-                 "--kill-after=10s", f"{timeout}s", str(command), *arguments],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=FIXED_ENV, cwd=SOURCE, timeout=timeout + 15, check=False)
-            _require(not interrupted[0] and result.returncode == 0 and not result.stderr
-                     and 0 < len(result.stdout) <= MAX_JSON_BYTES)
-            return result.stdout
+            mask_restored = True
+            if interrupted[0]:
+                raise AwsAdapterError()
+            stdout, stderr = process.communicate(timeout=timeout + 15)
+            _require(
+                not interrupted[0]
+                and process.returncode == 0
+                and not stderr
+                and 0 < len(stdout) <= MAX_JSON_BYTES
+            )
+        except BaseException as error:
+            failure = error
         finally:
-            if unblocked:
+            if mask_restored:
                 signal.pthread_sigmask(signal.SIG_BLOCK, set(handled))
+            scope = scope_holder[0]
+            if scope is not None:
+                try:
+                    if failure is not None or interrupted[0] or cleanup_failed[0]:
+                        scope.kill()
+                    if process is not None and process.poll() is None:
+                        try:
+                            process.communicate(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            scope.kill()
+                            process.wait(timeout=10)
+                    if scope.populated():
+                        failure = failure or AwsAdapterError()
+                        scope.kill()
+                    scope.wait_empty()
+                    scope.remove()
+                except BaseException as error:
+                    failure = error
             for number, handler in previous_handlers.items():
                 signal.signal(number, handler)
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        if failure is not None:
+            raise failure
+        return stdout
 
     def _ensure_grant(self, grant):
         directory = STATE_ROOT / f"cycle-{grant.ordinal}"
@@ -947,17 +1249,20 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
         phase = production.ProductionCampaignController(
             custodian.ports(_ADAPTER_SEAL)).run_phase_one()
         _require(not ACTIVE.exists())
-        _retire_credentials()
         continuation = production.continuation_for_phase_one(
             phase, approval, "authenticated-aws-adapter", workflow_revision,
             run_id, producer_job_id, approval_artifact_run_id,
             approval_artifact_id, approval_artifact_digest,
             approval_artifact_name)
+        # Publish the certain-zero terminal state durably before credentials are
+        # considered retired. Recovery also admits the legacy crash boundary in
+        # which unlink+fsync completed immediately before this publication.
         _write_once(SEGMENT_COMPLETE, _canonical({
             "version": "cogs.stage2-segment-one-zero-complete/v1",
             "zero_commitment": continuation.inventories[-1].zero_commitment,
             "continuation_commitment": continuation.continuation_commitment,
             "certain_zero": True}))
+        _retire_credentials()
         CONTINUATION_PUBLICATION.mkdir(mode=0o700, exist_ok=False)
         os.chown(CONTINUATION_PUBLICATION, 0, 0)
         os.chmod(CONTINUATION_PUBLICATION, 0o700)
@@ -967,14 +1272,14 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
             "cogs.stage2-continuation-publication/v1",
             hashlib.sha256(raw).hexdigest(), continuation.continuation_commitment, 3)
     except BaseException:
-        if not ACTIVE.exists() and AWS_CREDENTIALS.exists():
-            if not CLEANUP_COMPLETE.exists():
+        if not ACTIVE.exists():
+            if not CLEANUP_COMPLETE.exists() and not SEGMENT_COMPLETE.exists():
                 _write_once(CLEANUP_COMPLETE, _canonical({
                     "version": "cogs.stage2-cleanup-complete/v1",
                     "reconciliation_commitment": production._commit(
                         b"cogs.stage2-inactive-root-retirement/v1", {"root": str(ROOT)}),
                     "certain_zero": True}))
-            _retire_credentials()
+            if AWS_CREDENTIALS.exists(): _retire_credentials()
         raise
     finally:
         os.close(lock)
@@ -1003,14 +1308,14 @@ def run_fixed_second_segment():
             raise
         return _publish_evidence(candidate)
     except BaseException:
-        if not ACTIVE.exists() and AWS_CREDENTIALS.exists():
+        if not ACTIVE.exists():
             if not CLEANUP_COMPLETE.exists():
                 _write_once(CLEANUP_COMPLETE, _canonical({
                     "version": "cogs.stage2-cleanup-complete/v1",
                     "reconciliation_commitment": production._commit(
                         b"cogs.stage2-inactive-root-retirement/v1", {"root": str(ROOT)}),
                     "certain_zero": True}))
-            _retire_credentials()
+            if AWS_CREDENTIALS.exists(): _retire_credentials()
         raise
     finally:
         os.close(lock)
@@ -1037,14 +1342,14 @@ def run_fixed_diagnostic_campaign():
         _require(not (ROOT / "evidence-publication").exists())
         return receipt
     except BaseException:
-        if not ACTIVE.exists() and AWS_CREDENTIALS.exists():
+        if not ACTIVE.exists():
             if not CLEANUP_COMPLETE.exists():
                 _write_once(CLEANUP_COMPLETE, _canonical({
                     "version": "cogs.stage2-cleanup-complete/v1",
                     "reconciliation_commitment": production._commit(
                         b"cogs.stage2-diagnostic-inactive-retirement/v1",
                         {"root": str(ROOT)}), "certain_zero": True}))
-            _retire_credentials()
+            if AWS_CREDENTIALS.exists(): _retire_credentials()
         raise
     finally:
         os.close(lock)
@@ -1161,7 +1466,12 @@ def recover_fixed_campaign():
     _admit_root()
     lock = _root_lock()
     try:
-        approval, authentication_sha256 = _approval(not CLEANUP_COMPLETE.exists())
+        # Authenticate the approval without credentials before granting any
+        # stale-scope kill authority. ACTIVE recovery then independently proves
+        # that provider credentials remain in root custody.
+        approval, authentication_sha256 = _approval(False)
+        _drain_stale_command_scope(approval)
+        if ACTIVE.exists(): _read_fixed(AWS_CREDENTIALS, 16 * 1024)
         if not CONSUMED.exists():
             _require(not JOURNAL.exists() and not ACTIVE.exists()
                      and not any(STATE_ROOT.glob("cycle-*/[a-z]*.intent.json")))

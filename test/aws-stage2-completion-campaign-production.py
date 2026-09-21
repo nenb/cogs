@@ -8,6 +8,7 @@ import json
 import os
 import runpy
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -664,17 +665,18 @@ finally:
 # proof before credential retirement, and replay validates/reuses exact bytes.
 no_active_names = (
     "ROOT", "STATE_ROOT", "CONSUMED", "JOURNAL", "ACTIVE", "CLEANUP_COMPLETE",
-    "CONTINUATION", "CONTINUATION_BUNDLE", "CONTINUATION_ADMISSION",
-    "CONTINUATION_ANCHOR", "_admit_root", "_root_lock", "_approval",
-    "_retire_credentials", "_phase_one_consumption", "_repair_first_journal_record",
-    "_read_fixed")
+    "SEGMENT_COMPLETE", "AWS_CREDENTIALS", "CONTINUATION", "CONTINUATION_BUNDLE",
+    "CONTINUATION_ADMISSION", "CONTINUATION_ANCHOR", "_admit_root", "_root_lock",
+    "_approval", "_drain_stale_command_scope", "_retire_credentials",
+    "_phase_one_consumption", "_repair_first_journal_record", "_read_fixed")
 no_active_original = tuple(getattr(aws_adapter, name) for name in no_active_names)
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory); state_root = root / "state"; state_root.mkdir()
     paths = {
         "ROOT": root, "STATE_ROOT": state_root, "CONSUMED": root / "consumed",
         "JOURNAL": root / "journal", "ACTIVE": root / "active",
-        "CLEANUP_COMPLETE": root / "complete", "CONTINUATION": root / "continuation",
+        "CLEANUP_COMPLETE": root / "complete", "SEGMENT_COMPLETE": root / "segment",
+        "AWS_CREDENTIALS": root / "credentials", "CONTINUATION": root / "continuation",
         "CONTINUATION_BUNDLE": root / "bundle", "CONTINUATION_ADMISSION": root / "admission",
         "CONTINUATION_ANCHOR": root / "anchor"}
     for name, value in paths.items(): setattr(aws_adapter, name, value)
@@ -686,14 +688,27 @@ with tempfile.TemporaryDirectory() as directory:
     paths["JOURNAL"].write_bytes(aws_adapter._canonical(row)); paths["JOURNAL"].chmod(0o600)
     aws_adapter._admit_root = lambda: None
     aws_adapter._root_lock = lambda: os.open(root / "lock", os.O_RDWR | os.O_CREAT, 0o600)
-    aws_adapter._approval = lambda _required=True: (
-        first_job.approval, resume.consumption.authentication_receipt_sha256)
+    approval_requirements = []
+    def recovery_approval(required=True):
+        approval_requirements.append(required)
+        return first_job.approval, resume.consumption.authentication_receipt_sha256
+    aws_adapter._approval = recovery_approval
+    aws_adapter._drain_stale_command_scope = lambda approval: (
+        approval is first_job.approval) or (_ for _ in ()).throw(AssertionError())
     aws_adapter._phase_one_consumption = lambda *_args: resume.consumption
     aws_adapter._repair_first_journal_record = lambda *_args: None
     aws_adapter._read_fixed = lambda path, *_args: path.read_bytes()
+    # Exact legacy fault boundary: credential unlink and root-directory fsync
+    # completed, but segment-one terminal publication did not.
+    paths["AWS_CREDENTIALS"].write_bytes(b"retired-at-fault\n")
+    paths["AWS_CREDENTIALS"].unlink()
+    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+    assert not paths["AWS_CREDENTIALS"].exists() and not paths["SEGMENT_COMPLETE"].exists()
     retirements = []
     def retire_after_proof():
-        assert paths["CLEANUP_COMPLETE"].exists()
+        assert paths["CLEANUP_COMPLETE"].exists() and not paths["AWS_CREDENTIALS"].exists()
         retirements.append(paths["CLEANUP_COMPLETE"].read_bytes())
     aws_adapter._retire_credentials = retire_after_proof
     try:
@@ -702,7 +717,9 @@ with tempfile.TemporaryDirectory() as directory:
         second_receipt = aws_adapter.recover_fixed_campaign()
         assert first_proof == paths["CLEANUP_COMPLETE"].read_bytes()
         assert first_receipt == second_receipt and retirements == [first_proof, first_proof]
+        assert approval_requirements == [False, False]
         assert json.loads(first_proof)["terminal_state"] == "no-active"
+        assert not (root / "evidence-publication").exists() and not paths["SEGMENT_COMPLETE"].exists()
     finally:
         for name, value in zip(no_active_names, no_active_original, strict=True):
             setattr(aws_adapter, name, value)
@@ -729,9 +746,52 @@ with tempfile.TemporaryDirectory() as directory:
     (source / aws_adapter.CONTINUATION_BUNDLE_NAME).write_bytes(bundle_raw)
     for path in source.iterdir(): path.chmod(0o400)
     caller_uid, caller_gid = source.stat().st_uid, source.stat().st_gid
+    issuance = base / "issuance"; issuance.mkdir()
+    (issuance / aws_adapter.CONTINUATION_NAME).write_bytes(continuation_raw)
+    (issuance / aws_adapter.CONTINUATION_BUNDLE_NAME).write_bytes(bundle_raw)
+    admission_fields = {
+        "version": production.CONTINUATION_ADMISSION_VERSION,
+        "repository": "nenb/cogs",
+        "workflow_path": ".github/workflows/stage2-production-campaign.yml",
+        "workflow_revision": "4" * 40,
+        "ref": "refs/heads/main",
+        "run_id": 101,
+        "run_attempt": 1,
+        "producer_job_name": "cycles_1_3",
+        "producer_job_id": 20,
+        "consumer_job_name": "cycles_4_7",
+        "consumer_job_id": 21,
+        "continuation_sha256": hashlib.sha256(continuation_raw).hexdigest(),
+        "continuation_commitment": authoritative.continuation_commitment,
+        "bundle_sha256": hashlib.sha256(bundle_raw).hexdigest(),
+        "trusted_root_sha256": aws_adapter.TRUSTED_ROOT_SHA256,
+        "signer_identity": aws_adapter.CAMPAIGN_IDENTITY,
+        "artifact_id": 22,
+        "artifact_digest": "sha256:" + d("archive"),
+        "artifact_name": f"stage2-production-continuation-{'4' * 40}-101-1",
+        "approval_commitment": authoritative.approval_commitment,
+        "authentication_receipt_sha256": authoritative.consumption.authentication_receipt_sha256,
+        "batch_commitment": authoritative.batch_commitment,
+        "implementation_revision": authoritative.implementation_revision,
+        "control_revision": authoritative.control_revision,
+        "qualification_revision": authoritative.qualification_revision,
+        "journal_sequence": authoritative.journal_sequence,
+        "journal_tip_sha256": authoritative.journal_tip_sha256,
+        "cycle3_zero_commitment": authoritative.inventories[-1].zero_commitment,
+    }
+    expected_admission = production.ContinuationAdmission(
+        **admission_fields,
+        admission_commitment=production._commit(
+            b"cogs.stage2-production-handoff-authentication/v1", admission_fields
+        ),
+    )
+    (issuance / aws_adapter.CONTINUATION_ADMISSION_NAME).write_bytes(
+        expected_admission.canonical_bytes()
+    )
     verified = []
     try:
         stager["stage_continuation"].__globals__["DESTINATION"] = custody
+        stager["stage_continuation"].__globals__["ISSUANCE_ROOT"] = issuance
         aws_adapter.ROOT = custody
         aws_adapter.CONSUMED = custody / "consumed"
         aws_adapter.JOURNAL = custody / "journal"
@@ -754,13 +814,28 @@ with tempfile.TemporaryDirectory() as directory:
         os.fchown = lambda *_args, **_kwargs: None
         prior_environment = dict(os.environ)
         os.environ.update({"SUDO_UID": str(caller_uid), "SUDO_GID": str(caller_gid)})
+        arguments = (
+            source, "4" * 40, "101", "20", "21", "22",
+            "sha256:" + d("archive"),
+            f"stage2-production-continuation-{'4' * 40}-101-1",
+            "10", "11", "sha256:" + "5" * 64,
+            f"stage2-production-approval-{'4' * 40}-10")
         try:
-            stager["stage_continuation"](
-                source, "4" * 40, "101", "20", "21", "22",
-                "sha256:" + d("archive"),
-                f"stage2-production-continuation-{'4' * 40}-101-1",
-                "10", "11", "sha256:" + "5" * 64,
-                f"stage2-production-approval-{'4' * 40}-10")
+            # A later alternate signed/valid download cannot diverge from the
+            # exact continuation, bundle, or generated admission used by OIDC.
+            aws_adapter._verify_blob = lambda *_args: None
+            for name in (aws_adapter.CONTINUATION_NAME,
+                         aws_adapter.CONTINUATION_BUNDLE_NAME,
+                         aws_adapter.CONTINUATION_ADMISSION_NAME):
+                path = issuance / name; original = path.read_bytes()
+                path.write_bytes(original + b"mismatch")
+                try: stager["stage_continuation"](*arguments)
+                except stager["StagingError"]: pass
+                else: raise AssertionError(f"issuance/execution mismatch accepted: {name}")
+                assert not aws_adapter.CONTINUATION.exists()
+                path.write_bytes(original)
+            aws_adapter._verify_blob = verify_staged
+            stager["stage_continuation"](*arguments)
         finally:
             os.environ.clear(); os.environ.update(prior_environment)
         assert len(verified) == 2
@@ -978,54 +1053,180 @@ try: production.ProductionCampaignController(h.ports()).run_test_campaign()
 except production.ProductionApprovalError: pass
 else: raise AssertionError("durably consumed approval was reused")
 
-# Linux regression for the exact outer-timeout -> controller -> foreground
-# inner-timeout -> provider -> provider-owned-session hierarchy. The adapter's
-# deferred TERM must not release control until the provider has killed and
-# reaped its descendant.
-if sys.platform == "linux" and Path("/usr/bin/timeout").is_file():
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        started, finished, pid_file = (root / name for name in ("started", "finished", "pid"))
-        child = root / "child.py"
-        child.write_text(
-            "import os,time\n"
-            f"open({str(pid_file)!r},'w').write(str(os.getpid()))\n"
-            f"open({str(started)!r},'w').write('started')\n"
-            "time.sleep(3)\n"
-            f"open({str(finished)!r},'w').write('survived')\n")
-        command = root / "provider.py"
-        command.write_text(
-            "#!/usr/bin/python3\nimport pathlib,sys\n"
-            f"sys.path.insert(0,{str(ROOT / 'deploy/aws-feasibility')!r})\n"
-            "import completion_campaign_aws_provider as provider\n"
-            f"provider.SOURCE=pathlib.Path({str(root)!r})\n"
-            "try: provider.subprocess_runner((sys.executable," + repr(str(child)) + "),30)\n"
-            "except provider.ProviderBoundaryError: raise SystemExit(75)\n"
-            "raise SystemExit(76)\n")
-        command.chmod(0o700)
-        harness = root / "controller.py"
-        harness.write_text(
-            "import pathlib,subprocess,sys\n"
-            f"sys.path.insert(0,{str(ROOT / 'deploy/aws-feasibility')!r})\n"
-            "import completion_campaign_aws_adapter as adapter\n"
-            f"adapter.SOURCE=pathlib.Path({str(root)!r})\n"
-            f"adapter.EFFECT_COMMAND=pathlib.Path({str(command)!r})\n"
-            "owner=object.__new__(adapter.AwsCampaignCustodian)\n"
-            "owner.executor=subprocess.run\n"
-            "owner._run(adapter.EFFECT_COMMAND,(),30)\n")
-        cutoff = subprocess.run(
-            ("/usr/bin/timeout", "--signal=TERM", "--kill-after=5s", "1s",
-             sys.executable, str(harness)), stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, check=False, timeout=10)
-        assert cutoff.returncode == 124 and started.is_file() and pid_file.is_file(), cutoff.stderr
-        child_pid = int(pid_file.read_text())
-        try: os.kill(child_pid, 0)
-        except ProcessLookupError: pass
-        else: raise AssertionError("provider descendant survived campaign cutoff into cleanup")
-        cleanup_started = root / "cleanup-started"
-        cleanup_started.write_text("cleanup")
-        time.sleep(3.1)
-        assert cleanup_started.is_file() and not finished.exists()
+# TERM at Popen return is pending until the child is cgroup-owned.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    command = root / "command"
+    command.write_text("#!/bin/sh\nexit 0\n")
+    command.chmod(0o700)
+    events = []
+
+    class FakeScope:
+        def __init__(self, batch):
+            assert batch == base.batch_commitment
+            events.append("marker-published")
+
+        def child_setup(self, _mask):
+            return lambda: events.append("entered")
+
+        def kill(self):
+            events.append("killed")
+
+        def populated(self):
+            return False
+
+        def wait_empty(self):
+            events.append("empty")
+
+        def remove(self):
+            events.append("removed")
+
+    class BoundaryPopen:
+        def __init__(self, _argv, **kwargs):
+            self.returncode = None
+            events.append("popen")
+            kwargs["preexec_fn"]()
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self, timeout):
+            assert timeout == 10
+            self.returncode = -signal.SIGKILL
+            events.append("reaped")
+            return b"", b""
+
+        def wait(self, timeout):
+            self.returncode = -signal.SIGKILL
+
+    owner = object.__new__(aws_adapter.AwsCampaignCustodian)
+    owner.approval = base
+    owner.executor = BoundaryPopen
+    owner.scope_factory = FakeScope
+    old_source, old_effect = aws_adapter.SOURCE, aws_adapter.EFFECT_COMMAND
+    aws_adapter.SOURCE, aws_adapter.EFFECT_COMMAND = root, command
+    try:
+        try:
+            owner._run(command, (), 1)
+        except aws_adapter.AwsAdapterError:
+            pass
+        else:
+            raise AssertionError("TERM-at-Popen boundary accepted")
+        assert events == [
+            "marker-published",
+            "popen",
+            "entered",
+            "killed",
+            "killed",
+            "reaped",
+            "empty",
+            "removed",
+        ]
+    finally:
+        aws_adapter.SOURCE, aws_adapter.EFFECT_COMMAND = old_source, old_effect
+
+# Recovery grants cgroup.kill only to an approval-bound marker and exact inode.
+original_scope_routes = tuple(
+    getattr(aws_adapter, name)
+    for name in ("ROOT", "COMMAND_CGROUP", "_CommandScope", "_read_fixed")
+)
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    scope_path = root / "scope"
+    marker = root / aws_adapter.COMMAND_SCOPE_NAME
+    events, populated = [], [False]
+    aws_adapter.ROOT, aws_adapter.COMMAND_CGROUP, aws_adapter._read_fixed = (
+        root,
+        scope_path,
+        lambda path, *_args: path.read_bytes(),
+    )
+
+    class AdoptedScope:
+        def __init__(self, batch, create=False, marker=False):
+            assert batch == base.batch_commitment and not create and not marker
+            info = scope_path.lstat()
+            self.identity = info.st_dev, info.st_ino
+
+        def populated(self):
+            return populated[0]
+
+        def kill(self):
+            events.append("kill")
+
+        def wait_empty(self):
+            events.append("empty")
+
+        def remove(self):
+            events.append("remove")
+            scope_path.rmdir()
+
+    aws_adapter._CommandScope = AdoptedScope
+    def marked(info, **changes):
+        value = {
+            "version": "cogs.stage2-provider-command-cgroup/v1",
+            "batch_commitment": base.batch_commitment,
+            "cgroup": str(scope_path),
+            "cgroup_st_dev": info.st_dev,
+            "cgroup_st_ino": info.st_ino,
+            "supervisor_pid": 123,
+        }
+        value.update(changes)
+        return aws_adapter._canonical(value)
+    try:
+        scope_path.mkdir()
+        populated[0] = True
+        try:
+            aws_adapter._drain_stale_command_scope(base)
+        except aws_adapter.AwsAdapterError:
+            pass
+        else:
+            raise AssertionError("populated unmarked scope accepted")
+        assert not events and scope_path.exists()
+        populated[0] = False
+        info = scope_path.lstat()
+        for changes in (
+            {"batch_commitment": d("wrong")},
+            {"version": "cogs.stage2-provider-command-cgroup/v2"},
+            {"cgroup": str(root / "other-scope")},
+            {"cgroup_st_dev": info.st_dev + 1},
+            {"cgroup_st_ino": info.st_ino + 1},
+            {"supervisor_pid": 0},
+            {"supervisor_pid": "123"},
+        ):
+            marker.write_bytes(marked(info, **changes))
+            try:
+                aws_adapter._drain_stale_command_scope(base)
+            except aws_adapter.AwsAdapterError:
+                pass
+            else:
+                raise AssertionError("foreign marked scope accepted")
+            assert not events and scope_path.exists()
+            marker.unlink()
+        marker.write_bytes(marked(info))
+        populated[0] = True
+        aws_adapter._drain_stale_command_scope(base)
+        assert events == ["kill", "empty", "remove"] and not marker.exists()
+        scope_path.mkdir()
+        events.clear()
+        populated[0] = False
+        aws_adapter._drain_stale_command_scope(base)
+        assert events == ["remove"]
+        marker.write_bytes(marked(info))
+        events.clear()
+        aws_adapter._drain_stale_command_scope(base)
+        assert not events and not marker.exists()
+    finally:
+        for name, value in zip(
+            ("ROOT", "COMMAND_CGROUP", "_CommandScope", "_read_fixed"),
+            original_scope_routes,
+            strict=True,
+        ):
+            setattr(aws_adapter, name, value)
+
+# Protected Linux CI invokes the same real timeout/provider/detached-child helper.
+if sys.platform == "linux" and os.geteuid() == 0 and os.access("/sys/fs/cgroup", os.W_OK):
+    aws_adapter.protected_command_scope_self_test()
 
 if os.environ.get("COGS_TEST_EMIT_APPROVAL") == "1":
     sys.stdout.buffer.write(production._canonical(approval().__dict__) + b"\n")

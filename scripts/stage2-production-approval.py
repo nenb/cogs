@@ -14,11 +14,13 @@ import os
 from pathlib import Path
 import re
 import runpy
+import ssl
 import stat
 import sys
 import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import (HTTPRedirectHandler, HTTPSHandler, ProxyHandler,
+                            Request, build_opener)
 from xml.etree import ElementTree
 
 _DIAGNOSTIC = b"stage2-production-approval: owner.failed\n"
@@ -42,6 +44,23 @@ except BaseException:
 MAX_BYTES = 256 * 1024
 SHA1 = re.compile(r"[0-9a-f]{40}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
+AWS_ACCOUNT_ID = "372495030090"
+AWS_REGION = "us-east-1"
+STS_URL = "https://sts.us-east-1.amazonaws.com/"
+ISSUANCE_ROOT = Path("/var/lib/cogs/stage2-aws-issuance-v1")
+ISSUANCE_APPROVAL = ISSUANCE_ROOT / "approval.json"
+ISSUANCE_AUTHENTICATION = ISSUANCE_ROOT / "approval-authentication.json"
+ISSUANCE_PACKAGE = ISSUANCE_ROOT / production.QUALIFICATION_PACKAGE_NAME
+ISSUANCE_CONTINUATION = ISSUANCE_ROOT / "aws-stage2-production-continuation-v1.json"
+ISSUANCE_CONTINUATION_BUNDLE = ISSUANCE_ROOT / "aws-stage2-production-continuation-v1.bundle.json"
+ISSUANCE_ADMISSION = ISSUANCE_ROOT / "aws-stage2-production-continuation-admission-v1.json"
+AUTHENTICATION_FIELDS = {
+    "version", "result", "approval_sha256", "issuer_commitment",
+    "workflow_sha256", "workflow_run_id", "workflow_run_attempt",
+    "control_revision", "approver_principal_commitment",
+    "executor_principal_commitment", "inventory_observer_principal_commitment",
+    "first_created",
+}
 
 
 class ApprovalIssuerError(Exception): pass
@@ -185,97 +204,265 @@ def _jwt_claims(token):
     return value
 
 
-def assume_github_role(role_arn, session_name, duration_raw, minimum_raw,
-                       approval_path, runway_path=None):
-    """One-shot GitHub OIDC/STS exchange with expiration/runway validation."""
-    require(re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}", role_arn)
-            and re.fullmatch(r"[A-Za-z0-9+=,.@_-]{2,64}", session_name)
-            and POSITIVE.fullmatch(duration_raw) and POSITIVE.fullmatch(minimum_raw))
-    duration, minimum = int(duration_raw), int(minimum_raw)
-    require(900 <= minimum <= duration <= 43200)
-    approval_raw, approval = read(approval_path)
-    require(canonical(approval) == approval_raw
-            and approval.get("version") == "cogs.stage2-completion-production-approval/v6"
-            and type(approval.get("expires_unix_ns")) is int)
-    now = int(time.time())
-    runway_deadline = approval["expires_unix_ns"]
-    if runway_path is not None:
-        runway_raw, runway = read(runway_path)
-        require(canonical(runway) == runway_raw
-                and runway.get("version") == "cogs.stage2-production-continuation/v1"
-                and runway.get("execution_authority") == "authenticated-aws-adapter"
-                and type(runway.get("cleanup_deadline_unix_ns")) is int)
-        runway_deadline = min(runway_deadline, runway["cleanup_deadline_unix_ns"])
-    require(duration <= runway_deadline // 1_000_000_000 - now - 900)
-    request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
-    request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+class _RejectRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        del request, file_pointer, code, message, headers, new_url
+        raise ApprovalIssuerError()
+
+
+def _direct_https_opener():
+    context = ssl.create_default_context()
+    require(context.check_hostname is True and context.verify_mode == ssl.CERT_REQUIRED)
+    return build_opener(ProxyHandler({}), HTTPSHandler(context=context), _RejectRedirect())
+
+
+def _approved_oidc_url(request_url):
     parsed = urlsplit(request_url)
-    require(parsed.scheme == "https" and parsed.hostname is not None
-            and parsed.hostname.endswith(".actions.githubusercontent.com")
-            and parsed.username is None and parsed.password is None
-            and not parsed.fragment and "\r" not in request_token
-            and "\n" not in request_token and len(request_token) >= 32)
+    token_id = r"[0-9A-Fa-f-]{32,36}"
+    token_path = rf"/{token_id}/_apis/distributedtask/hubs/[A-Za-z0-9._-]{{1,64}}/plans/{token_id}/jobs/{token_id}/idtoken"
+    require(
+        parsed.scheme == "https"
+        and parsed.hostname == "pipelines.actions.githubusercontent.com"
+        and parsed.port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.fragment
+        and re.fullmatch(token_path, parsed.path)
+    )
     query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
-    require(not any(name == "audience" for name, _value in query))
-    oidc_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
-                          urlencode([*query, ("audience", "sts.amazonaws.com")]), ""))
-    request = Request(oidc_url, headers={"Authorization": f"Bearer {request_token}"})
-    with urlopen(request, timeout=30) as response:
-        require(getattr(response, "status", 200) == 200)
+    require(query == [("api-version", "2.0")])
+    return urlunsplit(
+        (
+            "https",
+            parsed.netloc,
+            parsed.path,
+            urlencode([*query, ("audience", "sts.amazonaws.com")]),
+            "",
+        )
+    )
+
+
+def _root_issuance_read(path, maximum):
+    require(path.parent == ISSUANCE_ROOT)
+    root, item = ISSUANCE_ROOT.lstat(), path.lstat()
+    require(
+        stat.S_ISDIR(root.st_mode)
+        and root.st_uid == root.st_gid == 0
+        and stat.S_IMODE(root.st_mode) == 0o555
+        and not ISSUANCE_ROOT.is_symlink()
+        and stat.S_ISREG(item.st_mode)
+        and item.st_uid == item.st_gid == 0
+        and item.st_nlink == 1
+        and stat.S_IMODE(item.st_mode) == 0o444
+    )
+    return _read_regular(path, maximum)
+
+
+def _validated_role_authority(selector, role_arn, approval_path):
+    require(selector in {"executor", "observer"} and Path(approval_path) == ISSUANCE_APPROVAL)
+    match = re.fullmatch(r"arn:(aws):iam::(372495030090):role/([A-Za-z0-9+=,.@_-]{1,64})", role_arn)
+    require(match is not None)
+    partition, account_id, role_name = match.groups()
+    approval_raw = _root_issuance_read(ISSUANCE_APPROVAL, MAX_BYTES)
+    authentication_raw = _root_issuance_read(ISSUANCE_AUTHENTICATION, MAX_BYTES)
+    package_raw = _root_issuance_read(ISSUANCE_PACKAGE, MAX_BYTES)
+    try:
+        value, authentication, package = map(
+            json.loads, (approval_raw, authentication_raw, package_raw)
+        )
+    except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+        raise ApprovalIssuerError() from error
+    require(
+        canonical(value) == approval_raw
+        and canonical(authentication) == authentication_raw
+        and canonical(package) == package_raw
+    )
+    value["plan_sha256s"] = tuple(value.get("plan_sha256s", ()))
+    value["phase_cycle_counts"] = tuple(value.get("phase_cycle_counts", ()))
+    approval = production.ProductionApproval(**value)
+    production.validate_approval_package(approval, package, hashlib.sha256(package_raw).hexdigest())
+    require(
+        set(authentication) == AUTHENTICATION_FIELDS
+        and authentication.get("version") == "cogs.stage2-production-approval-authentication/v1"
+        and authentication.get("result") == "pass"
+        and authentication.get("first_created") is True
+        and authentication.get("workflow_run_attempt") == 1
+        and authentication.get("approval_sha256") == hashlib.sha256(approval_raw).hexdigest()
+        and authentication.get("issuer_commitment") == approval.issuer_commitment
+        and authentication.get("control_revision") == approval.control_revision
+        and authentication.get("executor_principal_commitment")
+        == approval.executor_principal_commitment
+        and authentication.get("inventory_observer_principal_commitment")
+        == approval.inventory_observer_principal_commitment
+        and approval.partition == partition == "aws"
+        and approval.region == AWS_REGION
+        and hashlib.sha256(account_id.encode("ascii")).hexdigest() == approval.account_commitment
+    )
+    expected = (
+        approval.executor_principal_commitment
+        if selector == "executor"
+        else approval.inventory_observer_principal_commitment
+    )
+    require(production.executor_principal_commitment(partition, account_id, role_name) == expected)
+    return approval, hashlib.sha256(authentication_raw).hexdigest(), account_id, role_name
+
+
+def assume_github_role(
+    selector, role_arn, session_name, duration_raw, minimum_raw, approval_path, runway_path=None
+):
+    """One-shot direct GitHub OIDC/regional STS exchange for an approved role."""
+    approval, authentication_sha256, account_id, role_name = _validated_role_authority(
+        selector, role_arn, approval_path
+    )
+    require(
+        re.fullmatch(r"[A-Za-z0-9+=,.@_-]{2,64}", session_name)
+        and POSITIVE.fullmatch(duration_raw)
+        and POSITIVE.fullmatch(minimum_raw)
+    )
+    duration, minimum, now = int(duration_raw), int(minimum_raw), int(time.time())
+    require(900 <= minimum <= duration <= 43200)
+    runway_deadline = approval.expires_unix_ns
+    if runway_path is not None:
+        require(Path(runway_path) == ISSUANCE_CONTINUATION)
+        runway_raw = _root_issuance_read(ISSUANCE_CONTINUATION, 4 * 1024 * 1024)
+        bundle_raw = _root_issuance_read(ISSUANCE_CONTINUATION_BUNDLE, 1024 * 1024)
+        admission_raw = _root_issuance_read(ISSUANCE_ADMISSION, 64 * 1024)
+        try:
+            preliminary = json.loads(admission_raw)
+        except (UnicodeError, ValueError, TypeError, RecursionError) as error:
+            raise ApprovalIssuerError() from error
+        continuation = production.continuation_from_bytes(
+            runway_raw,
+            approval,
+            preliminary.get("run_id"),
+            preliminary.get("run_attempt"),
+            "authenticated-aws-adapter",
+        )
+        admission = production.admission_from_bytes(admission_raw, continuation, approval)
+        require(
+            continuation.consumption.authentication_receipt_sha256 == authentication_sha256
+            and admission.continuation_sha256 == hashlib.sha256(runway_raw).hexdigest()
+            and admission.bundle_sha256 == hashlib.sha256(bundle_raw).hexdigest()
+        )
+        runway_deadline = min(runway_deadline, continuation.cleanup_deadline_unix_ns)
+    require(duration <= runway_deadline // 1_000_000_000 - now - 900)
+    # The private opener disables proxies and redirects before either token is read.
+    opener = _direct_https_opener()
+    request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+    oidc_url = _approved_oidc_url(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", ""))
+    require("\r" not in request_token and "\n" not in request_token and len(request_token) >= 32)
+    with opener.open(
+        Request(oidc_url, headers={"Authorization": f"Bearer {request_token}"}), timeout=30
+    ) as response:
+        require(getattr(response, "status", 200) == 200 and response.geturl() == oidc_url)
         oidc = json.loads(_bounded_response(response, 24 * 1024))
+    oidc_now = int(time.time())
     require(type(oidc) is dict and set(oidc) == {"value"})
-    web_identity = oidc["value"]; claims = _jwt_claims(web_identity)
+    web_identity = oidc["value"]
+    claims = _jwt_claims(web_identity)
     audience = claims.get("aud")
-    require((audience == "sts.amazonaws.com"
-             or type(audience) is list and audience == ["sts.amazonaws.com"])
-            and claims.get("iss") == "https://token.actions.githubusercontent.com"
-            and claims.get("sub") == "repo:nenb/cogs:ref:refs/heads/main"
-            and type(claims.get("exp")) is int and claims["exp"] >= now + 60)
-    body = urlencode({
-        "Action": "AssumeRoleWithWebIdentity", "Version": "2011-06-15",
-        "RoleArn": role_arn, "RoleSessionName": session_name,
-        "WebIdentityToken": web_identity, "DurationSeconds": str(duration),
-    }).encode("ascii")
-    sts_request = Request("https://sts.amazonaws.com/", data=body,
-                          headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with urlopen(sts_request, timeout=60) as response:
-        require(getattr(response, "status", 200) == 200)
+    require(
+        (
+            audience == "sts.amazonaws.com"
+            or type(audience) is list
+            and audience == ["sts.amazonaws.com"]
+        )
+        and claims.get("iss") == "https://token.actions.githubusercontent.com"
+        and claims.get("sub") == "repo:nenb/cogs:ref:refs/heads/main"
+        and type(claims.get("exp")) is int
+        and claims["exp"] >= oidc_now + 60
+    )
+    body = urlencode(
+        {
+            "Action": "AssumeRoleWithWebIdentity",
+            "Version": "2011-06-15",
+            "RoleArn": role_arn,
+            "RoleSessionName": session_name,
+            "WebIdentityToken": web_identity,
+            "DurationSeconds": str(duration),
+        }
+    ).encode("ascii")
+    with opener.open(
+        Request(STS_URL, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"}),
+        timeout=60,
+    ) as response:
+        require(getattr(response, "status", 200) == 200 and response.geturl() == STS_URL)
         sts_raw = _bounded_response(response, 64 * 1024)
-    try: xml = ElementTree.fromstring(sts_raw)
-    except ElementTree.ParseError as error: raise ApprovalIssuerError() from error
+    try:
+        xml = ElementTree.fromstring(sts_raw)
+    except ElementTree.ParseError as error:
+        raise ApprovalIssuerError() from error
     namespace = {"s": "https://sts.amazonaws.com/doc/2011-06-15/"}
-    def text(name):
-        node = xml.find(f".//s:Credentials/s:{name}", namespace)
-        require(node is not None and type(node.text) is str); return node.text
+    require(
+        xml.tag == "{https://sts.amazonaws.com/doc/2011-06-15/}AssumeRoleWithWebIdentityResponse"
+    )
+
+    def response_text(path):
+        node = xml.find(path, namespace)
+        require(node is not None and type(node.text) is str)
+        return node.text
+
+    credentials = ".//s:Credentials/s:"
     access, secret, token, expiration = (
-        text("AccessKeyId"), text("SecretAccessKey"),
-        text("SessionToken"), text("Expiration"))
-    require(re.fullmatch(r"ASIA[A-Z0-9]{16}", access)
-            and re.fullmatch(r"[A-Za-z0-9/+=]{40,128}", secret)
-            and 100 <= len(token) <= 8192 and token.isascii()
-            and all("\n" not in item and "\r" not in item and "\0" not in item
-                    for item in (access, secret, token)))
-    try: expires = int(datetime.fromisoformat(expiration.replace("Z", "+00:00")).timestamp())
-    except (ValueError, OverflowError) as error: raise ApprovalIssuerError() from error
-    require(expires >= now + minimum and expires >= now + duration - 60
-            and expires <= now + duration + 300
-            and expires <= runway_deadline // 1_000_000_000)
+        response_text(credentials + name)
+        for name in ("AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")
+    )
+    assumed_arn, assumed_id = response_text(".//s:AssumedRoleUser/s:Arn"), response_text(
+        ".//s:AssumedRoleUser/s:AssumedRoleId"
+    )
+    require(
+        assumed_arn == f"arn:aws:sts::{account_id}:assumed-role/{role_name}/{session_name}"
+        and re.fullmatch(rf"[A-Z0-9]{{16,128}}:{re.escape(session_name)}", assumed_id)
+        and re.fullmatch(r"ASIA[A-Z0-9]{16}", access)
+        and re.fullmatch(r"[A-Za-z0-9/+=]{40,128}", secret)
+        and 100 <= len(token) <= 8192
+        and token.isascii()
+        and all(
+            "\n" not in item and "\r" not in item and "\0" not in item
+            for item in (access, secret, token)
+        )
+    )
+    try:
+        require(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", expiration))
+        expires = int(datetime.strptime(expiration, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
+    except (ValueError, OverflowError) as error:
+        raise ApprovalIssuerError() from error
+    response_now = int(time.time())
+    require(
+        duration <= runway_deadline // 1_000_000_000 - response_now - 900
+        and expires >= response_now + minimum
+        and expires >= response_now + duration - 60
+        and expires <= response_now + duration + 300
+        and expires <= runway_deadline // 1_000_000_000
+    )
     for value in (access, secret, token):
         command = f"::add-mask::{value}\n".encode("ascii")
         require(os.write(1, command) == len(command))
-    github_environment = Path(os.environ.get("GITHUB_ENV", ""))
-    descriptor = os.open(github_environment, os.O_WRONLY | os.O_APPEND |
-                         os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = os.open(
+        Path(os.environ.get("GITHUB_ENV", "")),
+        os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
     try:
         info = os.fstat(descriptor)
-        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                and info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) & 0o022 == 0)
+        caller_uid = (
+            int(os.environ["SUDO_UID"])
+            if os.geteuid() == 0 and os.environ.get("SUDO_UID", "").isdigit()
+            else os.geteuid()
+        )
+        require(
+            stat.S_ISREG(info.st_mode)
+            and info.st_nlink == 1
+            and info.st_uid == caller_uid
+            and stat.S_IMODE(info.st_mode) & 0o022 == 0
+        )
         os.fchmod(descriptor, 0o600)
-        output = (f"AWS_ACCESS_KEY_ID={access}\nAWS_SECRET_ACCESS_KEY={secret}\n"
-                  f"AWS_SESSION_TOKEN={token}\nAWS_DEFAULT_REGION=us-east-1\n"
-                  f"AWS_REGION=us-east-1\n").encode("ascii")
-        require(os.write(descriptor, output) == len(output)); os.fsync(descriptor)
-    finally: os.close(descriptor)
+        output = (
+            f"AWS_ACCESS_KEY_ID={access}\nAWS_SECRET_ACCESS_KEY={secret}\nAWS_SESSION_TOKEN={token}\nAWS_DEFAULT_REGION={AWS_REGION}\nAWS_REGION={AWS_REGION}\n"
+        ).encode("ascii")
+        require(os.write(descriptor, output) == len(output))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def authenticate(approval_path):
@@ -312,8 +499,8 @@ def authenticate(approval_path):
 
 if __name__ == "__main__":
     try:
-        require(len(sys.argv) in {3, 7, 8})
-        if sys.argv[1] == "assume-github-role" and len(sys.argv) in {7, 8}:
+        require(len(sys.argv) in {3, 8, 9})
+        if sys.argv[1] == "assume-github-role" and len(sys.argv) in {8, 9}:
             assume_github_role(*sys.argv[2:])
         elif sys.argv[1] == "issue" and len(sys.argv) == 3: issue(sys.argv[2])
         elif sys.argv[1] == "authenticate" and len(sys.argv) == 3:

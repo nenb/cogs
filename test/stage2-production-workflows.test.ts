@@ -11,6 +11,7 @@ const approvalDiagnostic = readFileSync(".github/workflows/stage2-production-app
 const campaign = readFileSync(".github/workflows/stage2-production-campaign.yml", "utf8");
 const diagnosticPreparation = readFileSync(".github/workflows/stage2-r-diagnostic-preparation.yml", "utf8");
 const diagnosticCampaign = readFileSync(".github/workflows/stage2-r-diagnostic-campaign.yml", "utf8");
+const linuxFoundations = readFileSync(".github/workflows/stage2-workload-linux-foundations.yml", "utf8");
 const signer = readFileSync("scripts/stage2-cosign-keyless-sign.sh", "utf8");
 const planner = readFileSync("scripts/stage2-production-planner.py", "utf8");
 const issuer = readFileSync("scripts/stage2-production-approval.py", "utf8");
@@ -195,9 +196,28 @@ test("R diagnostic lane exercises production bytes without creating evidence aut
   assert.doesNotMatch(diagnosticCampaign, /aws-stage2-completion-evidence-v[0-9]/u);
   assert.doesNotMatch(diagnosticCampaign, /aws-actions\/configure-aws-credentials/u);
   assert.equal((diagnosticCampaign.match(/assume-github-role/gu) ?? []).length, 2);
-  assert.equal((diagnosticCampaign.match(/expiry_s - \$\(date \+%s\) - 900/gu) ?? []).length, 2);
+  assert.equal(
+    (diagnosticCampaign.match(/remaining=\$\(\( expiry_s - now_s - 900 \)\); duration=30600; minimum=30600/gu) ?? [])
+      .length,
+    2,
+  );
   assert.equal((diagnosticCampaign.match(/timeout-minutes: 10\n {8}env:\n {10}ROLE_ARN:/gu) ?? []).length, 2);
-  assert.equal((diagnosticCampaign.match(/cap=21600; minimum=16500/gu) ?? []).length, 2);
+  assert.equal(
+    (diagnosticCampaign.match(/required_through=\$\(\( job_start \+ 480 \* 60 \+ 900 \)\)/gu) ?? []).length,
+    2,
+  );
+  assert.equal(
+    (diagnosticCampaign.match(/test \$\(\( now_s \+ duration - 60 \)\) -ge "\$required_through"/gu) ?? []).length,
+    2,
+  );
+  assert.match(diagnosticCampaign, /timeout-minutes: 480/u);
+  assert.match(
+    diagnosticCampaign,
+    /timeout-minutes: 450[\s\S]*job_deadline=\$\(\( job_start \+ \(480 - 31\) \* 60 \)\)/u,
+  );
+  assert.match(diagnosticCampaign, /test \$\(\( approval_expiry - now_s \)\) -ge 31500/u);
+  assert.ok((480 - 31) * 60 + 10 < 450 * 60);
+  assert.ok((480 - 31) * 60 + 10 + 30 * 60 < 480 * 60);
   assert.match(diagnosticCampaign, /cogs\.stage2-r-diagnostic-result\/v2/u);
   assert.match(diagnosticCampaign, /NON-AUTHORITATIVE-stage2-r-diagnostic-result/u);
   assert.match(diagnosticCampaign, /test ! -e \/var\/lib\/cogs\/stage2-aws-production-v2\/evidence-publication/u);
@@ -209,6 +229,28 @@ test("R diagnostic lane exercises production bytes without creating evidence aut
   const cleanImmutable =
     /\/usr\/bin\/env -i HOME=\/nonexistent LANG=C LC_ALL=C PATH=\/usr\/bin:\/bin TZ=UTC "\s*\n\s*"\/usr\/bin\/python3 -I -B \/var\/lib\/cogs\/stage2-completion-v1\/source\//u;
   assert.match(providerEntry, cleanImmutable);
+});
+
+test("diagnostic session arithmetic admits exact boundaries and rejects one second less", () => {
+  const approvalMarginSeconds = 900;
+  const requiredControllerSeconds = 31_500;
+  const actualApprovalLifetimeSeconds = 32_400;
+  const diagnosticSessionSeconds = 30_600;
+  const conservativeStsExpirationSkewSeconds = 60;
+  const absoluteJobDeadlineSeconds = 480 * 60;
+  const cleanupRunwaySeconds = 900;
+  const controlledEffectCutoffSeconds = (480 - 31) * 60;
+
+  assert.equal(actualApprovalLifetimeSeconds - approvalMarginSeconds, requiredControllerSeconds);
+  assert.ok(actualApprovalLifetimeSeconds - 1 - approvalMarginSeconds < requiredControllerSeconds);
+  assert.ok(requiredControllerSeconds >= 31_500);
+  assert.ok(requiredControllerSeconds - 1 < 31_500);
+  assert.ok(
+    diagnosticSessionSeconds - conservativeStsExpirationSkewSeconds >=
+      absoluteJobDeadlineSeconds + cleanupRunwaySeconds,
+  );
+  assert.equal(controlledEffectCutoffSeconds, 449 * 60);
+  assert.ok(controlledEffectCutoffSeconds + 30 * 60 < absoluteJobDeadlineSeconds);
 });
 
 test("budget alert values cross workflow expression boundaries only through step environments", () => {
@@ -321,7 +363,7 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /maximum_cycle_duration_ns == 9000000000000/u);
   assert.match(campaign, /maximum_cost_micro_usd == 1100000/u);
   assert.match(campaign, /expires_unix_ns - \.not_before_unix_ns\) == 36000000000000/u);
-  assert.match(campaign, /test "\$remaining" -ge 31500/u);
+  assert.match(campaign, /test "\$remaining" -ge 32400/u);
   assert.match(campaign, /test "\$handoff_remaining" -ge 19800/u);
   assert.doesNotMatch(campaign, /steps\.approval_verification\.outputs\.role_duration_seconds/u);
 
@@ -344,7 +386,8 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
     assert.match(action, /test "\$duration" -ge "\$minimum"/u, name);
     assert.match(action, /test "\$duration" -eq "\$cap"/u, name);
     assert.match(action, /test "\$duration" -le "\$remaining"/u, name);
-    assert.match(action, /assume-github-role "\$ROLE_ARN"/u, name);
+    assert.match(action, /assume-github-role (?:executor|observer) "\$ROLE_ARN"/u, name);
+    assert.match(action, /\/var\/lib\/cogs\/stage2-aws-issuance-v1\/approval\.json/u, name);
   }
 
   const firstJob = campaign.slice(campaign.indexOf("  cycles_1_3:"), campaign.indexOf("  cycles_4_7:"));
@@ -353,8 +396,8 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.ok(firstJob.indexOf("os.O_EXCL") < firstJob.indexOf("authorize-seven-stage2-production-cycles"));
   assert.ok(secondJob.indexOf("os.O_EXCL") < secondJob.indexOf('test "$GITHUB_REPOSITORY"'));
   for (const [job, jobMinutes, campaignMinutes] of [
-    [firstJob, 300, 240],
-    [secondJob, 330, 270],
+    [firstJob, 300, 270],
+    [secondJob, 330, 300],
   ] as const) {
     assert.match(job, new RegExp(`timeout-minutes: ${campaignMinutes}`, "u"));
     assert.match(job, new RegExp(`job_deadline=\\$\\(\\( job_start \\+ \\(${jobMinutes} - 31\\) \\* 60 \\)\\)`, "u"));
@@ -362,6 +405,7 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
     assert.match(job, /test "\$remaining" -gt 0/u);
     assert.match(job, /\/usr\/bin\/timeout --signal=TERM --kill-after=10s "\$remaining"s sudo -n/u);
     assert.match(job, /\|\| campaign_status=\$\?[\s\S]*exit "\$campaign_status"/u);
+    assert.ok((jobMinutes - 31) * 60 + 10 < campaignMinutes * 60);
     assert.ok((jobMinutes - 31) * 60 + 10 + 30 * 60 < jobMinutes * 60);
   }
 
@@ -391,6 +435,13 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(stager, /def snapshot_evidence_package/u);
   assert.match(stager, /set\(os\.listdir\(source_fd\)\) == set\(EVIDENCE_MEMBERS\)/u);
   assert.match(campaignAdapter, /"--foreground"/u);
+  assert.match(campaignAdapter, /cgroup\.kill/u);
+  assert.match(campaignAdapter, /"batch_commitment": batch_commitment/u);
+  assert.match(campaignAdapter, /"cgroup_st_dev": info\.st_dev/u);
+  assert.match(campaignAdapter, /def _drain_stale_command_scope\(approval\)/u);
+  assert.match(linuxFoundations, /if: matrix\.shard == 'baseline'/u);
+  assert.match(linuxFoundations, /adapter\.protected_command_scope_self_test\(\)/u);
+  assert.match(linuxFoundations, /sudo -n env -i HOME=\/root/u);
   assert.ok(
     campaign.indexOf('validate-aws-stage2-completion-evidence-v4.ts --package "$destination"') <
       campaign.indexOf("Upload pass-only canonical evidence after credential retirement"),
@@ -403,6 +454,24 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   );
   assert.doesNotMatch(campaign, /continue-on-error:\s*true/u);
   assert.doesNotMatch(`${planning}\n${approval}\n${campaign}`, /\.\[\]\[\]/u);
+
+  assert.equal((campaign.match(/stage-issuance-approval/gu) ?? []).length, 2);
+  assert.equal((campaign.match(/stage-issuance-continuation/gu) ?? []).length, 1);
+  assert.equal((diagnosticCampaign.match(/stage-issuance-approval/gu) ?? []).length, 1);
+  assert.match(stager, /ISSUANCE_ROOT = Path\("\/var\/lib\/cogs\/stage2-aws-issuance-v1"\)/u);
+  assert.match(stager, /os\.chmod\(ISSUANCE_ROOT, 0o555\)/u);
+  assert.match(stager, /ISSUANCE_ROOT \/ adapter\.CONTINUATION_ADMISSION_NAME/u);
+  assert.match(stager, /Credential issuance and provider execution must retain one exact signed/u);
+  assert.doesNotMatch(
+    `${campaign}\n${diagnosticCampaign}`,
+    /ACTIONS_ID_TOKEN_REQUEST_TOKEN="\$ACTIONS_ID_TOKEN_REQUEST_TOKEN"/u,
+  );
+  assert.match(issuer, /ProxyHandler\(\{\}\)/u);
+  assert.match(issuer, /class _RejectRedirect/u);
+  assert.match(issuer, /https:\/\/sts\.us-east-1\.amazonaws\.com\//u);
+  assert.match(issuer, /pipelines\.actions\.githubusercontent\.com/u);
+  assert.doesNotMatch(issuer, /urlopen\(/u);
+  assert.equal((`${campaign}\n${diagnosticCampaign}`.match(/test "\$account" = 372495030090/gu) ?? []).length, 3);
 
   assert.match(stager, /aws-credentials/u);
   assert.match(stager, /ASIA\[A-Z0-9\]/u);

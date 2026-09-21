@@ -1740,11 +1740,34 @@ function crossValidate(
       grant.mode as ExactJson,
       string(cycleCommitments[index], "cycle commitment"),
     ]);
-    const runningResources = Object.fromEntries(
-      array(running.resource_commitments, "running resources").map((row) => {
-        const pair = array(row, "resource pair");
-        return [string(pair[0], "resource name"), string(pair[1], "resource commitment")];
-      }),
+    const resourcePairs = (value: ExactJson, label: string) =>
+      array(value, label).map((row) => {
+        const pair = array(row, `${label} pair`);
+        check(pair.length === 2, `${label} pair length`);
+        return [string(pair[0], `${label} name`), string(pair[1], `${label} commitment`)] as const;
+      });
+    const runningPairs = resourcePairs(running.resource_commitments as ExactJson, "running resources");
+    const destroyPairs = resourcePairs(destroy.resource_commitments as ExactJson, "destroy resources");
+    check(
+      runningPairs.length === 3 &&
+        new Set(runningPairs.map(([name]) => name)).size === 3 &&
+        [...runningPairs.map(([name]) => name)].sort().join(",") ===
+          "instance,launch_template_generation,root_volume" &&
+        destroyPairs.length === 1 &&
+        destroyPairs[0]?.[0] === "pre_destroy_receipt",
+      `cycle ${index + 1} exact resource commitment names`,
+    );
+    const runningResources = Object.fromEntries(runningPairs);
+    const destroyResources = Object.fromEntries(destroyPairs);
+    const freshness = object(cycle.freshness, `evidence freshness ${index + 1}`);
+    check(
+      freshness.client_ssh_identity === remote.client_key_commitment &&
+        freshness.host_ssh_identity === remote.host_key_commitment &&
+        freshness.instance === runningResources.instance &&
+        freshness.root_volume === runningResources.root_volume &&
+        freshness.launch_template_generation === runningResources.launch_template_generation &&
+        freshness.pre_destroy_receipt === destroyResources.pre_destroy_receipt,
+      `cycle ${index + 1} signed continuation freshness projection`,
     );
     for (const [name, value] of [
       ["state", apply.state_commitment],

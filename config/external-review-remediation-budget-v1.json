@@ -32,7 +32,7 @@
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 7033,
+          "gross_lines": 8200,
           "gross_bytes": 1100000,
           "paths": [
             "BUGS-TO-FIX.md",
@@ -80,8 +80,8 @@
         },
         {
           "name": "product",
-          "gross_lines": 5057,
-          "gross_bytes": 2900000,
+          "gross_lines": 5050,
+          "gross_bytes": 2600000,
           "paths": [
             ".github/workflows/insecure-container.yml",
             ".github/workflows/kvm-driver-diagnostic.yml",
@@ -140,7 +140,7 @@
         },
         {
           "name": "local-tofu-ssm",
-          "gross_lines": 5446,
+          "gross_lines": 6600,
           "gross_bytes": 3300000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
@@ -148,6 +148,7 @@
             ".github/workflows/stage2-production-campaign.yml",
             ".github/workflows/stage2-r-diagnostic-campaign.yml",
             ".github/workflows/stage2-r-diagnostic-preparation.yml",
+            ".github/workflows/stage2-workload-linux-foundations.yml",
             "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
             "deploy/aws-feasibility/completion_campaign_aws_entry.py",
             "deploy/aws-feasibility/completion_campaign_aws_provider.py",
@@ -168,8 +169,8 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 500,
-          "gross_bytes": 9000000,
+          "gross_lines": 400,
+          "gross_bytes": 9300000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -187,7 +188,7 @@
         },
         {
           "name": "final-HGQ",
-          "gross_lines": 4121,
+          "gross_lines": 1907,
           "gross_bytes": 5200000,
           "paths": [
             ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml",
@@ -234,11 +235,11 @@
             "test/stage2-prebuilt-static-control-runtime-boundary.py"
           ],
           "pre_h_cap": {
-            "gross_lines": 621,
+            "gross_lines": 707,
             "gross_bytes": 1700000
           },
           "post_h_reserve": {
-            "gross_lines": 3500,
+            "gross_lines": 1200,
             "gross_bytes": 3500000
           }
         }

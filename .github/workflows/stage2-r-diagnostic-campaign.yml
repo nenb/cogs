@@ -47,7 +47,7 @@ concurrency:
 jobs:
   campaign:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 480
     env:
       CONTROL_HEAD: ${{ inputs.control_head }}
       PREPARATION_RUN_ID: ${{ inputs.preparation_run_id }}
@@ -59,6 +59,14 @@ jobs:
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           set -euo pipefail
+          umask 077
+          JOB_START_FILE="$RUNNER_TEMP/stage2-job-start-epoch" /usr/bin/python3 -I -B - <<'PY'
+          import os,time
+          path=os.environ["JOB_START_FILE"]
+          fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+          with os.fdopen(fd,"w",encoding="ascii") as stream:
+              stream.write(f"{int(time.time())}\n"); stream.flush(); os.fsync(stream.fileno())
+          PY
           test "$AUTHORIZATION_PHRASE" = authorize-seven-stage2-non-authoritative-diagnostic-cycles
           test "$GITHUB_REPOSITORY" = nenb/cogs
           test "$GITHUB_REF" = refs/heads/main
@@ -101,6 +109,15 @@ jobs:
       - name: Check out exact diagnostic candidate without persistent credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: { ref: "${{ github.sha }}", persist-credentials: false }
+
+      - name: Prove the exact root cgroup-v2 command boundary before fresh H
+        run: |
+          set -euo pipefail
+          source_root="$GITHUB_WORKSPACE/deploy/aws-feasibility"
+          sudo -n env -i HOME=/root LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B -c \
+            'import sys; sys.path.insert(0,sys.argv[1]); import completion_campaign_aws_adapter as adapter; adapter.protected_command_scope_self_test()' \
+            "$source_root"
 
       - name: Install locked schema validator before credentials
         run: npm ci --ignore-scripts
@@ -152,8 +169,16 @@ jobs:
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
           expires_ns=$(jq -er '.expires_unix_ns' "$out/approval.json")
           now_s=$(date +%s); remaining=$((expires_ns / 1000000000 - now_s - 900))
-          test "$remaining" -ge 16500
-          test "$remaining" -le 28800
+          # Preserve at least nine actual hours here (31,500 seconds after the
+          # independent 15-minute margin), safely above controller admission.
+          test "$remaining" -ge 31500
+
+      - name: Freeze authenticated diagnostic issuance authority before OIDC
+        run: |
+          set -euo pipefail
+          sudo -n env COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
+            /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py \
+            stage-issuance-approval "$RUNNER_TEMP/approval"
 
       - name: Acquire exact fixture H without credentials
         run: |
@@ -182,17 +207,21 @@ jobs:
         run: |
           set -euo pipefail
           expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
-          remaining=$(( expiry_s - $(date +%s) - 900 )); cap=21600; minimum=16500; duration="$remaining"
-          if (( duration > cap )); then duration="$cap"; fi
-          test "$duration" -ge "$minimum"; test "$duration" -le "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py assume-github-role "$ROLE_ARN" \
-            "cogs-stage2-r-diagnostic-$GITHUB_RUN_ID" "$duration" "$minimum" "$RUNNER_TEMP/approval/approval.json"
+          now_s=$(date +%s); remaining=$(( expiry_s - now_s - 900 )); duration=30600; minimum=30600
+          job_start=$(cat "$RUNNER_TEMP/stage2-job-start-epoch")
+          required_through=$(( job_start + 480 * 60 + 900 ))
+          test "$duration" -eq "$minimum"; test "$duration" -le "$remaining"
+          test $(( now_s + duration - 60 )) -ge "$required_through"
+          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+            assume-github-role executor "$ROLE_ARN" "cogs-stage2-r-diagnostic-$GITHUB_RUN_ID" \
+            "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json
 
       - name: Verify executor budget tag-read closure before resource effects
         run: |
           set -euo pipefail
           umask 077
           account=$(aws sts get-caller-identity --query Account --output text --no-cli-pager)
+          test "$account" = 372495030090
           output="$RUNNER_TEMP/executor-budget-tag-read.stdout"
           diagnostic="$RUNNER_TEMP/executor-budget-tag-read.stderr"
           trap 'rm -f "$output" "$diagnostic"' EXIT
@@ -218,11 +247,14 @@ jobs:
         run: |
           set -euo pipefail
           expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
-          remaining=$(( expiry_s - $(date +%s) - 900 )); cap=21600; minimum=16500; duration="$remaining"
-          if (( duration > cap )); then duration="$cap"; fi
-          test "$duration" -ge "$minimum"; test "$duration" -le "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py assume-github-role "$ROLE_ARN" \
-            "cogs-stage2-r-diagnostic-observer-$GITHUB_RUN_ID" "$duration" "$minimum" "$RUNNER_TEMP/approval/approval.json"
+          now_s=$(date +%s); remaining=$(( expiry_s - now_s - 900 )); duration=30600; minimum=30600
+          job_start=$(cat "$RUNNER_TEMP/stage2-job-start-epoch")
+          required_through=$(( job_start + 480 * 60 + 900 ))
+          test "$duration" -eq "$minimum"; test "$duration" -le "$remaining"
+          test $(( now_s + duration - 60 )) -ge "$required_through"
+          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+            assume-github-role observer "$ROLE_ARN" "cogs-stage2-r-diagnostic-observer-$GITHUB_RUN_ID" \
+            "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json
 
       - name: Stage approval, credentials, provider package, and plans
         id: production_staging
@@ -293,19 +325,34 @@ jobs:
 
       - name: Execute seven cycles with the candidate provider overlay
         id: campaign
-        timeout-minutes: 265
+        timeout-minutes: 450
         run: |
           set -euo pipefail
-          sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+          start_file="$RUNNER_TEMP/stage2-job-start-epoch"
+          test "$(stat -c '%a:%h' "$start_file")" = 600:1
+          job_start=$(cat "$start_file"); [[ "$job_start" =~ ^[1-9][0-9]*$ ]]
+          now_s=$(date +%s)
+          approval_expiry=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
+          # Re-prove the unchanged controller's 31,500-second admission bound
+          # immediately before entering the campaign.
+          test $(( approval_expiry - now_s )) -ge 31500
+          job_deadline=$(( job_start + (480 - 31) * 60 ))
+          remaining=$(( job_deadline - now_s ))
+          test "$remaining" -gt 0
+          campaign_status=0
+          /usr/bin/timeout --signal=TERM --kill-after=10s "$remaining"s sudo -n \
+            env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
             COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
-            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_entry.py
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_entry.py \
+            || campaign_status=$?
+          exit "$campaign_status"
 
       - name: Invoke cleanup-only recovery after any uncertain diagnostic outcome
         if: always() && steps.campaign.outcome != 'success'
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials; then
+          if ! sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json; then
             sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
               COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1 \
               /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py

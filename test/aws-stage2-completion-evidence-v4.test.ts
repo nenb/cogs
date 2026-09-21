@@ -389,6 +389,53 @@ test("signed continuation rejects coherent unsigned provenance rewrites", () => 
   }
 });
 
+test("all six unsigned freshness rewrites contradict the unchanged signed continuation", () => {
+  const fields = [
+    "client_ssh_identity",
+    "host_ssh_identity",
+    "instance",
+    "root_volume",
+    "launch_template_generation",
+    "pre_destroy_receipt",
+  ];
+  for (const field of fields) {
+    const rootDirectory = fs.mkdtempSync(join(tmpdir(), "cogs-completion-freshness-mutation-"));
+    const directory = join(rootDirectory, "package");
+    try {
+      packageFixture(directory);
+      const signedNames = [
+        "aws-stage2-production-continuation-v1.json",
+        "aws-stage2-production-continuation-v1.bundle.json",
+        "aws-stage2-production-continuation-admission-v1.json",
+      ];
+      const signed = new Map(signedNames.map((name) => [name, fs.readFileSync(join(directory, name))]));
+      const evidencePath = join(directory, "aws-stage2-completion-evidence-v4.json");
+      const publicationPath = join(directory, "aws-stage2-completion-publication-v2.json");
+      const evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8")) as Record<string, any>;
+      [evidence.cycles[0].freshness[field], evidence.cycles[1].freshness[field]] = [
+        evidence.cycles[1].freshness[field],
+        evidence.cycles[0].freshness[field],
+      ];
+      const evidenceRaw = `${canonical(evidence)}\n`;
+      validateAwsStage2CompletionEvidence(evidence);
+      const publication = JSON.parse(fs.readFileSync(publicationPath, "utf8")) as Record<string, any>;
+      publication.evidence_sha256 = hash(evidenceRaw);
+      for (const [path, bytes] of [
+        [evidencePath, evidenceRaw],
+        [publicationPath, `${canonical(publication)}\n`],
+      ] as const) {
+        fs.chmodSync(path, 0o600);
+        fs.writeFileSync(path, bytes);
+        fs.chmodSync(path, 0o400);
+      }
+      for (const name of signedNames) assert.deepEqual(fs.readFileSync(join(directory, name)), signed.get(name), name);
+      assert.throws(() => validateAwsStage2CompletionPackage(directory), /freshness/u, field);
+    } finally {
+      fs.rmSync(rootDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("final-zero order and actual wall duration include cleanup reserve without extending effects", () => {
   const value = fixture();
   assert.ok(value.deadlines.actual_campaign_duration_ns > value.cost.aggregate_effect_duration_ns);
