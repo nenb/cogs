@@ -53,12 +53,15 @@ PRODUCT_TEST_TASK_SPECS = (
     ('product', 5050, 2200000, ('.github/workflows/insecure-container.yml', '.github/workflows/kvm-driver-diagnostic.yml', '.github/workflows/kvm-qualification.yml', '.github/workflows/release-images.yml', 'config/release-image-set-pins-v1.json', 'IMPLEMENTATION.md', 'dev/linux-kvm/driver.sh', 'dev/linux-kvm/bounded-command.py', 'dev/linux-kvm/qualification-owner.py', 'dev/linux-kvm/qualify.sh', 'dev/product-test/host-custody.py', 'dev/product-test/runner.ts', 'dev/product-test/snapshot-owner.ts', 'docs/adr/0337-correct-protected-product-runtime-ancestry.md', 'docs/operations/release-image-publication.md', 'docs/operations/production-runtime-foundation.md', 'docs/operations/stage-4-offline-readiness.md', 'docs/security-evidence/release-image-set-assertion-34774398155.canonical.json', 'docs/security-evidence/release-image-set-review-34774398155.canonical.json', 'docs/security-evidence/stage4-offline-readiness-package.json', 'docs/test-reports/stage-4-offline-readiness.md', 'images/sandbox/entrypoint.sh', 'schemas/release-image-set-assertion-v1.json', 'schemas/release-image-set-review-v3.json', 'schemas/stage4-authenticated-runtime-artifact-evidence-v4.json', 'schemas/stage4-offline-readiness-package-v5.json', 'scripts/release-image-set-review-v2.ts', 'scripts/release-image-set-review-v3.ts', 'scripts/stage4-offline-readiness-regenerate.ts', 'src/egress/otlp-telemetry.ts', 'src/egress/runtime-manager.ts', 'src/runtime/compose.ts', 'src/skills/snapshot-session-preparer.ts', 'src/ssh/connection.ts', 'src/telemetry/otlp-http.ts', 'src/telemetry/worker-telemetry.ts', 'test/egress-otlp-telemetry.test.ts', 'test/egress-runtime-manager.test.ts', 'test/launcher-smoke-evidence.test.ts', 'test/linux-kvm-git-tools.test.ts', 'test/otlp-http.test.ts', 'test/ssh-connection.test.ts', 'test/worker-telemetry.test.ts', 'test/dev-launcher-profiles.test.ts', 'test/production-compose.test.ts', 'test/production-sandbox-image.test.ts', 'test/release-image-set-assertion.test.ts', 'test/aws-stage2-completion-final-integration-linux.test.ts', 'test/aws-stage2-completion-immutable-preparation.test.ts', 'test/release-image-set-review-v2.test.ts', 'test/release-image-set-review-v3.test.ts', 'test/stage4-offline-readiness.test.ts', 'test/stage4-runtime-artifact-closure.test.ts')),
     ('local-tofu-ssm', 6800, 3300000, ('.github/workflows/stage2-production-approval-signing-diagnostic.yml', '.github/workflows/stage2-production-approval.yml', '.github/workflows/stage2-production-campaign.yml', '.github/workflows/stage2-r-diagnostic-campaign.yml', '.github/workflows/stage2-r-diagnostic-preparation.yml', '.github/workflows/stage2-workload-linux-foundations.yml', 'deploy/aws-feasibility/completion_campaign_aws_adapter.py', 'deploy/aws-feasibility/completion_campaign_aws_entry.py', 'deploy/aws-feasibility/completion_campaign_aws_provider.py', 'deploy/aws-feasibility/completion_campaign_controller.py', 'deploy/aws-feasibility/completion_campaign_evidence_issuer.py', 'deploy/aws-feasibility/completion_campaign_production.py', 'deploy/aws-feasibility/destroy.sh', 'deploy/aws-feasibility/run-production-campaign.sh', 'scripts/stage2-cosign-keyless-sign.sh', 'scripts/stage2-stage-production-approval.py', 'test/aws-stage2-completion-campaign-aws-adapter.test.ts', 'test/aws-stage2-completion-campaign-aws-provider.py', 'test/aws-stage2-completion-campaign-aws-provider.test.ts', 'test/aws-stage2-completion-campaign-production.py', 'test/aws-stage2-completion-campaign-production.test.ts', 'test/aws-stage2-completion-campaign-remote-adapter.py')),
     ('readiness-ci', 400, 9500000, ('.gitleaksignore', '.github/workflows/ci.yml', 'docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json', 'docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json', 'docs/security-evidence/stage5-destructive-harness-report.canonical-json', 'scripts/stage4-offline-readiness.ts', 'scripts/stage4-offline-source-inventory.ts', 'scripts/stage4-runtime-artifact-closure.ts', 'test/ci-infrastructure-boundary.test.ts')),
-    ('final-HGQ', 1507, 5200000, ('.github/workflows/stage2-local-static-control-prebuilt-candidate.yml', '.github/workflows/stage2-prebuilt-kvm-integration-diagnostic.yml', '.github/workflows/stage2-prebuilt-kvm-rehearsal.yml', '.github/workflows/stage2-prebuilt-local-kata-qualification.yml', '.github/workflows/stage2-prebuilt-mixed-hg-preflight.yml', '.github/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml', '.github/workflows/stage2-prebuilt-rootfs-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-publisher.yml', '.github/workflows/stage2-production-plan.yml', 'config/stage2-retired-revisions-v2.json', 'deploy/aws-feasibility/remote/completion_kata_process.py', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/00-ip.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/01-tc.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/02-nft.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/03-ssh.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/04-ssh-keygen.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/05-containerd.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/06-ctr.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/07-shim.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/08-qemu.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/09-virtiofsd.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-execution-envelope-v3.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-runtime-manifest-v3.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-static-control-v2.json', 'docs/adr/0349-freeze-replacement-H-and-authorize-control.md', 'docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md', 'scripts/stage2-prebuilt-local-qualification-guard.py', 'scripts/stage2-prebuilt-mixed-hg-preflight.sh', 'scripts/stage2-revision-retirement.py', 'test/aws-stage2-completion-kata-mutable-bridges.test.ts', 'test/aws-stage2-completion-kata-process.py', 'test/aws-stage2-completion-kata-runtime.py', 'test/aws-stage2-completion-kata-runtime.test.ts', 'test/aws-stage2-completion-local-result.py', 'test/aws-stage2-completion-local-result.test.ts', 'test/stage2-local-static-control-candidate-workflow.test.ts', 'test/stage2-prebuilt-kvm-integration-diagnostic.test.ts', 'test/stage2-prebuilt-local-kata-workflow.test.ts', 'test/stage2-prebuilt-local-static-control-workflow.test.ts', 'test/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-static-control-runtime-boundary.py')),
+    ('final-HGQ', 1507, 5200000, ('.github/workflows/stage2-local-static-control-prebuilt-candidate.yml', '.github/workflows/stage2-prebuilt-kvm-integration-diagnostic.yml', '.github/workflows/stage2-prebuilt-kvm-rehearsal.yml', '.github/workflows/stage2-prebuilt-local-kata-qualification.yml', '.github/workflows/stage2-prebuilt-mixed-hg-preflight.yml', '.github/workflows/stage2-prebuilt-rootfs-diagnostic-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml', '.github/workflows/stage2-prebuilt-rootfs-producer.yml', '.github/workflows/stage2-prebuilt-rootfs-publisher.yml', '.github/workflows/stage2-production-plan.yml', 'config/stage2-retired-revisions-v2.json', 'deploy/aws-feasibility/remote/completion_kata_process.py', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/00-ip.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/01-tc.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/02-nft.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/03-ssh.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/04-ssh-keygen.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/05-containerd.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/06-ctr.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/07-shim.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/08-qemu.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/09-virtiofsd.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-execution-envelope-v3.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-runtime-manifest-v3.json', 'deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-static-control-v2.json', 'docs/adr/0349-freeze-replacement-H-and-authorize-control.md', 'docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md', 'docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md', 'docs/adr/0353-establish-fresh-Q-and-authorize-qualification.md', 'scripts/stage2-prebuilt-local-qualification-guard.py', 'scripts/stage2-prebuilt-mixed-hg-preflight.sh', 'scripts/stage2-revision-retirement.py', 'test/aws-stage2-completion-kata-mutable-bridges.test.ts', 'test/aws-stage2-completion-kata-process.py', 'test/aws-stage2-completion-kata-runtime.py', 'test/aws-stage2-completion-kata-runtime.test.ts', 'test/aws-stage2-completion-local-result.py', 'test/aws-stage2-completion-local-result.test.ts', 'test/stage2-local-static-control-candidate-workflow.test.ts', 'test/stage2-prebuilt-kvm-integration-diagnostic.test.ts', 'test/stage2-prebuilt-local-kata-workflow.test.ts', 'test/stage2-prebuilt-local-static-control-workflow.test.ts', 'test/stage2-prebuilt-rehearsal-grant.py', 'test/stage2-prebuilt-static-control-runtime-boundary.py')),
 )
 PRODUCT_TEST_TASK_PATHS = {name: paths for name, _lines, _bytes, paths in PRODUCT_TEST_TASK_SPECS}
-PRODUCT_TEST_PRE_H_TASK_MAXIMA = {name: (lines, raw_bytes) for name, lines, raw_bytes, _paths in PRODUCT_TEST_TASK_SPECS}
-PRODUCT_TEST_PRE_H_TASK_MAXIMA['final-HGQ'] = (607, 1700000)
-PRODUCT_TEST_FINAL_HGQ_MINIMUM = (900, 3500000)
+PRODUCT_TEST_TASK_MAXIMA = {name: (lines, raw_bytes) for name, lines, raw_bytes, _paths in PRODUCT_TEST_TASK_SPECS}
+PRODUCT_TEST_FINAL_H_REVISION = "5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c"
+PRODUCT_TEST_FINAL_H_PARENT = "ede3c228eea1efb4cd3a435b969f59aeb7f71c10"
+PRODUCT_TEST_FINAL_H_TREE = "b8734d91e693a01a29d49a9a4d5f9eb3843ad374"
+PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP = (607, 1_700_000)
+PRODUCT_TEST_FINAL_HGQ_POST_H_CAP = (900, 3_500_000)
 REMEDIATION_BUDGET_LINE_LIMIT = 1_400
 MUTABLE_OWNER_LINE_LIMIT = 2_000
 DEPLOY_ROOT = "deploy/aws-feasibility"
@@ -437,14 +440,14 @@ def _remediation_budget():
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1558,
+    _require(data["source_limits"] == {"tracked_files": 1559,
                                         "source_inventory_bytes": 34_000_000,
                                         "serialized_source_inventory_bytes": SERIALIZED_SOURCE_INVENTORY_LIMIT})
     try:
         producer = SOURCE_INVENTORY_PRODUCER.read_text("utf-8")
     except (OSError, UnicodeError):
         raise LineBudgetError() from None
-    _require("MAXIMUM_TRACKED_FILES = 1558" in producer
+    _require("MAXIMUM_TRACKED_FILES = 1559" in producer
              and "MAXIMUM_AGGREGATE_BYTES = 34_000_000" in producer
              and "STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES = 262_144" in producer
              and "assertStage4SerializedSourceInventory" in producer)
@@ -533,11 +536,11 @@ def _product_test_changes(revision, target=None):
     return set(_nul_records(_git(["diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--name-only", "-z", *revisions, "--", "."])))
 
 
-def _product_test_linear_commits(head):
-    merges = _git(["rev-list", "--min-parents=2", PRODUCT_TEST_Q + ".." + head]).splitlines()
+def _product_test_linear_commits(base, head):
+    merges = _git(["rev-list", "--min-parents=2", base + ".." + head]).splitlines()
     _require(not merges)
-    commits = _git(["rev-list", "--reverse", PRODUCT_TEST_Q + ".." + head]).splitlines()
-    parent = PRODUCT_TEST_Q
+    commits = _git(["rev-list", "--reverse", base + ".." + head]).splitlines()
+    parent = base
     for commit in commits:
         _require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None
                  and _git(["rev-list", "--parents", "-n", "1", commit]).split() == [commit, parent])
@@ -545,23 +548,60 @@ def _product_test_linear_commits(head):
         parent = commit
 
 
-def _product_test_consumption(budget):
-    tasks = budget["product_test_correction"]["remaining_tranche"]["allocations"]
+def _product_test_segment(base, head, include_worktree):
     allowed = set().union(*(set(paths) for paths in PRODUCT_TEST_TASK_PATHS.values()))
-    head = _git(["rev-parse", "HEAD"]).strip()
-    _require(re.fullmatch(r"[0-9a-f]{40}", head) is not None and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_Q, head]) == "")
-    lines = {task["name"]: 0 for task in tasks}; raw_bytes = dict(lines)
-    for revision, target in [*list(_product_test_linear_commits(head)), (head, None)]:
+    lines = {name: 0 for name in PRODUCT_TEST_TASK_PATHS}; raw_bytes = dict(lines)
+    slices = list(_product_test_linear_commits(base, head))
+    if include_worktree:
+        slices.append((head, None))
+    for revision, target in slices:
         changed = _product_test_changes(revision, target)
-        if target is None: changed.update(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
+        if target is None:
+            changed.update(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
         _require(changed <= allowed)
         for name, paths in PRODUCT_TEST_TASK_PATHS.items():
             lines[name] += _gross_slice(paths, lambda path: path in paths, revision, target)
             raw_bytes[name] += _gross_added_line_bytes(paths, revision, target)
-    for task in tasks:
-        name = task["name"]; cap = PRODUCT_TEST_PRE_H_TASK_MAXIMA[name]
+    return lines, raw_bytes
+
+
+def _enforce_product_test_consumption(pre_lines, pre_bytes, post_lines, post_bytes):
+    names = set(PRODUCT_TEST_TASK_MAXIMA)
+    _require(all(set(values) == names for values in (pre_lines, pre_bytes, post_lines, post_bytes)))
+    lines = {name: pre_lines[name] + post_lines[name] for name in names}
+    raw_bytes = {name: pre_bytes[name] + post_bytes[name] for name in names}
+    _require(all(type(value) is int and value >= 0
+                 for values in (pre_lines, pre_bytes, post_lines, post_bytes)
+                 for value in values.values()))
+    for name, cap in PRODUCT_TEST_TASK_MAXIMA.items():
         _require(lines[name] <= cap[0] and raw_bytes[name] <= cap[1])
-    _require(sum(lines.values()) <= PRODUCT_TEST_REMAINING_LINES and sum(raw_bytes.values()) <= PRODUCT_TEST_REMAINING_BYTES)
+    _require(pre_lines["final-HGQ"] <= PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP[0]
+             and pre_bytes["final-HGQ"] <= PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP[1]
+             and post_lines["final-HGQ"] <= PRODUCT_TEST_FINAL_HGQ_POST_H_CAP[0]
+             and post_bytes["final-HGQ"] <= PRODUCT_TEST_FINAL_HGQ_POST_H_CAP[1])
+    _require(sum(lines.values()) <= PRODUCT_TEST_REMAINING_LINES
+             and sum(raw_bytes.values()) <= PRODUCT_TEST_REMAINING_BYTES)
+    return lines, raw_bytes
+
+
+def _product_test_consumption_segments(budget):
+    tasks = budget["product_test_correction"]["remaining_tranche"]["allocations"]
+    _require([task["name"] for task in tasks] == list(PRODUCT_TEST_TASK_PATHS))
+    head = _git(["rev-parse", "HEAD"]).strip()
+    _require(re.fullmatch(r"[0-9a-f]{40}", head) is not None
+             and _git(["rev-parse", PRODUCT_TEST_FINAL_H_REVISION + "^{tree}"]).strip() == PRODUCT_TEST_FINAL_H_TREE
+             and _git(["rev-list", "--parents", "-n", "1", PRODUCT_TEST_FINAL_H_REVISION]).split()
+             == [PRODUCT_TEST_FINAL_H_REVISION, PRODUCT_TEST_FINAL_H_PARENT]
+             and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_Q, PRODUCT_TEST_FINAL_H_REVISION]) == ""
+             and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_FINAL_H_REVISION, head]) == "")
+    pre_lines, pre_bytes = _product_test_segment(PRODUCT_TEST_Q, PRODUCT_TEST_FINAL_H_REVISION, False)
+    post_lines, post_bytes = _product_test_segment(PRODUCT_TEST_FINAL_H_REVISION, head, True)
+    lines, raw_bytes = _enforce_product_test_consumption(pre_lines, pre_bytes, post_lines, post_bytes)
+    return lines, raw_bytes, pre_lines, pre_bytes, post_lines, post_bytes
+
+
+def _product_test_consumption(budget):
+    lines, raw_bytes, *_segments = _product_test_consumption_segments(budget)
     return lines, raw_bytes
 
 
@@ -690,7 +730,9 @@ def measure():
     correction_gross = deploy_gross + retained_gross + workflow_gross
     conservative = CORRECTION_BASE_CONSERVATIVE_LINES + correction_gross
     remediation, remediation_new_files, remediation_budget, remediation_byte_forecasts = _remediation_gross()
-    product_test_task_lines, product_test_task_bytes = _product_test_consumption(remediation_budget)
+    (product_test_task_lines, product_test_task_bytes, product_test_pre_h_lines,
+     product_test_pre_h_bytes, product_test_post_h_lines,
+     product_test_post_h_bytes) = _product_test_consumption_segments(remediation_budget)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -741,13 +783,18 @@ def measure():
         "post_h_reserve_highs": POST_H_HIGHS,
         "post_h_reserve_limits_satisfied": post_h_satisfied,
         "product_test_base_revision": PRODUCT_TEST_Q,
+        "product_test_final_h_revision": PRODUCT_TEST_FINAL_H_REVISION,
+        "product_test_final_h_tree": PRODUCT_TEST_FINAL_H_TREE,
         "product_test_task_gross_added_lines": product_test_task_lines,
-        "product_test_task_pre_h_line_maxima": {name: limits[0] for name, limits in PRODUCT_TEST_PRE_H_TASK_MAXIMA.items()},
+        "product_test_task_line_maxima": {name: limits[0] for name, limits in PRODUCT_TEST_TASK_MAXIMA.items()},
         "product_test_task_gross_added_line_bytes": product_test_task_bytes,
-        "product_test_task_pre_h_byte_maxima": {name: limits[1] for name, limits in PRODUCT_TEST_PRE_H_TASK_MAXIMA.items()},
-        "product_test_task_remaining_lines": {name: PRODUCT_TEST_PRE_H_TASK_MAXIMA[name][0] - product_test_task_lines[name] for name in product_test_task_lines},
-        "product_test_task_remaining_line_bytes": {name: PRODUCT_TEST_PRE_H_TASK_MAXIMA[name][1] - product_test_task_bytes[name] for name in product_test_task_bytes},
-        "product_test_final_hgq_reserve": {"lines": PRODUCT_TEST_FINAL_HGQ_MINIMUM[0], "bytes": PRODUCT_TEST_FINAL_HGQ_MINIMUM[1]},
+        "product_test_task_byte_maxima": {name: limits[1] for name, limits in PRODUCT_TEST_TASK_MAXIMA.items()},
+        "product_test_task_remaining_lines": {name: PRODUCT_TEST_TASK_MAXIMA[name][0] - product_test_task_lines[name] for name in product_test_task_lines},
+        "product_test_task_remaining_line_bytes": {name: PRODUCT_TEST_TASK_MAXIMA[name][1] - product_test_task_bytes[name] for name in product_test_task_bytes},
+        "product_test_final_hgq_pre_h_consumption": {"lines": product_test_pre_h_lines["final-HGQ"], "bytes": product_test_pre_h_bytes["final-HGQ"]},
+        "product_test_final_hgq_pre_h_cap": {"lines": PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP[0], "bytes": PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP[1]},
+        "product_test_final_hgq_post_h_consumption": {"lines": product_test_post_h_lines["final-HGQ"], "bytes": product_test_post_h_bytes["final-HGQ"]},
+        "product_test_final_hgq_post_h_cap": {"lines": PRODUCT_TEST_FINAL_HGQ_POST_H_CAP[0], "bytes": PRODUCT_TEST_FINAL_HGQ_POST_H_CAP[1]},
         "product_test_gross_added_lines_no_deletion_credit": sum(product_test_task_lines.values()),
         "product_test_gross_added_line_bytes_no_deletion_credit": sum(product_test_task_bytes.values()),
         "product_test_retained_and_consumed_gross_lines": PRODUCT_TEST_RETAINED_LINES + sum(product_test_task_lines.values()),

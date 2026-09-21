@@ -372,6 +372,9 @@ ADR 0087 was accepted by delegated project lead on 2026-07-27 under Nick Byrne's
 | [0349](0349-freeze-replacement-H-and-authorize-control.md) | Freeze replacement H and authorize control | Exact H `1ef6aae3`, protected pair and producer pass; additive retirement V2 and direct-child G precede one publisher/static generation. |
 | [0350](0350-establish-replacement-Q-and-authorize-qualification.md) | Establish replacement Q and authorize qualification | Exact publisher/static custody at G supplies byte-preserved v7 data for direct-child Q, then one mixed preflight and seven-runner local qualification; no AWS. |
 | [0351](0351-correct-aws-host-boundaries-before-new-h.md) | Correct AWS host boundaries before a new H | Scope child umask, quiesce exact fwupd units, and own/restore IPv4 forwarding; preserve cgroup fail-closed checks, rehearse exact bytes non-authoritatively, then require a fresh H/G/Q/R chain. |
+| [0352](0352-freeze-fresh-H-and-authorize-G-control.md) | Freeze fresh H and authorize G control | Exact fresh H `5ea2064d`, protected checks, and sole producer pass; direct-child G precedes one publisher and one audited static observation; no AWS. |
+
+ADR0352 freezes fresh H `5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c`, sole producer `35562735335`, and artifact `10622494382` after exact protected checks and readback. It authorizes only a reviewed direct-child G, then one first-created attempt-one publisher and, after its independent audit, one first-created attempt-one static observation. It consumes the already-authorized post-H reserve without changing the final-HGQ or aggregate allocation. AWS remains denied.
 
 ADR0351 records the successful seven-cycle disposable AWS convergence and authorizes only the bounded production corrections, focused tests, protected checks, and a fresh exact-byte non-authoritative rehearsal. It does not reuse historical H/G/Q/R, weaken the unexplained cgroup rejection, or authorize formal evidence.
 
