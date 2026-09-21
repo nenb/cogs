@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0353 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0354 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -18,10 +18,10 @@ assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','r
 assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8400,1300000),(5050,2200000),(6800,3300000),(400,9500000),(1507,5200000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
-assert len(tasks[-1]['paths']) == 46
+assert len(tasks[-1]['paths']) == 49
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
-for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/stage2-prebuilt-rehearsal-grant.py']: 
+for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 13
@@ -42,6 +42,9 @@ assert paths['.gitleaksignore'] == 'integration'
 integration=next(owner for owner in b['owners'] if owner['name']=='integration')['paths']
 assert 'docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md' in integration
 assert 'docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md' in integration
+assert 'docs/adr/0354-correct-protected-timeout-tests-before-control.md' in integration
+assert 'docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md' in integration
+assert 'docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md' in integration
 local=tasks[2]['paths']
 assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
 assert '.github/workflows/stage2-r-diagnostic-campaign.yml' in local
@@ -55,7 +58,7 @@ assert tasks[2]['gross_lines'] == 6800 and tasks[2]['gross_bytes'] == 3300000
 assert tasks[3]['gross_lines'] == 400 and tasks[3]['gross_bytes'] == 9500000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':607,'gross_bytes':1700000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':900,'gross_bytes':3500000}
-assert b['source_limits'] == {'tracked_files':1561,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1562,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})
@@ -718,6 +721,40 @@ test("ADR0353 retires the failed generation and corrects only exact workflow bin
       "[0353](0353-retire-failed-static-generation-and-correct-workflow-binding.md)",
     ),
   );
+});
+
+test("ADR0354 corrects only protected timeout fixtures before a fresh H/G/Q chain", () => {
+  const path = "docs/adr/0354-correct-protected-timeout-tests-before-control.md";
+  const adr = readFileSync(path, "utf8").replace(/\s+/gu, " ");
+  for (const phrase of [
+    "6c200c6fcd87616244b38b6676d07c513aeb42fd",
+    "35587992926",
+    "10634535621",
+    "35593379965",
+    "35593379911",
+    "failed 102 of 256 times",
+    "100 milliseconds failed 16 of 256 times",
+    "failed 2 of 64 times",
+    "retain 30 milliseconds for the explicit `timeout` case",
+    "use one second instead of 100 milliseconds",
+    "Do not change `dev/product-test/host-custody.py`",
+    "exactly one first-created attempt-one producer",
+    "docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md",
+    "docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md",
+    "607-line / 1,700,000-byte pre-H cap",
+    "900-line / 3,500,000-byte post-H reserve",
+    "1,507-line / 5,200,000-byte final-HGQ maximum",
+    "tracked-file source limit from 1,561 to 1,562",
+    "grants no publisher",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes(
+      "[0354](0354-correct-protected-timeout-tests-before-control.md)",
+    ),
+  );
+  assert.equal(existsSync("docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md"), false);
+  assert.equal(existsSync("docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md"), false);
 });
 
 test("central checker accepts the current cumulative linear plan", () => {

@@ -438,7 +438,7 @@ for mode in ('success','nonzero','nonzero-measurement','early-exit','timeout','o
   owner=m.Custody.__new__(m.Custody);owner.generation='a'*32;owner.records=set();owner.failed=False;owner.failure_stage='operation'
   owner.fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY);owner.control=m.directory(owner.fd,'control',0o700)
   owner.cg=root+'/cgroup';os.mkdir(owner.cg);os.mkdir(owner.cg+'/helpers');open(owner.cg+'/helpers/cgroup.procs','w').close()
-  owner.deadline=time.monotonic()+.03;owner.cwrite=lambda path,name,value:events.append(name)
+  owner.deadline=time.monotonic()+(.03 if mode=='timeout' else 1);owner.cwrite=lambda path,name,value:events.append(name)
   real_stat=os.stat;real_fstat=os.fstat;real_close=os.close;real_open=open;real_read=os.read;real_sync=os.fsync;real_unlink=os.unlink;real_write=os.write
   def root_stat(value):
    return types.SimpleNamespace(**{n:0 if n=='st_uid' else getattr(value,n) for n in dir(value) if n.startswith('st_')})
