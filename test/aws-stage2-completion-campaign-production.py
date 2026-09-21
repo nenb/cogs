@@ -698,27 +698,56 @@ with tempfile.TemporaryDirectory() as directory:
     aws_adapter._phase_one_consumption = lambda *_args: resume.consumption
     aws_adapter._repair_first_journal_record = lambda *_args: None
     aws_adapter._read_fixed = lambda path, *_args: path.read_bytes()
-    # Exact legacy fault boundary: credential unlink and root-directory fsync
-    # completed, but segment-one terminal publication did not.
-    paths["AWS_CREDENTIALS"].write_bytes(b"retired-at-fault\n")
-    paths["AWS_CREDENTIALS"].unlink()
-    directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-    try: os.fsync(directory_fd)
-    finally: os.close(directory_fd)
-    assert not paths["AWS_CREDENTIALS"].exists() and not paths["SEGMENT_COMPLETE"].exists()
     retirements = []
     def retire_after_proof():
-        assert paths["CLEANUP_COMPLETE"].exists() and not paths["AWS_CREDENTIALS"].exists()
+        assert paths["CLEANUP_COMPLETE"].exists()
+        if paths["AWS_CREDENTIALS"].exists():
+            paths["AWS_CREDENTIALS"].unlink()
         retirements.append(paths["CLEANUP_COMPLETE"].read_bytes())
     aws_adapter._retire_credentials = retire_after_proof
     try:
+        # Segment one crashed after publishing its zero marker but before
+        # credential unlink. Recovery publishes/reuses proof and retires once.
+        paths["SEGMENT_COMPLETE"].write_bytes(b"certain zero\n")
+        paths["AWS_CREDENTIALS"].write_bytes(b"credentials\n")
         first_receipt = aws_adapter.recover_fixed_campaign()
         first_proof = paths["CLEANUP_COMPLETE"].read_bytes()
         second_receipt = aws_adapter.recover_fixed_campaign()
-        assert first_proof == paths["CLEANUP_COMPLETE"].read_bytes()
-        assert first_receipt == second_receipt and retirements == [first_proof, first_proof]
-        assert approval_requirements == [False, False]
-        assert json.loads(first_proof)["terminal_state"] == "no-active"
+        assert first_receipt == second_receipt
+        assert not paths["AWS_CREDENTIALS"].exists()
+        assert paths["SEGMENT_COMPLETE"].exists()
+        assert paths["CLEANUP_COMPLETE"].read_bytes() == first_proof
+
+        # Segment two crashed after cleanup proof but before credential unlink.
+        paths["SEGMENT_COMPLETE"].unlink()
+        inactive_reconciliation = production._commit(
+            b"cogs.stage2-inactive-root-retirement/v1", {"root": str(root)})
+        phase_two_proof = aws_adapter._canonical({
+            "version": "cogs.stage2-cleanup-complete/v1",
+            "reconciliation_commitment": inactive_reconciliation,
+            "certain_zero": True})
+        paths["CLEANUP_COMPLETE"].write_bytes(phase_two_proof)
+        paths["AWS_CREDENTIALS"].write_bytes(b"credentials\n")
+        third_receipt = aws_adapter.recover_fixed_campaign()
+        fourth_receipt = aws_adapter.recover_fixed_campaign()
+        assert third_receipt == fourth_receipt
+        assert paths["CLEANUP_COMPLETE"].read_bytes() == phase_two_proof
+        assert not paths["AWS_CREDENTIALS"].exists()
+
+        # Legacy inverse boundary remains credential-free: unlink+fsync happened
+        # before either terminal marker, and repeated recovery is deterministic.
+        paths["CLEANUP_COMPLETE"].unlink()
+        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(directory_fd)
+        finally: os.close(directory_fd)
+        fifth_receipt = aws_adapter.recover_fixed_campaign()
+        credential_free_proof = paths["CLEANUP_COMPLETE"].read_bytes()
+        sixth_receipt = aws_adapter.recover_fixed_campaign()
+        assert fifth_receipt == sixth_receipt
+        assert json.loads(credential_free_proof)["terminal_state"] == "no-active"
+        assert paths["CLEANUP_COMPLETE"].read_bytes() == credential_free_proof
+        assert len(retirements) == 6
+        assert approval_requirements == [False] * 6
         assert not (root / "evidence-publication").exists() and not paths["SEGMENT_COMPLETE"].exists()
     finally:
         for name, value in zip(no_active_names, no_active_original, strict=True):

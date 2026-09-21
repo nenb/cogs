@@ -177,20 +177,23 @@ reallocates task authority before merge. Its first zero-sum amendment raised
 The readable final security correction exhausts the 307 lines that remained
 unused across the other pre-H task caps. The draft therefore makes a second,
 explicit zero-sum line amendment rather than compressing security-sensitive
-production code or tests to observed-use highs. It transfers exactly 2,300
+production code or tests to observed-use highs. It transfers exactly 2,600
 lines out of the provisional `final-HGQ` post-H reserve and reallocates all
-five task highs as follows: `governance` 7,033 to 8,200 (+1,167), `product`
-5,057 to 5,050 (-7), `local-tofu-ssm` 5,446 to 6,600 (+1,154), `readiness-ci`
-500 to 400 (-100), and `final-HGQ` 4,121 to 1,907 (-2,214). Within the new
-`final-HGQ` high, the pre-H cap is 707 lines (+86) and a truthful positive
-1,200-line post-H reserve remains. These rounded, deliberate highs leave
+five task highs as follows: `governance` 7,033 to 8,400 (+1,367), `product`
+5,057 to 5,050 (-7), `local-tofu-ssm` 5,446 to 6,800 (+1,354), `readiness-ci`
+500 to 400 (-100), and `final-HGQ` 4,121 to 1,507 (-2,614). Within the new
+`final-HGQ` high, the pre-H cap is 607 lines (-14) and a truthful positive
+900-line post-H reserve remains. These rounded, deliberate highs leave
 bounded headroom above measured readable use; none is pegged to observed use.
 The 3,500,000-byte post-H reserve is unchanged. The final deterministic Stage
 4 refresh requires a second explicit byte reallocation: 300,000 prospective
 bytes move from the genuinely unused `product` allocation, reducing it from
 2,900,000 to 2,600,000 bytes, to `readiness-ci`, increasing it from 9,000,000
-to 9,300,000 bytes. This is also zero-sum and leaves deliberate headroom above
-both measured uses.
+to 9,300,000 bytes. The final package-verification correction makes a third
+explicit zero-sum byte reallocation: 400,000 prospective bytes move from
+`product` (2,600,000 to 2,200,000), split equally between `governance`
+(1,100,000 to 1,300,000) and `readiness-ci` (9,300,000 to 9,500,000).
+All transfers leave deliberate headroom above measured use.
 
 These are explicit zero-sum reallocations for the reviewed split campaign
 governance/contracts, lifecycle implementation/tests, and generated readiness

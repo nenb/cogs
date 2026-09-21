@@ -564,9 +564,15 @@ def main():
                 )
                 final_url = self.final_urls.get(len(requests), request.full_url)
                 return Response(body, final_url)
-        oidc_path = "/12345678-1234-1234-1234-123456789abc/_apis/distributedtask/hubs/build/plans/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/jobs/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/idtoken"
+        oidc_path = (
+            "/Ab3deF7ghIJ9klMNopQR2stuVWX4yz56/12345678-1234-1234-1234-123456789abc/"
+            "_apis/distributedtask/hubs/Actions/plans/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+            "jobs/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/idtoken"
+        )
         role_environment = {
-            "ACTIONS_ID_TOKEN_REQUEST_URL": f"https://pipelines.actions.githubusercontent.com{oidc_path}?api-version=2.0",
+            "ACTIONS_ID_TOKEN_REQUEST_URL": (
+                f"https://pipelinesghubeus11.actions.githubusercontent.com{oidc_path}?api-version=2.0"
+            ),
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "r" * 64,
             "GITHUB_ENV": str(github_environment),
         }
@@ -653,12 +659,42 @@ def main():
             owner[0] = 1
             rejected(lambda: issuer._root_issuance_read(authority_file, 64))
         role_approval.parent.chmod(0o700)
-        with patch.dict(
-            os.environ,
-            {"HTTPS_PROXY": "https://proxy.invalid", "ALL_PROXY": "https://proxy.invalid"},
-            clear=False,
+        ca_bundle = Path(temporary) / "ca-certificates.crt"
+        ca_bundle.write_text("-----BEGIN CERTIFICATE-----\nfixed\n-----END CERTIFICATE-----\n")
+        ca_bundle.chmod(0o644)
+        ca_owner = [0]
+
+        def ca_lstat(path):
+            info = real_lstat(path)
+            values = list(info)
+            if path == ca_bundle:
+                values[4:6] = (ca_owner[0], ca_owner[0])
+            return os.stat_result(values)
+
+        with patch.object(issuer, "TLS_CA_BUNDLE", ca_bundle), patch.object(
+            Path, "lstat", ca_lstat
+        ):
+            assert "BEGIN CERTIFICATE" in issuer._fixed_ca_pem()
+            ca_bundle.chmod(0o666)
+            rejected(issuer._fixed_ca_pem)
+            ca_bundle.chmod(0o644)
+            ca_owner[0] = 1
+            rejected(issuer._fixed_ca_pem)
+
+        context = SimpleNamespace(check_hostname=True, verify_mode=issuer.ssl.CERT_REQUIRED)
+        with (
+            patch.dict(
+                os.environ,
+                {"SSL_CERT_FILE": "/hostile/ca", "SSL_CERT_DIR": "/hostile/dir",
+                 "HTTPS_PROXY": "https://proxy.invalid", "ALL_PROXY": "https://proxy.invalid"},
+                clear=False,
+            ),
+            patch.object(issuer, "_fixed_ca_pem", return_value="fixed CA") as fixed_ca,
+            patch.object(issuer.ssl, "create_default_context", return_value=context) as create_context,
         ):
             direct = issuer._direct_https_opener()
+        fixed_ca.assert_called_once_with()
+        create_context.assert_called_once_with(cadata="fixed CA")
         assert (
             not any(isinstance(handler, issuer.ProxyHandler) for handler in direct.handlers)
             and "ProxyHandler({})" in Path(issuer.__file__).read_text()
@@ -695,13 +731,26 @@ def main():
                 )
             assert len(requests) == expected_requests
         assert github_environment.read_bytes() == b""
-        assert issuer._approved_oidc_url(role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"]).endswith(
-            "api-version=2.0&audience=sts.amazonaws.com"
-        )
+        for approved_url in (
+            role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"],
+            f"https://pipelines.actions.githubusercontent.com{oidc_path}?api-version=2.0",
+            f"https://pipelinesghubeus11.actions.githubusercontent.com:443{oidc_path}?api-version=2.0",
+        ):
+            assert issuer._approved_oidc_url(approved_url).endswith(
+                "api-version=2.0&audience=sts.amazonaws.com"
+            )
+        approved_url = role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"]
         for hostile_url in (
-            role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"].replace("2.0", "2.0-preview.1"),
-            role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"].replace("pipelines", "vstoken"),
-            role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"].replace(".com/", ".com:444/"),
+            approved_url.replace("2.0", "7.1"),
+            approved_url + "&audience=sts.amazonaws.com",
+            approved_url + "&api-version=2.0",
+            approved_url.replace("pipelinesghubeus11", "pipelinesghubeus11.evil"),
+            approved_url.replace("actions.githubusercontent.com", "actions.githubusercontent.com.evil"),
+            approved_url.replace("pipelinesghubeus11", "pipelines_bad"),
+            approved_url.replace("https://", "https://user@example.com@"),
+            approved_url.replace("/_apis/", "/wrong/_apis/"),
+            approved_url.replace("12345678-1234-1234-1234-123456789abc", "not-a-guid"),
+            approved_url.replace(".com/", ".com:444/"),
         ):
             rejected(lambda hostile_url=hostile_url: issuer._approved_oidc_url(hostile_url))
         with authority_stack(opener=None) as _stack:
@@ -817,6 +866,64 @@ def main():
             assert path.read_bytes() == raw
             assert stat.S_IMODE(path.stat().st_mode) == (0o555 if name == "cosign" else 0o444)
         assert chown.called and fchown.call_count == len(issuance_values)
+
+        evidence_root = Path(temporary) / "evidence-snapshots"
+        evidence_package = evidence_root / "first"
+        evidence_package.mkdir(parents=True)
+        evidence_root.chmod(0o755)
+        for name in stager.EVIDENCE_MEMBERS:
+            (evidence_package / name).write_bytes((name + "\n").encode())
+            (evidence_package / name).chmod(0o444)
+        evidence_package.chmod(0o555)
+        production_root = Path(temporary) / "production-root"
+        production_root.mkdir()
+        production_cosign = production_root / "cosign"
+        production_trust = production_root / "sigstore-trusted-root.json"
+        production_cosign.write_bytes(b"fixed-cosign\n")
+        production_trust.write_bytes(b"fixed-trust\n")
+        production_cosign.chmod(0o555)
+        production_trust.chmod(0o400)
+        real_fstat = stager.os.fstat
+
+        def root_stat(info):
+            values = list(info)
+            values[4:6] = (0, 0)
+            return os.stat_result(values)
+
+        with (
+            patch.object(stager, "EVIDENCE_SNAPSHOT_ROOT", evidence_root),
+            patch.object(stager.adapter, "COSIGN", production_cosign),
+            patch.object(stager.adapter, "TRUSTED_ROOT", production_trust),
+            patch.object(
+                stager.adapter,
+                "COSIGN_SHA256",
+                hashlib.sha256(production_cosign.read_bytes()).hexdigest(),
+            ),
+            patch.object(
+                stager.adapter,
+                "TRUSTED_ROOT_SHA256",
+                hashlib.sha256(production_trust.read_bytes()).hexdigest(),
+            ),
+            patch.object(stager.os, "geteuid", return_value=0),
+            patch.object(stager.os, "getegid", return_value=0),
+            patch.object(stager.os, "fstat", side_effect=lambda descriptor: root_stat(real_fstat(descriptor))),
+            patch.object(Path, "lstat", lambda path: root_stat(real_lstat(path))),
+            patch.object(stager.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as verify,
+        ):
+            stager.verify_evidence_continuation_signature("first")
+            continuation_path = evidence_package / stager.adapter.CONTINUATION_NAME
+            continuation_path.chmod(0o644)
+            rejected(lambda: stager.verify_evidence_continuation_signature("first"))
+        verify_args = verify.call_args.args[0]
+        assert verify_args[:5] == (
+            "/usr/bin/unshare",
+            "--net",
+            "--",
+            str(production_cosign),
+            "verify-blob",
+        )
+        assert verify_args[-1] == str(evidence_package / stager.adapter.CONTINUATION_NAME)
+        assert str(evidence_package / stager.adapter.CONTINUATION_BUNDLE_NAME) in verify_args
 
         composition = compose_campaign(formal, package_raw, issued_raw, authentication_raw)
 

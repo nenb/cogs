@@ -16,8 +16,10 @@ import {
   completionEvidenceCliDiagnostic,
   parseAwsStage2CompletionEvidence,
   runAwsStage2CompletionEvidenceCli,
+  runAwsStage2CompletionPackageCli,
   validateAwsStage2CompletionEvidence,
   validateAwsStage2CompletionPackage,
+  verifyRootAwsStage2ContinuationSignature,
 } from "../scripts/validate-aws-stage2-completion-evidence-v4.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -28,6 +30,7 @@ const raw = (): string =>
 const issuerReport = (): string =>
   readFileSync(join(root, "test/fixtures/stage2-completion/production-v4-test-only.md"), "utf8");
 const fixture = (): Record<string, any> => structuredClone(JSON.parse(raw()));
+const testSignatureVerifier = (): void => {};
 function reject(change: (value: Record<string, any>) => void, label: string): void {
   const value = fixture();
   change(value);
@@ -291,8 +294,8 @@ test("complete six-member package validator rejects coherent cross-package subst
     const second = join(rootDirectory, "second");
     packageFixture(first, 20);
     packageFixture(second, 30);
-    validateAwsStage2CompletionPackage(first);
-    validateAwsStage2CompletionPackage(second);
+    validateAwsStage2CompletionPackage(first, testSignatureVerifier);
+    validateAwsStage2CompletionPackage(second, testSignatureVerifier);
 
     for (const name of [
       "aws-stage2-production-continuation-v1.json",
@@ -314,9 +317,101 @@ test("complete six-member package validator rejects coherent cross-package subst
     );
     fs.chmodSync(publicationPath, 0o600);
     fs.writeFileSync(publicationPath, `${canonical(publication)}\n`, { mode: 0o400 });
-    assert.throws(() => validateAwsStage2CompletionPackage(first), /handoff|producer|admission|continuation/u);
+    assert.throws(
+      () => validateAwsStage2CompletionPackage(first, testSignatureVerifier),
+      /handoff|producer|admission|continuation/u,
+    );
   } finally {
     fs.rmSync(rootDirectory, { recursive: true, force: true });
+  }
+});
+
+test("package CLI requires signature verification before semantic cross-validation", () => {
+  const rootDirectory = fs.mkdtempSync(join(tmpdir(), "cogs-completion-package-signature-"));
+  const directory = join(rootDirectory, "package");
+  const output = { stdout: (_text: string) => {}, stderr: (_text: string) => {} };
+  try {
+    packageFixture(directory);
+    const verified: string[] = [];
+    assert.equal(
+      runAwsStage2CompletionPackageCli([directory], (path) => verified.push(path), output),
+      0,
+    );
+    assert.deepEqual(verified, [fs.realpathSync(directory)]);
+    assert.equal(
+      runAwsStage2CompletionPackageCli(
+        [directory],
+        () => {
+          throw new Error("signature rejected");
+        },
+        output,
+      ),
+      2,
+    );
+    fs.chmodSync(join(directory, "aws-stage2-completion-evidence-v4.json"), 0o600);
+    fs.writeFileSync(join(directory, "aws-stage2-completion-evidence-v4.json"), "{}\n");
+    let invalidPackageVerification = 0;
+    assert.equal(
+      runAwsStage2CompletionPackageCli(
+        [directory],
+        () => {
+          invalidPackageVerification += 1;
+        },
+        output,
+      ),
+      2,
+    );
+    assert.equal(invalidPackageVerification, 1);
+  } finally {
+    fs.rmSync(rootDirectory, { recursive: true, force: true });
+  }
+});
+
+test("root signature verifier uses only the exact fixed offline helper command", () => {
+  const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
+  const executor = (command: string, args: readonly string[], options: Record<string, unknown>) => {
+    calls.push({ command, args, options });
+    return { status: 0, signal: null, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+  };
+  for (const label of ["first", "readback"])
+    verifyRootAwsStage2ContinuationSignature(`/var/lib/cogs/stage2-aws-evidence-v2/${label}`, executor);
+  assert.equal(calls.length, 2);
+  for (const [index, call] of calls.entries()) {
+    assert.equal(call.command, "/usr/bin/sudo");
+    assert.deepEqual(call.args, [
+      "-n",
+      "env",
+      "-i",
+      "HOME=/nonexistent",
+      "LANG=C",
+      "LC_ALL=C",
+      "PATH=/usr/bin:/bin",
+      "TZ=UTC",
+      "/usr/bin/python3",
+      "-I",
+      "-B",
+      "/var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py",
+      "verify-evidence-continuation-signature",
+      index === 0 ? "first" : "readback",
+    ]);
+    assert.deepEqual(call.options, {
+      encoding: "buffer",
+      env: { PATH: "/usr/bin:/bin" },
+      input: Buffer.alloc(0),
+      maxBuffer: 4096,
+      timeout: 45_000,
+    });
+  }
+  assert.throws(() => verifyRootAwsStage2ContinuationSignature("/tmp/package", executor), /path/u);
+  for (const failed of [
+    { status: 2, signal: null, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) },
+    { status: null, signal: null, error: new Error("timeout"), stdout: null, stderr: null },
+    { status: 0, signal: null, stdout: Buffer.alloc(4097), stderr: Buffer.alloc(0) },
+  ]) {
+    assert.throws(
+      () => verifyRootAwsStage2ContinuationSignature("/var/lib/cogs/stage2-aws-evidence-v2/first", () => failed),
+      /signature/u,
+    );
   }
 });
 
@@ -382,7 +477,7 @@ test("signed continuation rejects coherent unsigned provenance rewrites", () => 
     try {
       packageFixture(directory);
       rewriteUnsignedPackageClosure(directory, mutate);
-      assert.throws(() => validateAwsStage2CompletionPackage(directory), Error, label);
+      assert.throws(() => validateAwsStage2CompletionPackage(directory, testSignatureVerifier), Error, label);
     } finally {
       fs.rmSync(rootDirectory, { recursive: true, force: true });
     }
@@ -429,7 +524,7 @@ test("all six unsigned freshness rewrites contradict the unchanged signed contin
         fs.chmodSync(path, 0o400);
       }
       for (const name of signedNames) assert.deepEqual(fs.readFileSync(join(directory, name)), signed.get(name), name);
-      assert.throws(() => validateAwsStage2CompletionPackage(directory), /freshness/u, field);
+      assert.throws(() => validateAwsStage2CompletionPackage(directory, testSignatureVerifier), /freshness/u, field);
     } finally {
       fs.rmSync(rootDirectory, { recursive: true, force: true });
     }

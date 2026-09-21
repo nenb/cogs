@@ -47,6 +47,8 @@ POSITIVE = re.compile(r"[1-9][0-9]*")
 AWS_ACCOUNT_ID = "372495030090"
 AWS_REGION = "us-east-1"
 STS_URL = "https://sts.us-east-1.amazonaws.com/"
+TLS_CA_BUNDLE = Path("/etc/ssl/certs/ca-certificates.crt")
+TLS_CA_MAX_BYTES = 1024 * 1024
 ISSUANCE_ROOT = Path("/var/lib/cogs/stage2-aws-issuance-v1")
 ISSUANCE_APPROVAL = ISSUANCE_ROOT / "approval.json"
 ISSUANCE_AUTHENTICATION = ISSUANCE_ROOT / "approval-authentication.json"
@@ -210,24 +212,61 @@ class _RejectRedirect(HTTPRedirectHandler):
         raise ApprovalIssuerError()
 
 
+def _fixed_ca_pem():
+    before = TLS_CA_BUNDLE.lstat()
+    require(
+        stat.S_ISREG(before.st_mode)
+        and before.st_uid == 0
+        and before.st_gid == 0
+        and before.st_nlink == 1
+        and stat.S_IMODE(before.st_mode) & 0o022 == 0
+        and 0 < before.st_size <= TLS_CA_MAX_BYTES
+        and not TLS_CA_BUNDLE.is_symlink()
+    )
+    raw = _read_regular(TLS_CA_BUNDLE, TLS_CA_MAX_BYTES)
+    after = TLS_CA_BUNDLE.lstat()
+    identity = lambda item: (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    require(identity(before) == identity(after))
+    try:
+        return raw.decode("ascii")
+    except UnicodeError as error:
+        raise ApprovalIssuerError() from error
+
+
 def _direct_https_opener():
-    context = ssl.create_default_context()
+    context = ssl.create_default_context(cadata=_fixed_ca_pem())
     require(context.check_hostname is True and context.verify_mode == ssl.CERT_REQUIRED)
     return build_opener(ProxyHandler({}), HTTPSHandler(context=context), _RejectRedirect())
 
 
 def _approved_oidc_url(request_url):
     parsed = urlsplit(request_url)
-    token_id = r"[0-9A-Fa-f-]{32,36}"
-    token_path = rf"/{token_id}/_apis/distributedtask/hubs/[A-Za-z0-9._-]{{1,64}}/plans/{token_id}/jobs/{token_id}/idtoken"
+    guid = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+    shard = r"(?:[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?)?"
+    host = rf"pipelines{shard}\.actions\.githubusercontent\.com"
+    token_path = (
+        rf"/[A-Za-z0-9]{{1,128}}/{guid}/_apis/distributedtask/"
+        rf"hubs/[A-Za-z0-9._-]{{1,64}}/plans/{guid}/jobs/{guid}/idtoken"
+    )
     require(
         parsed.scheme == "https"
-        and parsed.hostname == "pipelines.actions.githubusercontent.com"
+        and parsed.hostname is not None
+        and re.fullmatch(host, parsed.hostname) is not None
         and parsed.port in {None, 443}
         and parsed.username is None
         and parsed.password is None
         and not parsed.fragment
-        and re.fullmatch(token_path, parsed.path)
+        and re.fullmatch(token_path, parsed.path) is not None
     )
     query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
     require(query == [("api-version", "2.0")])

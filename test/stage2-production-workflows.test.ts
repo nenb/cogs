@@ -16,6 +16,7 @@ const signer = readFileSync("scripts/stage2-cosign-keyless-sign.sh", "utf8");
 const planner = readFileSync("scripts/stage2-production-planner.py", "utf8");
 const issuer = readFileSync("scripts/stage2-production-approval.py", "utf8");
 const stager = readFileSync("scripts/stage2-stage-production-approval.py", "utf8");
+const packageValidator = readFileSync("scripts/validate-aws-stage2-completion-evidence-v4.ts", "utf8");
 const campaignEntry = readFileSync("deploy/aws-feasibility/completion_campaign_aws_entry.py", "utf8");
 const campaignAdapter = readFileSync("deploy/aws-feasibility/completion_campaign_aws_adapter.py", "utf8");
 const recoveryEntry = readFileSync("deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py", "utf8");
@@ -419,17 +420,28 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /stage2-stage-production-approval\.py/u);
   assert.match(campaign, /run-production-campaign\.sh/u);
   assert.match(campaign, /recover-production-campaign-entry\.sh/u);
+  assert.match(
+    firstJob,
+    /test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials \|\|[\s\S]*segment-one-zero-complete\.json/u,
+  );
+  assert.match(
+    secondJob,
+    /test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials \|\|[\s\S]*! sudo -n test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/cleanup-complete\.json/u,
+  );
   assert.match(campaign, /evidence_upload\.outputs\.artifact-id/u);
   assert.match(campaign, /diff -r --no-dereference/u);
   assert.match(campaign, /production-evidence-upload-receipt\/v3/u);
   assert.equal((campaign.match(/validate-aws-stage2-completion-evidence-v4\.ts --package/gu) ?? []).length, 2);
-  assert.equal(
-    (
-      campaign.match(/\/usr\/bin\/unshare --net -- \/var\/lib\/cogs\/stage2-aws-production-v2\/cosign verify-blob/gu) ??
-      []
-    ).length,
-    2,
+  assert.doesNotMatch(
+    campaign,
+    /\/usr\/bin\/unshare --net -- \/var\/lib\/cogs\/stage2-aws-production-v2\/cosign verify-blob/u,
   );
+  assert.match(packageValidator, /verifyRootAwsStage2ContinuationSignature/u);
+  assert.match(packageValidator, /"\/usr\/bin\/sudo"/u);
+  assert.match(packageValidator, /"verify-evidence-continuation-signature"/u);
+  assert.match(packageValidator, /verifySignature\(directory\)/u);
+  assert.match(stager, /def verify_evidence_continuation_signature\(label\)/u);
+  assert.match(stager, /"\/usr\/bin\/unshare",\s*"--net",\s*"--"/u);
   assert.equal((campaign.match(/snapshot-evidence (?:first|readback)/gu) ?? []).length, 2);
   assert.match(campaign, /path: \/var\/lib\/cogs\/stage2-aws-evidence-v2\/first/u);
   assert.match(stager, /def snapshot_evidence_package/u);
@@ -469,7 +481,9 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(issuer, /ProxyHandler\(\{\}\)/u);
   assert.match(issuer, /class _RejectRedirect/u);
   assert.match(issuer, /https:\/\/sts\.us-east-1\.amazonaws\.com\//u);
-  assert.match(issuer, /pipelines\.actions\.githubusercontent\.com/u);
+  assert.match(issuer, /pipelines\{shard\}/u);
+  assert.match(issuer, /\/etc\/ssl\/certs\/ca-certificates\.crt/u);
+  assert.match(issuer, /create_default_context\(cadata=_fixed_ca_pem\(\)\)/u);
   assert.doesNotMatch(issuer, /urlopen\(/u);
   assert.equal((`${campaign}\n${diagnosticCampaign}`.match(/test "\$account" = 372495030090/gu) ?? []).length, 3);
 

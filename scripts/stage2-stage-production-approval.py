@@ -900,9 +900,123 @@ def snapshot_evidence_package(source, label):
     return destination
 
 
+def _read_root_owned(path, maximum, mode):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
+        require(
+            stat.S_ISREG(before.st_mode)
+            and before.st_uid == before.st_gid == 0
+            and before.st_nlink == 1
+            and stat.S_IMODE(before.st_mode) == mode
+            and 0 < before.st_size <= maximum
+        )
+        raw = b""
+        while block := os.read(descriptor, min(1024 * 1024, maximum + 1 - len(raw))):
+            raw += block
+            require(len(raw) <= maximum)
+        after = os.fstat(descriptor)
+        identity = lambda item: (
+            item.st_dev,
+            item.st_ino,
+            item.st_mode,
+            item.st_uid,
+            item.st_gid,
+            item.st_nlink,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+        )
+        require(identity(before) == identity(after) == identity(path.lstat()))
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def verify_evidence_continuation_signature(label):
+    """Verify the exact immutable first/readback continuation without network."""
+    require(os.geteuid() == os.getegid() == 0 and label in {"first", "readback"})
+    root_info = EVIDENCE_SNAPSHOT_ROOT.lstat()
+    package = EVIDENCE_SNAPSHOT_ROOT / label
+    package_info = package.lstat()
+    require(
+        stat.S_ISDIR(root_info.st_mode)
+        and root_info.st_uid == root_info.st_gid == 0
+        and stat.S_IMODE(root_info.st_mode) == 0o755
+        and not EVIDENCE_SNAPSHOT_ROOT.is_symlink()
+        and stat.S_ISDIR(package_info.st_mode)
+        and package_info.st_uid == package_info.st_gid == 0
+        and stat.S_IMODE(package_info.st_mode) == 0o555
+        and not package.is_symlink()
+        and set(os.listdir(package)) == set(EVIDENCE_MEMBERS)
+    )
+    for name, maximum in EVIDENCE_MEMBERS.items():
+        _read_root_owned(package / name, maximum, 0o444)
+    continuation = _read_root_owned(
+        package / adapter.CONTINUATION_NAME,
+        EVIDENCE_MEMBERS[adapter.CONTINUATION_NAME],
+        0o444,
+    )
+    bundle = _read_root_owned(
+        package / adapter.CONTINUATION_BUNDLE_NAME,
+        EVIDENCE_MEMBERS[adapter.CONTINUATION_BUNDLE_NAME],
+        0o444,
+    )
+    cosign = _read_root_owned(adapter.COSIGN, 160 * 1024 * 1024, 0o555)
+    trusted_root = _read_root_owned(adapter.TRUSTED_ROOT, 64 * 1024, 0o400)
+    require(
+        hashlib.sha256(cosign).hexdigest() == adapter.COSIGN_SHA256
+        and hashlib.sha256(trusted_root).hexdigest() == adapter.TRUSTED_ROOT_SHA256
+    )
+    result = subprocess.run(
+        (
+            "/usr/bin/unshare",
+            "--net",
+            "--",
+            str(adapter.COSIGN),
+            "verify-blob",
+            "--trusted-root",
+            str(adapter.TRUSTED_ROOT),
+            "--bundle",
+            str(package / adapter.CONTINUATION_BUNDLE_NAME),
+            "--certificate-identity",
+            adapter.CAMPAIGN_IDENTITY,
+            "--certificate-oidc-issuer",
+            "https://token.actions.githubusercontent.com",
+            str(package / adapter.CONTINUATION_NAME),
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={"HOME": "/nonexistent", "LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        timeout=30,
+        check=False,
+        close_fds=True,
+        start_new_session=True,
+    )
+    require(result.returncode == 0)
+    require(
+        _read_root_owned(
+            package / adapter.CONTINUATION_NAME,
+            EVIDENCE_MEMBERS[adapter.CONTINUATION_NAME],
+            0o444,
+        )
+        == continuation
+        and _read_root_owned(
+            package / adapter.CONTINUATION_BUNDLE_NAME,
+            EVIDENCE_MEMBERS[adapter.CONTINUATION_BUNDLE_NAME],
+            0o444,
+        )
+        == bundle
+    )
+    return hashlib.sha256(continuation).hexdigest()
+
+
 if __name__ == "__main__":
     try:
-        if len(sys.argv) in {3, 4} and sys.argv[1] == "snapshot-evidence":
+        if len(sys.argv) == 3 and sys.argv[1] == "verify-evidence-continuation-signature":
+            result = verify_evidence_continuation_signature(sys.argv[2])
+        elif len(sys.argv) in {3, 4} and sys.argv[1] == "snapshot-evidence":
             label = sys.argv[2]
             require((label == "first" and len(sys.argv) == 3)
                     or (label == "readback" and len(sys.argv) == 4))
@@ -927,5 +1041,5 @@ if __name__ == "__main__":
             raw = f"approval_sha256={result}\n".encode("ascii")
             require(sys.stdout.buffer.write(raw) == len(raw))
     except (OSError, StagingError, KeyError, TypeError, ValueError,
-            production.ProductionCampaignError):
+            subprocess.SubprocessError, production.ProductionCampaignError):
         raise SystemExit(2)

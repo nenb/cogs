@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -1027,6 +1028,29 @@ const PACKAGE_CLEANUP_RESERVE_NS = 30n * 60n * 1_000_000_000n;
 const PINNED_TRUSTED_ROOT_SHA256 = "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e";
 const CAMPAIGN_WORKFLOW = ".github/workflows/stage2-production-campaign.yml";
 const CAMPAIGN_WORKFLOW_REF = "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main";
+const FIXED_EVIDENCE_ROOT = "/var/lib/cogs/stage2-aws-evidence-v2";
+const FIXED_SIGNATURE_HELPER = "/var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py";
+const SIGNATURE_OUTPUT_LIMIT = 4096;
+
+type SignatureCommandResult = {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+  stdout: Buffer | null;
+  stderr: Buffer | null;
+};
+type SignatureCommandExecutor = (
+  command: string,
+  args: readonly string[],
+  options: {
+    encoding: "buffer";
+    env: Readonly<Record<string, string>>;
+    input: Buffer;
+    maxBuffer: number;
+    timeout: number;
+  },
+) => SignatureCommandResult;
+export type PackageSignatureVerifier = (directory: string) => void;
 
 type JsonObject = Record<string, unknown>;
 type ExactJson = null | boolean | string | bigint | ExactJson[] | { [key: string]: ExactJson };
@@ -1872,7 +1896,61 @@ function renderPackageReport(value: CompletionEvidence): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function validateAwsStage2CompletionPackage(directoryPath: string): void {
+export function verifyRootAwsStage2ContinuationSignature(
+  directory: string,
+  executor: SignatureCommandExecutor = (command, args, options) =>
+    spawnSync(command, [...args], options) as SignatureCommandResult,
+): void {
+  const resolved = resolve(directory);
+  const label =
+    resolved === join(FIXED_EVIDENCE_ROOT, "first")
+      ? "first"
+      : resolved === join(FIXED_EVIDENCE_ROOT, "readback")
+        ? "readback"
+        : undefined;
+  check(label !== undefined, "fixed signature package path");
+  const result = executor(
+    "/usr/bin/sudo",
+    [
+      "-n",
+      "env",
+      "-i",
+      "HOME=/nonexistent",
+      "LANG=C",
+      "LC_ALL=C",
+      "PATH=/usr/bin:/bin",
+      "TZ=UTC",
+      "/usr/bin/python3",
+      "-I",
+      "-B",
+      FIXED_SIGNATURE_HELPER,
+      "verify-evidence-continuation-signature",
+      label,
+    ],
+    {
+      encoding: "buffer",
+      env: { PATH: "/usr/bin:/bin" },
+      input: Buffer.alloc(0),
+      maxBuffer: SIGNATURE_OUTPUT_LIMIT,
+      timeout: 45_000,
+    },
+  );
+  check(
+    result.error === undefined &&
+      result.status === 0 &&
+      result.signal === null &&
+      Buffer.isBuffer(result.stdout) &&
+      result.stdout.length === 0 &&
+      Buffer.isBuffer(result.stderr) &&
+      result.stderr.length === 0,
+    "offline continuation signature verification",
+  );
+}
+
+export function validateAwsStage2CompletionPackage(
+  directoryPath: string,
+  verifySignature: PackageSignatureVerifier = verifyRootAwsStage2ContinuationSignature,
+): void {
   let directory: string;
   try {
     directory = fs.realpathSync(resolve(directoryPath));
@@ -1890,6 +1968,10 @@ export function validateAwsStage2CompletionPackage(directoryPath: string): void 
   const raw = Object.fromEntries(
     Object.entries(NAMES).map(([key, name]) => [key, readExactFile(directory, name)]),
   ) as Record<keyof typeof NAMES, Buffer>;
+  verifySignature(directory);
+  for (const [key, name] of Object.entries(NAMES) as [keyof typeof NAMES, string][]) {
+    check(readExactFile(directory, name).equals(raw[key]), `${name} changed across signature verification`);
+  }
   let validated: ValidatedCompletionEvidence;
   try {
     validated = parseAwsStage2CompletionEvidence(raw.evidence.toString("utf8"));
@@ -1905,15 +1987,21 @@ export function validateAwsStage2CompletionPackage(directoryPath: string): void 
   crossValidate(validated.evidence as unknown as JsonObject, publication, continuation, admission, raw);
 }
 
-export function runAwsStage2CompletionPackageCli(args: readonly string[]): 0 | 2 {
+export function runAwsStage2CompletionPackageCli(
+  args: readonly string[],
+  verifySignature: PackageSignatureVerifier = verifyRootAwsStage2ContinuationSignature,
+  output: CompletionEvidenceCliOutput = completionEvidenceCliOutput,
+): 0 | 2 {
   try {
     const [directory] = args;
     if (!directory || args.length !== 1) fail("usage");
-    validateAwsStage2CompletionPackage(directory);
-    process.stdout.write("Validated closed AWS Stage 2 completion package v4.\n");
+    validateAwsStage2CompletionPackage(directory, verifySignature);
+    output.stdout("Validated closed AWS Stage 2 completion package v4.\n");
     return 0;
   } catch {
-    process.stderr.write("completion-package-v4: rejected\n");
+    try {
+      output.stderr("completion-package-v4: rejected\n");
+    } catch {}
     return 2;
   }
 }

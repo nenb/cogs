@@ -32,8 +32,8 @@
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 8200,
-          "gross_bytes": 1100000,
+          "gross_lines": 8400,
+          "gross_bytes": 1300000,
           "paths": [
             "BUGS-TO-FIX.md",
             "biome.json",
@@ -81,7 +81,7 @@
         {
           "name": "product",
           "gross_lines": 5050,
-          "gross_bytes": 2600000,
+          "gross_bytes": 2200000,
           "paths": [
             ".github/workflows/insecure-container.yml",
             ".github/workflows/kvm-driver-diagnostic.yml",
@@ -140,7 +140,7 @@
         },
         {
           "name": "local-tofu-ssm",
-          "gross_lines": 6600,
+          "gross_lines": 6800,
           "gross_bytes": 3300000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
@@ -170,7 +170,7 @@
         {
           "name": "readiness-ci",
           "gross_lines": 400,
-          "gross_bytes": 9300000,
+          "gross_bytes": 9500000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -188,7 +188,7 @@
         },
         {
           "name": "final-HGQ",
-          "gross_lines": 1907,
+          "gross_lines": 1507,
           "gross_bytes": 5200000,
           "paths": [
             ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml",
@@ -235,11 +235,11 @@
             "test/stage2-prebuilt-static-control-runtime-boundary.py"
           ],
           "pre_h_cap": {
-            "gross_lines": 707,
+            "gross_lines": 607,
             "gross_bytes": 1700000
           },
           "post_h_reserve": {
-            "gross_lines": 1200,
+            "gross_lines": 900,
             "gross_bytes": 3500000
           }
         }
