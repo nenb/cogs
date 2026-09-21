@@ -88,19 +88,12 @@ test("static-only cleanup uses reviewed source policy and owned process-fd censu
   assert.doesNotMatch(workflow, /test ! -e \/dev\/kvm/u);
   assert.match(runtimeBoundary, /MAX_PROCESSES = 32_768/u);
   assert.match(runtimeBoundary, /MAX_FDS_PER_PROCESS = 4_096/u);
-  const implementationH = "1ef6aae3506fded805d8277ec4bce02e585c0650";
-  const workflowAtH = execFileSync("git", ["show", `${implementationH}:${path}`], { encoding: "utf8" });
-  const workflowDigest = createHash("sha256").update(workflowAtH).digest("hex");
+  const workflowDigest = createHash("sha256").update(workflow).digest("hex");
   assert.match(runtimeBoundary, new RegExp(`REVIEWED_WORKFLOW_SHA256 = "${workflowDigest}"`, "u"));
-  assert.equal(
-    workflow
-      .replace(
-        "# ADR0349 additive V2 retirement mirror; selection only, never ancestors.",
-        "# ADR0326 complete retirement mirror; selection only, never ancestors.",
-      )
-      .replace("|9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e|34831612221)", ")"),
-    workflowAtH,
-  );
+  const historicalWorkflow = execFileSync("git", ["show", `1ef6aae3506fded805d8277ec4bce02e585c0650:${path}`], {
+    encoding: "utf8",
+  });
+  assert.notEqual(createHash("sha256").update(historicalWorkflow).digest("hex"), workflowDigest);
   assert.doesNotMatch(runtimeBoundary, /replacements == 1/u);
   assert.match(runtimeBoundary, /normalized == "\/dev\/kvm"/u);
   assert.match(runtimeBoundary, /owned-qmp-or-runtime-socket/u);

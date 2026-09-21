@@ -31,7 +31,7 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   const adjuncts = workflow.indexOf("Stage authenticated publication adjuncts after immutable acquisition");
   const control = workflow.indexOf("Produce deterministic non-authoritative control candidate");
   assert.ok(descriptor > 0 && descriptor < immutable && immutable < adjuncts && adjuncts < control);
-  const retirement = workflow.indexOf("# ADR0349 additive V2 retirement mirror; selection only, never ancestors.");
+  const retirement = workflow.indexOf("# ADR0353 additive V3 retirement mirror; selection only, never ancestors.");
   const image = workflow.indexOf('if test "${ImageOS-}" != ubuntu24 || test "${ImageVersion-}" != 20260907.300.1');
   assert.ok(retirement >= 0 && retirement < image && image < workflow.indexOf("gh api --paginate"));
   assert.equal(workflow.match(/stage2\.runner-image\.rejected/gu)?.length, 1);

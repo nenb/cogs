@@ -9,8 +9,10 @@ import stat
 import sys
 
 POLICY_V1 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v1.json"
-POLICY = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v2.json"
+POLICY_V2 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v2.json"
+POLICY = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v3.json"
 POLICY_V1_SHA256 = "2fe7b704438d9e3f7493ee8be43760ac9f213d095d5411bee137126bc72153b5"
+POLICY_V2_SHA256 = "035e8c9dc9a8f2a78d1e4360aaf43cde41329771abe222ec7035bfb39dc14c6b"
 REVISIONS_V1 = {
     "c30e0d69ec374cd812ff361e670e974d51b661c4": "ADR0330",
     "15d99b55f4910df94decdd7edcc80bf95aee492d": "ADR0330",
@@ -64,9 +66,15 @@ ARTIFACTS_V1 = {
     "9983143614": "ADR0326", "9983282050": "ADR0326", "10040293103": "ADR0324",
     "10042564354": "ADR0324", "9988125363": "ADR0308",
 }
-REVISIONS = {**REVISIONS_V1, "9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e": "ADR0348"}
-RUNS = {**RUNS_V1, "34831612221": "ADR0348"}
-ARTIFACTS = dict(ARTIFACTS_V1)
+REVISIONS_V2 = {**REVISIONS_V1, "9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e": "ADR0348"}
+RUNS_V2 = {**RUNS_V1, "34831612221": "ADR0348"}
+ARTIFACTS_V2 = dict(ARTIFACTS_V1)
+REVISIONS = {**REVISIONS_V2,
+             "5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c": "ADR0353",
+             "4452a96acb1ad31ea8f6b242334f258ce0b0abab": "ADR0353"}
+RUNS = {**RUNS_V2, "35562735335": "ADR0353", "35572729553": "ADR0353",
+        "35573039122": "ADR0353"}
+ARTIFACTS = {**ARTIFACTS_V2, "10622494382": "ADR0353", "10627325100": "ADR0353"}
 
 class RetirementError(ValueError):
     pass
@@ -103,16 +111,22 @@ def document(path, maximum):
         raise RetirementError("unreadable or malformed retirement policy/provenance") from error
 
 def load_policy(path=POLICY):
-    predecessor, predecessor_raw = document(POLICY_V1, 4096)
-    # V1 stays byte-immutable; V2 is a closed additive replacement for selection.
-    require(hashlib.sha256(predecessor_raw).hexdigest() == POLICY_V1_SHA256)
-    require(predecessor == {"version": "cogs.stage2-retired-revisions/v1",
-                            "revisions": REVISIONS_V1, "runs": RUNS_V1,
-                            "artifacts": ARTIFACTS_V1})
+    predecessor_v1, predecessor_v1_raw = document(POLICY_V1, 4096)
+    require(hashlib.sha256(predecessor_v1_raw).hexdigest() == POLICY_V1_SHA256)
+    require(predecessor_v1 == {"version": "cogs.stage2-retired-revisions/v1",
+                               "revisions": REVISIONS_V1, "runs": RUNS_V1,
+                               "artifacts": ARTIFACTS_V1})
+    predecessor_v2, predecessor_v2_raw = document(POLICY_V2, 4096)
+    require(hashlib.sha256(predecessor_v2_raw).hexdigest() == POLICY_V2_SHA256)
+    require(predecessor_v2 == {"version": "cogs.stage2-retired-revisions/v2",
+                               "predecessor": {"version": predecessor_v1["version"],
+                                               "sha256": POLICY_V1_SHA256},
+                               "revisions": REVISIONS_V2, "runs": RUNS_V2,
+                               "artifacts": ARTIFACTS_V2})
     value, _raw = document(path, 4096)
-    require(value == {"version": "cogs.stage2-retired-revisions/v2",
-                      "predecessor": {"version": predecessor["version"],
-                                      "sha256": POLICY_V1_SHA256},
+    require(value == {"version": "cogs.stage2-retired-revisions/v3",
+                      "predecessor": {"version": predecessor_v2["version"],
+                                      "sha256": POLICY_V2_SHA256},
                       "revisions": REVISIONS, "runs": RUNS,
                       "artifacts": ARTIFACTS})
     return value
