@@ -442,14 +442,14 @@ def _remediation_budget():
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
     _require(data["baseline"] == {"tracked_files": 1420, "source_inventory_entries": 1417,
                                    "source_inventory_bytes": 18_763_891})
-    _require(data["source_limits"] == {"tracked_files": 1562,
+    _require(data["source_limits"] == {"tracked_files": 1563,
                                         "source_inventory_bytes": 34_000_000,
                                         "serialized_source_inventory_bytes": SERIALIZED_SOURCE_INVENTORY_LIMIT})
     try:
         producer = SOURCE_INVENTORY_PRODUCER.read_text("utf-8")
     except (OSError, UnicodeError):
         raise LineBudgetError() from None
-    _require("MAXIMUM_TRACKED_FILES = 1562" in producer
+    _require("MAXIMUM_TRACKED_FILES = 1563" in producer
              and "MAXIMUM_AGGREGATE_BYTES = 34_000_000" in producer
              and "STAGE4_MAXIMUM_SERIALIZED_SOURCE_INVENTORY_BYTES = 262_144" in producer
              and "assertStage4SerializedSourceInventory" in producer)

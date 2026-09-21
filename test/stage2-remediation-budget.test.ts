@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0354 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0355 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -58,7 +58,7 @@ assert tasks[2]['gross_lines'] == 6800 and tasks[2]['gross_bytes'] == 3300000
 assert tasks[3]['gross_lines'] == 400 and tasks[3]['gross_bytes'] == 9500000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':607,'gross_bytes':1700000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':900,'gross_bytes':3500000}
-assert b['source_limits'] == {'tracked_files':1562,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1563,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})
@@ -753,7 +753,44 @@ test("ADR0354 corrects only protected timeout fixtures before a fresh H/G/Q chai
       "[0354](0354-correct-protected-timeout-tests-before-control.md)",
     ),
   );
-  assert.equal(existsSync("docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md"), false);
+  assert.equal(existsSync("docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md"), false);
+});
+
+test("ADR0355 freezes timeout-corrected H and authorizes only direct-child G controls", () => {
+  const path = "docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md";
+  const adr = readFileSync(path, "utf8").replace(/\s+/gu, " ");
+  for (const phrase of [
+    "d98571b9f2be446ed478464d23df532d91b94e53",
+    "sole parent is `6c200c6fcd87616244b38b6676d07c513aeb42fd`",
+    "b022a4c5a3b8c99626c8d3e45d9101368d18f9f1",
+    "f7c226057e8d849bb3ab0442e772162c8ee4692b",
+    "35615519013",
+    "35615519048",
+    "35621306535",
+    "attempt 2 of `35621306446`",
+    "35638724656",
+    "10658466954",
+    "sha256:b9cc3b2a41b93f683e794f2553aad2d2b8ac5f4a09bcef9718dbf508c7e903fa",
+    "4,353 entries and two byte-identical builds",
+    "one commit whose sole parent is exact H",
+    "exactly one first-created attempt-one trusted publisher",
+    "Only after independent audit accepts the publisher's complete exact artifact custody",
+    "exactly one first-created attempt-one no-KVM static observation",
+    "corrected exact-current-workflow boundary",
+    "G changes no H-owned executable or runtime behavior, campaign, production, provider, workflow, Dockerfile, ordinary test, static package, qualification constant, or retirement policy",
+    "docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md",
+    "607 lines and 1,700,000 bytes",
+    "900 lines and 3,500,000 bytes",
+    "1,507 lines and 5,200,000 bytes",
+    "raises only the tracked-file source limit from 1,562 to 1,563",
+    "retires this generation",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes(
+      "[0355](0355-freeze-timeout-corrected-H-and-authorize-control.md)",
+    ),
+  );
   assert.equal(existsSync("docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md"), false);
 });
 
