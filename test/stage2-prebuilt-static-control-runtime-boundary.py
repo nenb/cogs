@@ -2,7 +2,7 @@
 """Portable exact-policy checks for additive prebuilt static boundary."""
 import importlib.util
 from pathlib import Path
-import subprocess
+import shutil
 import sys
 import tempfile
 
@@ -22,12 +22,9 @@ def rejected(callback):
 
 with tempfile.TemporaryDirectory() as temporary:
     repository = Path(temporary)
-    implementation = "1ef6aae3506fded805d8277ec4bce02e585c0650"
     for relative in (*module.POLICY, module.WORKFLOW_PATH):
         target = repository / relative; target.parent.mkdir(parents=True, exist_ok=True)
-        raw = subprocess.run(["git", "show", implementation + ":" + relative], cwd=ROOT,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
-        target.write_bytes(raw)
+        shutil.copyfile(ROOT / relative, target)
     observed = module._source_policy(repository)
     assert observed[module.WORKFLOW_PATH] == module.REVIEWED_WORKFLOW_SHA256
     workflow = repository / module.WORKFLOW_PATH
