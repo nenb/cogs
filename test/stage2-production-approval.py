@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """In-process pure-fixture checks; no command, provider, or network invocation."""
+import base64
 import copy
 import ctypes  # Initialize stdlib before blocking all subsequent native calls.
-from dataclasses import replace
+from contextlib import ExitStack
+from dataclasses import asdict, replace
 import hashlib
 import importlib.util
 import io
@@ -11,6 +13,7 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import stat
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -98,7 +101,7 @@ def qualification_package(bindings, control_sha256):
 def draft_for(package):
     bindings = package["source_bindings"]
     value = {
-        "version": "cogs.stage2-production-approval-draft/v3",
+        "version": "cogs.stage2-production-approval-draft/v4",
         **{name: package[name] for name in ("implementation_revision", "control_revision",
             "qualification_revision", "source_manifest_sha256", "static_control_sha256",
             "rootfs_descriptor_sha256", "runtime_manifest_sha256", "fixture_commitment")},
@@ -113,9 +116,12 @@ def draft_for(package):
         "ami_architecture": "x86_64", "ami_virtualization_type": "hvm",
         "ami_root_device_type": "ebs", "ami_state": "available",
         "plan_sha256s": [d(f"plan-{index}") for index in range(7)],
-        "not_before_unix_ns": 1, "effect_deadline_ns": 90 * 60 * 10**9,
-        "cleanup_reserve_ns": 10 * 60 * 10**9, "expires_unix_ns": 101 * 60 * 10**9,
-        "maximum_cycle_duration_ns": 10 * 60 * 10**9, "maximum_cost_micro_usd": 499_999,
+        "not_before_unix_ns": 1, "effect_deadline_ns": 480 * 60 * 10**9,
+        "cleanup_reserve_ns": 30 * 60 * 10**9,
+        "expires_unix_ns": 1 + 10 * 60 * 60 * 10**9,
+        "maximum_cycle_duration_ns": 150 * 60 * 10**9,
+        "maximum_cost_micro_usd": 1_100_000,
+        "phase_boundary_ordinal": 3, "phase_cycle_counts": [3, 4],
         "executor_principal_commitment": d("executor"),
         "inventory_observer_principal_commitment": d("observer"),
     }
@@ -217,6 +223,7 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
         fixtures = runpy.run_path(str(ROOT / "test/aws-stage2-completion-campaign-production.py"))
     value = json.loads(approval_raw)
     value["plan_sha256s"] = tuple(value["plan_sha256s"])
+    value["phase_cycle_counts"] = tuple(value["phase_cycle_counts"])
     approval = production.ProductionApproval(**value)
     package = json.loads(package_raw)
     production.validate_approval_package(approval, package, hashlib.sha256(package_raw).hexdigest())
@@ -299,7 +306,9 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
 
     harness = ComposedHarness(approval_value=approval)
     controller = production.ProductionCampaignController(harness.ports())
-    candidate = controller.run()
+    composition_run_id = int(os.environ.get("COGS_TEST_COMPOSITION_RUN_ID", "1"))
+    assert composition_run_id > 0
+    candidate = controller.run_test_campaign(composition_run_id)
     assert candidate.approval is approval and harness.consumed
     assert len(private_raws) == len(set(rootfs_tokens)) == 7 and harness.inventory_count == 8
     assert not set(rootfs_tokens) & {row["identities"]["rootfs"] for row in package["cycles"]}
@@ -326,18 +335,63 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
             else: raise AssertionError("composition acquired AWS publication authority")
             assert not list(Path(directory).iterdir())
         finally: os.close(fd)
-    evidence_raw, report_raw = evidence_issuer._project_test_candidate(candidate)
+    # Promote only the deterministic fixture's already-validated raw receipts to
+    # the formal package shape. This constructs no adapter authority, but gives
+    # the golden/package tests exact authenticated continuation bytes.
+    continuation_fields = asdict(candidate.continuation)
+    continuation_fields.pop("continuation_commitment")
+    continuation_fields["execution_authority"] = "authenticated-aws-adapter"
+    continuation_fields["continuation_commitment"] = production._commit(
+        b"cogs.stage2-production-continuation/v1", continuation_fields)
+    continuation_raw = production._canonical(continuation_fields) + b"\n"
+    continuation = production.continuation_from_bytes(
+        continuation_raw, approval, candidate.admission.run_id, 1,
+        "authenticated-aws-adapter")
+    bundle_raw = b"test-formal-continuation-bundle-v1\n"
+    admission_fields = asdict(candidate.admission)
+    admission_fields.pop("admission_commitment")
+    admission_fields.update(
+        continuation_sha256=hashlib.sha256(continuation_raw).hexdigest(),
+        continuation_commitment=continuation.continuation_commitment,
+        bundle_sha256=hashlib.sha256(bundle_raw).hexdigest(),
+        trusted_root_sha256=
+            "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e")
+    admission = production.ContinuationAdmission(
+        **admission_fields, admission_commitment=production._commit(
+            b"cogs.stage2-production-handoff-authentication/v1", admission_fields))
+    custody_root = production._commit(b"cogs.stage2-production-custody/v3", {
+        "execution_authority": "authenticated-aws-adapter",
+        "approval": continuation.approval_commitment,
+        "consumption": candidate.consumption.durable_record_commitment,
+        "cycles": list(candidate.cycle_commitments),
+        "inventories": [item.zero_commitment for item in candidate.inventories],
+        "costs": [item.receipt_commitment for item in candidate.costs],
+        "continuation": continuation.continuation_commitment,
+        "continuation_sha256": admission.continuation_sha256,
+        "continuation_bundle_sha256": admission.bundle_sha256,
+        "handoff_authentication": admission.admission_commitment})
+    formal_candidate = production.CampaignCandidate(
+        "authenticated-aws-adapter", approval, candidate.consumption,
+        candidate.grants, candidate.effects, candidate.remotes,
+        candidate.inventories, candidate.costs, candidate.cycle_commitments,
+        continuation, admission, custody_root)
+    validated = evidence_issuer._validate(formal_candidate)
+    evidence_raw = evidence_issuer._canonical(validated.value)
+    report_raw = evidence_issuer._render(validated)
     evidence = json.loads(evidence_raw)
     assert evidence["bindings"]["pre_aws_package_commitment"] == hashlib.sha256(package_raw).hexdigest()
     assert evidence["bindings"]["approval_authentication_commitment"] == hashlib.sha256(authentication_raw).hexdigest()
     assert [row["remote"]["host_receipt_commitment"] for row in evidence["cycles"]] == [
         remote.host_receipt_commitment for remote in candidate.remotes]
-    try: controller.run()
+    try: controller.run_test_campaign()
     except production.ProductionCampaignError: pass
     else: raise AssertionError("composition replay accepted")
     return {"package": package_raw.decode(), "approval": approval_raw.decode(),
         "authentication": authentication_raw.decode(),
         "private_receipts": [raw.decode() for raw in private_raws],
+        "continuation": continuation_raw.decode(),
+        "admission": admission.canonical_bytes().decode(),
+        "bundle_base64": base64.b64encode(bundle_raw).decode("ascii"),
         "evidence": evidence_raw.decode(), "report": report_raw.decode()}
 
 
@@ -363,7 +417,9 @@ def main():
     with patch.object(issuer.os, "write", return_value=0):
         rejected(lambda: issuer.emit(b"bounded-output\n"))
 
+    composition_run_id = os.environ.get("COGS_TEST_COMPOSITION_RUN_ID", "1")
     environment = {"GITHUB_SHA": "4" * 40, "COGS_STAGE2_CONTROL_REVISION": "2" * 40,
+        "COGS_TEST_COMPOSITION_RUN_ID": composition_run_id,
         "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_ACTOR": "nenb",
         "COGS_STAGE2_EXECUTOR_PRINCIPAL_COMMITMENT": d("executor"),
         "COGS_STAGE2_APPROVAL_WORKFLOW_SHA256": d("workflow")}
@@ -395,11 +451,348 @@ def main():
             rejected(action)
         issued_raw = capture(issuer.issue, draft); issued = json.loads(issued_raw)
         issued["plan_sha256s"] = tuple(issued["plan_sha256s"])
+        issued["phase_cycle_counts"] = tuple(issued["phase_cycle_counts"])
         approval = production.ProductionApproval(**issued)
-        assert approval.version == "cogs.stage2-completion-production-approval/v5"
+        assert approval.version == "cogs.stage2-completion-production-approval/v6"
+        assert approval.phase_boundary_ordinal == 3
+        assert approval.phase_cycle_counts == (3, 4)
         assert approval.batch_commitment == production.approval_batch_commitment(value)
         assert approval.batch_commitment != production._commit(
-            b"cogs.stage2-production-approved-batch/v4", production._approval_fields(value))
+            b"cogs.stage2-production-approved-batch/v5", production._approval_fields(value))
+
+        # The direct helper performs exactly one OIDC and one STS exchange,
+        # validates returned expiration/runway, and only then exports masked
+        # short-lived credentials.
+        fixed_now = 1_700_000_000
+        account = "372495030090"
+        executor_role, observer_role, session = (
+            "cogs-stage2-executor",
+            "cogs-stage2-observer",
+            "cogs-stage2-test",
+        )
+        role_value = dict(issued)
+        role_value.update(
+            {
+                "not_before_unix_ns": fixed_now * 1_000_000_000,
+                "expires_unix_ns": (fixed_now + 36_000) * 1_000_000_000,
+                "account_commitment": hashlib.sha256(account.encode()).hexdigest(),
+                "partition": "aws",
+                "region": "us-east-1",
+                "executor_principal_commitment": production.executor_principal_commitment(
+                    "aws", account, executor_role
+                ),
+                "inventory_observer_principal_commitment": production.executor_principal_commitment(
+                    "aws", account, observer_role
+                ),
+            }
+        )
+        role_value["batch_commitment"] = production.approval_batch_commitment(role_value)
+        role_approval = Path(temporary) / "issuance/approval.json"
+        role_approval.parent.mkdir()
+        role_approval.write_bytes(canonical(role_value))
+        role_authentication = {
+            "version": "cogs.stage2-production-approval-authentication/v1",
+            "result": "pass",
+            "first_created": True,
+            "workflow_run_attempt": 1,
+            "approval_sha256": hashlib.sha256(role_approval.read_bytes()).hexdigest(),
+            "issuer_commitment": role_value["issuer_commitment"],
+            "workflow_sha256": d("workflow"),
+            "workflow_run_id": 1,
+            "control_revision": role_value["control_revision"],
+            "approver_principal_commitment": d("approver"),
+            "executor_principal_commitment": role_value["executor_principal_commitment"],
+            "inventory_observer_principal_commitment": role_value[
+                "inventory_observer_principal_commitment"
+            ],
+        }
+        authority_paths = {
+            str(role_approval): role_approval.read_bytes(),
+            str(role_approval.parent / "approval-authentication.json"): canonical(
+                role_authentication
+            ),
+            str(role_approval.parent / production.QUALIFICATION_PACKAGE_NAME): package_raw,
+        }
+        github_environment = Path(temporary) / "github-environment"
+        github_environment.touch(mode=0o600)
+        claims = {
+            "aud": "sts.amazonaws.com",
+            "iss": "https://token.actions.githubusercontent.com",
+            "sub": "repo:nenb/cogs:ref:refs/heads/main",
+            "exp": fixed_now + 300,
+        }
+        web_identity = (
+            "header."
+            + base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+            + ".signature"
+        )
+        expiration = (
+            issuer.datetime.fromtimestamp(fixed_now + 18_000, issuer.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        def xml_for(role=executor_role):
+            return (
+                '<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleWithWebIdentityResult><Credentials>'
+                f"<AccessKeyId>ASIA{'A' * 16}</AccessKeyId><SecretAccessKey>{'s' * 40}</SecretAccessKey><SessionToken>{'t' * 128}</SessionToken><Expiration>{expiration}</Expiration>"
+                f"</Credentials><AssumedRoleUser><AssumedRoleId>{'A' * 16}:{session}</AssumedRoleId><Arn>arn:aws:sts::{account}:assumed-role/{role}/{session}</Arn>"
+                "</AssumedRoleUser></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>"
+            ).encode()
+        requests, response_xml = [], [xml_for()]
+        class Response:
+            status = 200
+            def __init__(self, body, url):
+                self.body, self.url = body, url
+            def read(self, maximum):
+                return self.body[:maximum]
+            def geturl(self):
+                return self.url
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+        class Opener:
+            def __init__(self, final_urls=None):
+                self.final_urls = final_urls or {}
+
+            def open(self, request, timeout):
+                requests.append((request, timeout))
+                body = (
+                    json.dumps({"value": web_identity}).encode()
+                    if len(requests) % 2
+                    else response_xml[0]
+                )
+                final_url = self.final_urls.get(len(requests), request.full_url)
+                return Response(body, final_url)
+        oidc_path = (
+            "/Ab3deF7ghIJ9klMNopQR2stuVWX4yz56/12345678-1234-1234-1234-123456789abc/"
+            "_apis/distributedtask/hubs/Actions/plans/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+            "jobs/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/idtoken"
+        )
+        role_environment = {
+            "ACTIONS_ID_TOKEN_REQUEST_URL": (
+                f"https://pipelinesghubeus11.actions.githubusercontent.com{oidc_path}?api-version=2.0"
+            ),
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "r" * 64,
+            "GITHUB_ENV": str(github_environment),
+        }
+        real_write = issuer.os.write
+        def authority_read(path, _maximum):
+            return authority_paths[str(path)]
+        def authority_stack(opener=Opener(), times=(fixed_now, fixed_now, fixed_now)):
+            stack = ExitStack()
+            for attribute, replacement in (
+                ("ISSUANCE_ROOT", role_approval.parent),
+                ("ISSUANCE_APPROVAL", role_approval),
+                ("ISSUANCE_AUTHENTICATION", role_approval.parent / "approval-authentication.json"),
+                ("ISSUANCE_PACKAGE", role_approval.parent / production.QUALIFICATION_PACKAGE_NAME),
+            ):
+                stack.enter_context(patch.object(issuer, attribute, replacement))
+            stack.enter_context(
+                patch.object(issuer, "_root_issuance_read", side_effect=authority_read)
+            )
+            stack.enter_context(patch.dict(os.environ, role_environment, clear=False))
+            stack.enter_context(patch.object(issuer, "_direct_https_opener", return_value=opener))
+            stack.enter_context(patch.object(issuer.time, "time", side_effect=times))
+            stack.enter_context(
+                patch.object(
+                    issuer.os,
+                    "write",
+                    side_effect=lambda fd, raw: len(raw) if fd == 1 else real_write(fd, raw),
+                )
+            )
+            return stack
+        role_arn = f"arn:aws:iam::{account}:role/{executor_role}"
+        with authority_stack():
+            issuer.assume_github_role(
+                "executor", role_arn, session, "18000", "16200", role_approval
+            )
+        assert (
+            len(requests) == 2
+            and requests[1][0].full_url == issuer.STS_URL
+            and f"AWS_SESSION_TOKEN={'t' * 128}\n" in github_environment.read_text()
+        )
+        github_environment.write_bytes(b"")
+        requests.clear()
+        with authority_stack(times=(fixed_now, fixed_now, fixed_now + 120)):
+            rejected(
+                lambda: issuer.assume_github_role(
+                    "executor", role_arn, session, "18000", "16200", role_approval
+                )
+            )
+        requests.clear()
+        with authority_stack(times=(fixed_now, fixed_now + 300, fixed_now + 300)):
+            rejected(
+                lambda: issuer.assume_github_role(
+                    "executor", role_arn, session, "18000", "16200", role_approval
+                )
+            )
+        assert len(requests) == 1
+        requests.clear()
+        response_xml[0] = xml_for("wrong-role")
+        with authority_stack():
+            rejected(
+                lambda: issuer.assume_github_role(
+                    "executor", role_arn, session, "18000", "16200", role_approval
+                )
+            )
+        assert len(requests) == 2 and github_environment.read_bytes() == b""
+        response_xml[0] = xml_for()
+        authority_file = role_approval.parent / "mode-check"
+        authority_file.write_bytes(b"authority\n")
+        authority_file.chmod(0o444)
+        role_approval.parent.chmod(0o555)
+        real_lstat, owner = Path.lstat, [0]
+        def custody_lstat(path):
+            info = real_lstat(path)
+            values = list(info)
+            if path in {role_approval.parent, authority_file}:
+                values[4:6] = (owner[0], owner[0])
+            return os.stat_result(values)
+        with patch.object(issuer, "ISSUANCE_ROOT", role_approval.parent), patch.object(
+            Path, "lstat", custody_lstat
+        ):
+            assert issuer._root_issuance_read(authority_file, 64) == b"authority\n"
+            authority_file.chmod(0o644)
+            rejected(lambda: issuer._root_issuance_read(authority_file, 64))
+            authority_file.chmod(0o444)
+            owner[0] = 1
+            rejected(lambda: issuer._root_issuance_read(authority_file, 64))
+        role_approval.parent.chmod(0o700)
+        ca_bundle = Path(temporary) / "ca-certificates.crt"
+        ca_bundle.write_text("-----BEGIN CERTIFICATE-----\nfixed\n-----END CERTIFICATE-----\n")
+        ca_bundle.chmod(0o644)
+        ca_owner = [0]
+
+        def ca_lstat(path):
+            info = real_lstat(path)
+            values = list(info)
+            if path == ca_bundle:
+                values[4:6] = (ca_owner[0], ca_owner[0])
+            return os.stat_result(values)
+
+        with patch.object(issuer, "TLS_CA_BUNDLE", ca_bundle), patch.object(
+            Path, "lstat", ca_lstat
+        ):
+            assert "BEGIN CERTIFICATE" in issuer._fixed_ca_pem()
+            ca_bundle.chmod(0o666)
+            rejected(issuer._fixed_ca_pem)
+            ca_bundle.chmod(0o644)
+            ca_owner[0] = 1
+            rejected(issuer._fixed_ca_pem)
+
+        context = SimpleNamespace(check_hostname=True, verify_mode=issuer.ssl.CERT_REQUIRED)
+        with (
+            patch.dict(
+                os.environ,
+                {"SSL_CERT_FILE": "/hostile/ca", "SSL_CERT_DIR": "/hostile/dir",
+                 "HTTPS_PROXY": "https://proxy.invalid", "ALL_PROXY": "https://proxy.invalid"},
+                clear=False,
+            ),
+            patch.object(issuer, "_fixed_ca_pem", return_value="fixed CA") as fixed_ca,
+            patch.object(issuer.ssl, "create_default_context", return_value=context) as create_context,
+        ):
+            direct = issuer._direct_https_opener()
+        fixed_ca.assert_called_once_with()
+        create_context.assert_called_once_with(cadata="fixed CA")
+        assert (
+            not any(isinstance(handler, issuer.ProxyHandler) for handler in direct.handlers)
+            and "ProxyHandler({})" in Path(issuer.__file__).read_text()
+        )
+        redirect = issuer._RejectRedirect()
+        bearer = issuer.Request(
+            "https://pipelines.actions.githubusercontent.com/source",
+            headers={"Authorization": "Bearer secret"},
+        )
+        jwt = issuer.Request(issuer.STS_URL, data=b"WebIdentityToken=secret")
+        for original, target in (
+            (bearer, "https://pipelines.actions.githubusercontent.com/other"),
+            (bearer, "https://attacker.invalid/steal"),
+            (jwt, issuer.STS_URL + "other"),
+            (jwt, "https://attacker.invalid/steal"),
+        ):
+            rejected(
+                lambda original=original, target=target: redirect.redirect_request(
+                    original, None, 302, "redirect", {}, target
+                )
+            )
+        for response_number, final_url, expected_requests in (
+            (1, "https://pipelines.actions.githubusercontent.com/other", 1),
+            (1, "https://attacker.invalid/steal", 1),
+            (2, issuer.STS_URL + "other", 2),
+            (2, "https://attacker.invalid/steal", 2),
+        ):
+            requests.clear()
+            with authority_stack(opener=Opener({response_number: final_url})):
+                rejected(
+                    lambda: issuer.assume_github_role(
+                        "executor", role_arn, session, "18000", "16200", role_approval
+                    )
+                )
+            assert len(requests) == expected_requests
+        assert github_environment.read_bytes() == b""
+        for approved_url in (
+            role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"],
+            f"https://pipelines.actions.githubusercontent.com{oidc_path}?api-version=2.0",
+            f"https://pipelinesghubeus11.actions.githubusercontent.com:443{oidc_path}?api-version=2.0",
+        ):
+            assert issuer._approved_oidc_url(approved_url).endswith(
+                "api-version=2.0&audience=sts.amazonaws.com"
+            )
+        approved_url = role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"]
+        for hostile_url in (
+            approved_url.replace("2.0", "7.1"),
+            approved_url + "&audience=sts.amazonaws.com",
+            approved_url + "&api-version=2.0",
+            approved_url.replace("pipelinesghubeus11", "pipelinesghubeus11.evil"),
+            approved_url.replace("actions.githubusercontent.com", "actions.githubusercontent.com.evil"),
+            approved_url.replace("pipelinesghubeus11", "pipelines_bad"),
+            approved_url.replace("https://", "https://user@example.com@"),
+            approved_url.replace("/_apis/", "/wrong/_apis/"),
+            approved_url.replace("12345678-1234-1234-1234-123456789abc", "not-a-guid"),
+            approved_url.replace(".com/", ".com:444/"),
+        ):
+            rejected(lambda hostile_url=hostile_url: issuer._approved_oidc_url(hostile_url))
+        with authority_stack(opener=None) as _stack:
+            issuer._direct_https_opener = lambda: (_ for _ in ()).throw(
+                AssertionError("OIDC reached")
+            )
+            for selector, arn in (
+                ("wrong", role_arn),
+                ("executor", "arn:aws-us-gov:iam::372495030090:role/cogs-stage2-executor"),
+                ("executor", "arn:aws:iam::111111111111:role/cogs-stage2-executor"),
+                ("executor", role_arn.replace("role/", "role/path/")),
+                ("executor", role_arn.replace(executor_role, "wrong-role")),
+                ("observer", role_arn),
+            ):
+                rejected(
+                    lambda selector=selector, arn=arn: issuer.assume_github_role(
+                        selector, arn, session, "18000", "16200", role_approval
+                    )
+                )
+            original_raw, original_auth = (
+                authority_paths[str(role_approval)],
+                authority_paths[str(role_approval.parent / "approval-authentication.json")],
+            )
+            wrong = dict(role_value)
+            wrong["region"] = "us-west-2"
+            wrong["batch_commitment"] = production.approval_batch_commitment(wrong)
+            wrong_raw = canonical(wrong)
+            wrong_auth = dict(role_authentication)
+            wrong_auth["approval_sha256"] = hashlib.sha256(wrong_raw).hexdigest()
+            authority_paths[str(role_approval)] = wrong_raw
+            authority_paths[str(role_approval.parent / "approval-authentication.json")] = canonical(
+                wrong_auth
+            )
+            rejected(
+                lambda: issuer.assume_github_role(
+                    "executor", role_arn, session, "18000", "16200", role_approval
+                )
+            )
+            (
+                authority_paths[str(role_approval)],
+                authority_paths[str(role_approval.parent / "approval-authentication.json")],
+            ) = (original_raw, original_auth)
         for field, impostor in (("maximum_cost_micro_usd", 499_999.5),
                                 ("not_before_unix_ns", 0), ("not_before_unix_ns", -1)):
             hostile = {**issued, field: impostor}
@@ -417,7 +810,146 @@ def main():
         authentication = json.loads(authentication_raw)
         assert authentication["approval_sha256"] == hashlib.sha256(issued_raw).hexdigest()
         assert authentication["result"] == "pass"
+
+        # Issuance captures open descriptors atomically, publishes root-owned
+        # read-only authority, and detects a runner pathname swap while opening.
+        capture_source = Path(temporary) / "capture-source"
+        capture_source.mkdir()
+        (capture_source / "first").write_bytes(b"first")
+        (capture_source / "second").write_bytes(b"second")
+        real_open = stager.os.open
+
+        def swapping_open(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            if path == "second":
+                (capture_source / "first").replace(capture_source / "former-first")
+                (capture_source / "first").write_bytes(b"hostile")
+            return descriptor
+
+        with patch.object(stager.os, "open", side_effect=swapping_open):
+            rejected(
+                lambda: stager._capture_named_files(capture_source, {"first": 16, "second": 16})
+            )
+
+        issuance_input = Path(temporary) / "issuance-input"
+        issuance_input.mkdir()
+        issuance_values = {
+            "approval.json": issued_raw,
+            production.QUALIFICATION_PACKAGE_NAME: package_raw,
+            "approval-authentication.json": authentication_raw,
+            "approval-authentication.bundle.json": b"bundle\n",
+            "cosign": b"cosign\n",
+            "sigstore-trusted-root.json": b"trusted-root\n",
+        }
+        for name, raw in issuance_values.items():
+            (issuance_input / name).write_bytes(raw)
+        issuance_snapshot = Path(temporary) / "issuance-snapshot"
+        with (
+            patch.object(stager, "ISSUANCE_ROOT", issuance_snapshot),
+            patch.object(stager, "eligible"),
+            patch.object(stager.adapter, "COSIGN_SHA256", hashlib.sha256(b"cosign\n").hexdigest()),
+            patch.object(
+                stager.adapter,
+                "TRUSTED_ROOT_SHA256",
+                hashlib.sha256(b"trusted-root\n").hexdigest(),
+            ),
+            patch.object(stager.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
+            patch.object(stager.os, "geteuid", return_value=0),
+            patch.object(stager.os, "getegid", return_value=0),
+            patch.object(stager.os, "chown") as chown,
+            patch.object(stager.os, "fchown") as fchown,
+        ):
+            stager.stage_issuance_approval(issuance_input)
+        assert stat.S_IMODE(issuance_snapshot.stat().st_mode) == 0o555
+        for name, raw in issuance_values.items():
+            path = issuance_snapshot / name
+            assert path.read_bytes() == raw
+            assert stat.S_IMODE(path.stat().st_mode) == (0o555 if name == "cosign" else 0o444)
+        assert chown.called and fchown.call_count == len(issuance_values)
+
+        evidence_root = Path(temporary) / "evidence-snapshots"
+        evidence_package = evidence_root / "first"
+        evidence_package.mkdir(parents=True)
+        evidence_root.chmod(0o755)
+        for name in stager.EVIDENCE_MEMBERS:
+            (evidence_package / name).write_bytes((name + "\n").encode())
+            (evidence_package / name).chmod(0o444)
+        evidence_package.chmod(0o555)
+        production_root = Path(temporary) / "production-root"
+        production_root.mkdir()
+        production_cosign = production_root / "cosign"
+        production_trust = production_root / "sigstore-trusted-root.json"
+        production_cosign.write_bytes(b"fixed-cosign\n")
+        production_trust.write_bytes(b"fixed-trust\n")
+        production_cosign.chmod(0o555)
+        production_trust.chmod(0o400)
+        real_fstat = stager.os.fstat
+
+        def root_stat(info):
+            values = list(info)
+            values[4:6] = (0, 0)
+            return os.stat_result(values)
+
+        with (
+            patch.object(stager, "EVIDENCE_SNAPSHOT_ROOT", evidence_root),
+            patch.object(stager.adapter, "COSIGN", production_cosign),
+            patch.object(stager.adapter, "TRUSTED_ROOT", production_trust),
+            patch.object(
+                stager.adapter,
+                "COSIGN_SHA256",
+                hashlib.sha256(production_cosign.read_bytes()).hexdigest(),
+            ),
+            patch.object(
+                stager.adapter,
+                "TRUSTED_ROOT_SHA256",
+                hashlib.sha256(production_trust.read_bytes()).hexdigest(),
+            ),
+            patch.object(stager.os, "geteuid", return_value=0),
+            patch.object(stager.os, "getegid", return_value=0),
+            patch.object(stager.os, "fstat", side_effect=lambda descriptor: root_stat(real_fstat(descriptor))),
+            patch.object(Path, "lstat", lambda path: root_stat(real_lstat(path))),
+            patch.object(stager.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as verify,
+        ):
+            stager.verify_evidence_continuation_signature("first")
+            continuation_path = evidence_package / stager.adapter.CONTINUATION_NAME
+            continuation_path.chmod(0o644)
+            rejected(lambda: stager.verify_evidence_continuation_signature("first"))
+        verify_args = verify.call_args.args[0]
+        assert verify_args[:5] == (
+            "/usr/bin/unshare",
+            "--net",
+            "--",
+            str(production_cosign),
+            "verify-blob",
+        )
+        assert verify_args[-1] == str(evidence_package / stager.adapter.CONTINUATION_NAME)
+        assert str(evidence_package / stager.adapter.CONTINUATION_BUNDLE_NAME) in verify_args
+
         composition = compose_campaign(formal, package_raw, issued_raw, authentication_raw)
+
+        # Normal credential staging cannot switch any authenticated approval
+        # member after issuance. Every mismatch fails before credentials/tools.
+        issuance_members = {
+            "approval.json": issued_raw,
+            production.QUALIFICATION_PACKAGE_NAME: package_raw,
+            "approval-authentication.json": authentication_raw,
+            "approval-authentication.bundle.json": b"bundle",
+            "sigstore-trusted-root.json": b"trusted-root",
+            "cosign": b"cosign",
+        }
+        issuance_root = Path(temporary) / "issuance-root"; issuance_root.mkdir()
+        for mismatch in issuance_members:
+            def issuance_mismatch_read(path, _maximum=stager.MAX, mismatch=mismatch):
+                path = Path(path); name = path.name
+                if path.parent == issuance_root:
+                    return issuance_members[name] + (b"mismatch" if name == mismatch else b"")
+                if name in issuance_members: return issuance_members[name]
+                raise AssertionError(f"credential/tool read before authority match: {name}")
+            with patch.object(stager, "read", issuance_mismatch_read), \
+                    patch.object(stager, "ISSUANCE_ROOT", issuance_root), \
+                    patch.object(stager.os, "geteuid", return_value=0), \
+                    patch.object(stager.os, "getegid", return_value=0):
+                rejected(lambda: stager.stage(source, "unread-budget", "unread-config", "unread-credentials"))
 
         original_read = stager.read
         def stage_until_package_rejected():
@@ -501,7 +1033,11 @@ def main():
 if __name__ == "__main__":
     blocked = []
     def forbidden_audit(event, args):
-        if (event.startswith(("subprocess.", "socket.", "ctypes.")) or event in {
+        local_rename = ((event == "ctypes.dlopen" and args == (None,))
+                        or (event == "ctypes.dlsym" and len(args) == 2
+                            and args[1] == "renameat2"))
+        if (event.startswith(("subprocess.", "socket."))
+                or (event.startswith("ctypes.") and not local_rename) or event in {
                 "os.system", "os.exec", "os.posix_spawn", "os.fork", "os.forkpty"}
                 or (event == "import" and args[0].split(".")[0] in {
                     "boto3", "botocore", "completion_campaign_aws_provider"})

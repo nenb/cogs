@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+PATH=/usr/bin:/bin
+export PATH
 umask 077
 
 fail() {
@@ -7,9 +9,10 @@ fail() {
   exit 2
 }
 
-[ "$#" -eq 2 ] || fail
+[ "$#" -eq 2 ] || [ "$#" -eq 3 ] || fail
 out_input="$1"
 identity="$2"
+payload_base="${3:-approval-authentication}"
 readonly image='ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb'
 readonly expected_binary_sha256='5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68'
 readonly issuer='https://token.actions.githubusercontent.com'
@@ -17,12 +20,16 @@ readonly issuer='https://token.actions.githubusercontent.com'
 case "$identity" in
   'https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main' | \
     'https://github.com/nenb/cogs/.github/workflows/stage2-production-approval-signing-diagnostic.yml@refs/heads/main' | \
-    'https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/main') ;;
+    'https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/main')
+      [ "$payload_base" = approval-authentication ] || fail ;;
+  'https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main')
+      [ "$payload_base" = aws-stage2-production-continuation-v1 ] || fail ;;
   *) fail ;;
 esac
 
-for command in chmod cut docker find id install mktemp realpath sha256sum stat; do
-  command -v "$command" >/dev/null || fail
+for command in /usr/bin/chmod /usr/bin/cut /usr/bin/docker /usr/bin/find /usr/bin/id \
+  /usr/bin/install /usr/bin/mktemp /usr/bin/realpath /usr/bin/sha256sum /usr/bin/stat; do
+  [ -x "$command" ] || fail
 done
 [ -n "${RUNNER_TEMP:-}" ] || fail
 [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || fail
@@ -38,19 +45,26 @@ runner_gid="$(id -g)"
 [[ "$runner_gid" =~ ^[1-9][0-9]*$ ]] || fail
 [ "$(stat -c '%F:%u:%g:%a' -- "$out")" = "directory:$runner_uid:$runner_gid:700" ] || fail
 
-payload="$out/approval-authentication.json"
+if [ "$payload_base" = approval-authentication ]; then
+  payload="$out/approval-authentication.json"
+  bundle="$out/approval-authentication.bundle.json"
+  payload_maximum=65536
+else
+  payload="$out/aws-stage2-production-continuation-v1.json"
+  bundle="$out/aws-stage2-production-continuation-v1.bundle.json"
+  payload_maximum=4194304
+fi
 [ -f "$payload" ] && [ ! -L "$payload" ] || fail
 [ "$(stat -c '%F:%u:%g:%h' -- "$payload")" = \
   "regular file:$runner_uid:$runner_gid:1" ] || fail
 payload_size="$(stat -c '%s' -- "$payload")"
-[ "$payload_size" -gt 0 ] && [ "$payload_size" -le 65536 ] || fail
+[ "$payload_size" -gt 0 ] && [ "$payload_size" -le "$payload_maximum" ] || fail
 chmod 0600 "$payload"
 
 trusted_root_source='config/stage2-sigstore-trusted-root-v1.json'
 [ -f "$trusted_root_source" ] && [ ! -L "$trusted_root_source" ] || fail
 [ "$(stat -c '%F:%h' -- "$trusted_root_source")" = 'regular file:1' ] || fail
 trusted_root="$out/sigstore-trusted-root.json"
-bundle="$out/approval-authentication.bundle.json"
 binary="$out/cosign"
 [ ! -e "$trusted_root" ] && [ ! -e "$bundle" ] && [ ! -e "$binary" ] || fail
 install -m 0400 "$trusted_root_source" "$trusted_root"
@@ -77,7 +91,7 @@ docker run "${common[@]}" --network host \
   -v "$sign_home:/cosign-home" \
   -v "$out:/work" -w /work \
   "$image" sign-blob --yes --timeout 180s --oidc-provider github-actions \
-  --bundle approval-authentication.bundle.json approval-authentication.json >/dev/null
+  --bundle "$payload_base.bundle.json" "$payload_base.json" >/dev/null
 
 [ -f "$bundle" ] && [ ! -L "$bundle" ] || fail
 [ "$(stat -c '%F:%u:%g:%h' -- "$bundle")" = \
@@ -97,10 +111,10 @@ docker run "${common[@]}" --network none \
   -v "$out:/work:ro" -w /work \
   "$image" verify-blob --timeout 180s \
   --trusted-root sigstore-trusted-root.json \
-  --bundle approval-authentication.bundle.json \
+  --bundle "$payload_base.bundle.json" \
   --certificate-identity "$identity" \
   --certificate-oidc-issuer "$issuer" \
-  approval-authentication.json >/dev/null
+  "$payload_base.json" >/dev/null
 
 container="$(docker create --network none "$image")"
 [ -n "$container" ] || fail

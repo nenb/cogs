@@ -47,8 +47,9 @@ SOURCE_BINDINGS = {
 
 def approval():
     value = {
-        "version": "cogs.stage2-completion-production-approval/v5",
+        "version": "cogs.stage2-completion-production-approval/v6",
         "phrase": production.APPROVAL_PHRASE,
+        "phase_boundary_ordinal": 3, "phase_cycle_counts": (3, 4),
         "implementation_revision": SOURCE_BINDINGS["source_head"],
         "control_revision": "2" * 40, "qualification_revision": "3" * 40,
         "source_manifest_sha256": SOURCE_BINDINGS["source_manifest_sha256"],
@@ -68,10 +69,11 @@ def approval():
         "ami_architecture": "x86_64", "ami_virtualization_type": "hvm",
         "ami_root_device_type": "ebs", "ami_state": "available",
         "plan_sha256s": tuple(d(f"plan-{index}") for index in range(1, 8)),
-        "not_before_unix_ns": 1, "effect_deadline_ns": 90 * 60 * 10**9,
-        "cleanup_reserve_ns": 10 * 60 * 10**9, "expires_unix_ns": 101 * 60 * 10**9,
-        "maximum_cycle_duration_ns": 10 * 60 * 10**9,
-        "maximum_cost_micro_usd": 499_999,
+        "not_before_unix_ns": 1, "effect_deadline_ns": 480 * 60 * 10**9,
+        "cleanup_reserve_ns": 30 * 60 * 10**9,
+        "expires_unix_ns": 1 + 10 * 60 * 60 * 10**9,
+        "maximum_cycle_duration_ns": 150 * 60 * 10**9,
+        "maximum_cost_micro_usd": 1_100_000,
         "rate_source_commitment": production.RATE_SOURCE_COMMITMENT,
         "issuer_commitment": d("issuer"), "executor_principal_commitment": d("executor"),
         "inventory_observer_principal_commitment": d("observer"), "one_attempt": True,

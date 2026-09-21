@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Portable contract snapshots and Linux direct-child supervisor tests."""
+from contextlib import nullcontext
 import errno
 import hashlib
 import json
@@ -186,6 +187,18 @@ for command in (process.CommandId.IP_NETNS_ADD, process.CommandId.NFT_INSTALL):
     assert process._spec(command).command_id == command.value
 for command in (process.CommandId.SSH_KEYGEN_CLIENT, process.CommandId.SSH_PUBLIC_CLIENT):
     assert process._spec(command).deadline_class == "keygen"
+assert process.CHILD_UMASK_022_IDS == {
+    process.CommandId.CONTAINERD_START.value,
+    process.CommandId.SSH_KEYGEN_CLIENT.value,
+    process.CommandId.SSH_KEYGEN_SERVER.value,
+    process.CommandId.SSH_PUBLIC_CLIENT.value,
+    process.CommandId.SSH_PUBLIC_SERVER.value,
+}
+child_source = Path(process.__file__).read_text().split("def _child(", 1)[1].split("def _read_setup_until", 1)[0]
+mask_call = "os.umask(0o022)"
+assert child_source.count(mask_call) == 1
+assert "if spec.command_id in CHILD_UMASK_022_IDS:" in child_source
+assert child_source.index('os.read(release_r, 1)') < child_source.index(mask_call) < child_source.index("_execveat")
 assert process.OWNER_ASSIGNED_IDS == {"CTR_RUN"}
 
 # A durable work/lifecycle expiry suppresses retry but still grants a fresh,
@@ -285,6 +298,7 @@ HELPER = r'''#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 static int write_all(int descriptor, const void *buffer, size_t size) {
   const char *next = buffer;
@@ -309,6 +323,7 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "fd")) { if (fcntl(198, F_GETFD) == -1 && errno == EBADF) return write_all(1,"closed\n",7) == 0 ? 0 : 96; return 91; }
   if (!strcmp(argv[1], "high-fd")) { if (fcntl(4096, F_GETFD) == -1 && errno == EBADF) return write_all(1,"high-closed\n",12) == 0 ? 0 : 96; return 94; }
   if (!strcmp(argv[1], "inherited")) { char a=0,b=0; if (read(200,&a,1)==1 && read(201,&b,1)==1 && a=='K' && b=='H' && fcntl(202,F_GETFD)==-1 && errno==EBADF) return write_all(1,"inherited\n",10) == 0 ? 0 : 96; return 95; }
+  if (!strcmp(argv[1], "umask")) { mode_t mask=umask(0); umask(mask); char out[5]; int size=snprintf(out,sizeof(out),"%03o\n",mask); return size==4 && write_all(1,out,4)==0 ? 0 : 96; }
   return 92;
 }
 '''
@@ -672,7 +687,7 @@ def linux_supervisor_tests():
             patch.object(process, "_settle_cgroup", side_effect=settle),
         )
 
-    def make_issuer():
+    def make_issuer(command_id=process.CommandId.CTR_TASK_LIST):
         contract = process._parse_contract(raw, digest)
         executable_fd = process._sealed_memfd(contract.executable, True)
         used = False
@@ -681,7 +696,6 @@ def linux_supervisor_tests():
             if used:
                 raise process.ProcessError("test transaction already consumed")
             used = True
-            command_id = process.CommandId.CTR_TASK_LIST
             test_spec = process._test_spec(action)
             fixed = process.FixedCommand(
                 command_id, "test", process.TEST_PATH, test_spec.argv, test_spec.stdin,
@@ -708,8 +722,10 @@ def linux_supervisor_tests():
             )
             owner = process._CgroupOwner("", leaf_generation, (), False, {})
             patches = cgroup_patches(owner)
+            attestation = (patch.object(process, "_require_attested_executable", return_value=None)
+                           if command_id is process.CommandId.SSH_KEYGEN_CLIENT else nullcontext())
             try:
-                with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                with patches[0], patches[1], patches[2], patches[3], patches[4], attestation, \
                      patch.object(process, "_host_generation", side_effect=normalized_generation), \
                      patch.object(process.kata_operation, "_cycle_route", return_value=None):
                     outcome, _durable = process._transact_fixed(
@@ -724,8 +740,18 @@ def linux_supervisor_tests():
                 os.close(executable_fd)
         return issue_once
 
-    def issue(action, inherited=None):
-        return make_issuer()(action, inherited)
+    def issue(action, inherited=None, command_id=process.CommandId.CTR_TASK_LIST):
+        return make_issuer(command_id)(action, inherited)
+
+    inherited_mask = os.umask(0o077)
+    try:
+        private_mask = issue(process._TestAction.UMASK)
+        public_mask = issue(process._TestAction.UMASK, command_id=process.CommandId.SSH_KEYGEN_CLIENT)
+        observed_parent_mask = os.umask(0o077)
+    finally:
+        os.umask(inherited_mask)
+    assert private_mask.stdout == b"077\n" and public_mask.stdout == b"022\n"
+    assert observed_parent_mask == 0o077
 
     result = issue(process._TestAction.OK)
     assert result.outcome == "exited" and result.status == 0 and result.stdout == b"ok\n", (

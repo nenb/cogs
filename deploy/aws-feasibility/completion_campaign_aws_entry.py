@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sole zero-argument future AWS campaign and cleanup-only recovery entry."""
+"""Fixed zero-argument dispatcher for one split AWS campaign segment."""
 from dataclasses import asdict, is_dataclass
 import json
 import os
@@ -33,7 +33,26 @@ def main():
     if not _MODULE_ROOT.is_dir(): raise ImportError("fixed campaign module root unavailable")
     sys.path.insert(0, str(_MODULE_ROOT))
     import completion_campaign_aws_adapter as adapter
-    _write(adapter.run_fixed_campaign())
+    if os.environ.get("COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC") == "1":
+        receipt = adapter.run_fixed_diagnostic_campaign()
+    elif adapter.CONTINUATION_ADMISSION.exists():
+        # Phase two is selected only by the root-staged authenticated capability.
+        receipt = adapter.run_fixed_second_segment()
+    else:
+        names = (
+            "COGS_STAGE2_WORKFLOW_REVISION", "COGS_STAGE2_GITHUB_RUN_ID",
+            "COGS_STAGE2_PRODUCER_JOB_ID", "COGS_STAGE2_APPROVAL_ARTIFACT_RUN_ID",
+            "COGS_STAGE2_APPROVAL_ARTIFACT_ID", "COGS_STAGE2_APPROVAL_ARTIFACT_DIGEST",
+            "COGS_STAGE2_APPROVAL_ARTIFACT_NAME")
+        values = {name: os.environ.get(name, "") for name in names}
+        numeric = [values[name] for name in names[1:5]]
+        if any(not item.isdigit() or str(int(item)) != item or int(item) <= 0
+               for item in numeric):
+            raise RuntimeError("invalid phase-one provenance")
+        receipt = adapter.run_fixed_first_segment(
+            values[names[0]], *(int(item) for item in numeric),
+            values[names[5]], values[names[6]])
+    _write(receipt)
 
 
 def cli():

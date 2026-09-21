@@ -19,12 +19,15 @@ from typing import Any
 
 import completion_campaign_production as production
 
-VERSION = "cogs.aws-stage2-completion-evidence/v3"
+VERSION = "cogs.aws-stage2-completion-evidence/v4"
 AUTHORITY = "aws-stage2-completion"
-PUBLICATION_VERSION = "cogs.aws-stage2-completion-publication/v1"
-EVIDENCE_NAME = "aws-stage2-completion-evidence-v3.json"
-REPORT_NAME = "aws-stage2-completion-report-v3.md"
-RECEIPT_NAME = "aws-stage2-completion-publication-v1.json"
+PUBLICATION_VERSION = "cogs.aws-stage2-completion-publication/v2"
+EVIDENCE_NAME = "aws-stage2-completion-evidence-v4.json"
+REPORT_NAME = "aws-stage2-completion-report-v4.md"
+RECEIPT_NAME = "aws-stage2-completion-publication-v2.json"
+CONTINUATION_NAME = "aws-stage2-production-continuation-v1.json"
+CONTINUATION_BUNDLE_NAME = "aws-stage2-production-continuation-v1.bundle.json"
+CONTINUATION_ADMISSION_NAME = "aws-stage2-production-continuation-admission-v1.json"
 BILLING_HOUR_NS = 3_600_000_000_000
 RATE_COMPONENTS = {
     "compute": 90_000,
@@ -193,6 +196,19 @@ def _inventory(item: production.InventoryReceipt) -> dict[str, Any]:
 
 def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, Any]:
     approval = candidate.approval
+    _require(approval.version == "cogs.stage2-completion-production-approval/v6"
+             and approval.effect_deadline_ns == 480 * 60 * 1_000_000_000
+             and approval.cleanup_reserve_ns == 30 * 60 * 1_000_000_000
+             and approval.maximum_cycle_duration_ns == 150 * 60 * 1_000_000_000
+             and approval.maximum_cost_micro_usd == 1_100_000,
+             "exact v6 approval bounds required")
+    try:
+        production._validate_admission(
+            candidate.admission, candidate.continuation, approval)
+    except production.ProductionCampaignError as error:
+        raise EvidenceIssuanceError("handoff admission drift") from error
+    handoff = candidate.admission
+    continuation = candidate.continuation
     _require(candidate.final_zero_unix_ns > candidate.effects[-1][-1].observed_ended_unix_ns,
              "final zero does not follow final destroy")
     _require(candidate.inventories[-1].observed_started_unix_ns
@@ -241,7 +257,9 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  < apply.observed_ended_unix_ns < running.observed_started_unix_ns
                  < running.observed_ended_unix_ns < destroy.observed_started_unix_ns
                  < destroy.observed_ended_unix_ns
-                 < candidate.first_apply_unix_ns + approval.effect_deadline_ns,
+                 < candidate.first_apply_unix_ns + approval.effect_deadline_ns
+                 and destroy.observed_ended_unix_ns <
+                    apply.observed_started_unix_ns + approval.maximum_cycle_duration_ns,
                  "effect order/deadline")
         _require(len({item.state_commitment for item in effects}) == 1
                  and len({item.state_lineage_commitment for item in effects}) == 1,
@@ -267,6 +285,8 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
         _require(cost.grant_commitment == grant.grant_commitment
                  and cost.cycle_ordinal == index
                  and cost.rate_source_commitment == expected_rate
+                 and cost.usage_commitment == production._commit(
+                    b"cogs.stage2-provider-usage/v1", {"duration_ns": duration})
                  and cost.cost_micro_usd == _ceil_cost(duration),
                  "typed cost receipt recomputation")
         running_resources = dict(running.resource_commitments)
@@ -387,6 +407,7 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
         "fixture_commitment": approval.fixture_commitment,
         "account_commitment": approval.account_commitment,
         "ami_commitment": approval.ami_commitment,
+        "approval_commitment": candidate.continuation.approval_commitment,
         "approval_authentication_commitment": candidate.consumption.authentication_receipt_sha256,
         "approval_issuer_commitment": approval.issuer_commitment,
     }
@@ -396,11 +417,29 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
             "commitment": approval.batch_commitment,
             "implementation_revision": approval.implementation_revision,
             "control_revision": approval.control_revision,
+            "qualification_revision": approval.qualification_revision,
             "consumption_commitment": candidate.consumption.durable_record_commitment,
             "custody_root": candidate.custody_root,
             "cycle_count": 7, "modes": list(production.CYCLE_MODES),
         },
         "bindings": bindings,
+        "custody": {"handoff": {
+            "phase_boundary_ordinal": continuation.phase_boundary_ordinal,
+            "workflow_revision": handoff.workflow_revision,
+            "workflow_run_id": handoff.run_id,
+            "workflow_run_attempt": handoff.run_attempt,
+            "producer_job_id": handoff.producer_job_id,
+            "consumer_job_id": handoff.consumer_job_id,
+            "continuation_commitment": continuation.continuation_commitment,
+            "continuation_file_sha256": handoff.continuation_sha256,
+            "continuation_bundle_sha256": handoff.bundle_sha256,
+            "continuation_artifact_id": handoff.artifact_id,
+            "continuation_artifact_digest": handoff.artifact_digest,
+            "continuation_admission_commitment": handoff.admission_commitment,
+            "journal_sequence": continuation.journal_sequence,
+            "journal_tip_sha256": continuation.journal_tip_sha256,
+            "cycle3_zero_commitment": continuation.inventories[-1].zero_commitment,
+        }},
         "deadlines": {
             "first_apply_unix_ns": str(candidate.first_apply_unix_ns),
             "effect_deadline_unix_ns": str(candidate.first_apply_unix_ns + approval.effect_deadline_ns),
@@ -469,12 +508,16 @@ def _render(validated: _ValidatedProjection) -> bytes:
     _require(type(validated) is _ValidatedProjection, "renderer requires validator token")
     value = validated.value
     lines = [
-        "# AWS Stage 2 completion report", "",
+        "# AWS Stage 2 completion report v4", "",
         "Status: pass-only rendering of validated, redacted completion evidence.", "",
         "## Batch", "",
         f"- Implementation revision: `{value['batch']['implementation_revision']}`",
         f"- Batch commitment: `{value['batch']['commitment']}`",
-        "- Cycles: 7 (one full, six readiness)", "",
+        "- Cycles: 7 (one full, six readiness)",
+        "- Fixed handoff boundary: after cycle 3",
+        f"- Continuation artifact digest: `{value['custody']['handoff']['continuation_artifact_digest']}`",
+        f"- Handoff authentication commitment: `{value['custody']['handoff']['continuation_admission_commitment']}`",
+        "",
         "## Measurements", "",
         "| Cycle | Mode | Apply to running | Kata launch to SSH ready | Cost |",
         "| ---: | --- | ---: | ---: | ---: |",
@@ -579,7 +622,24 @@ def _project_test_candidate(candidate: production.CampaignCandidate):
              "test projection requires a test-only candidate")
     _consume_retained_candidate(candidate)
     validated = _validate(candidate)
-    return _canonical(validated.value), _render(validated)
+    # Test fixtures model the public authenticated shape without granting the
+    # test-only candidate publication authority.
+    value = validated.value
+    handoff = value["custody"]["handoff"]
+    value["batch"]["custody_root"] = production._commit(
+        b"cogs.stage2-production-custody/v3", {
+            "execution_authority": "authenticated-aws-adapter",
+            "approval": value["bindings"]["approval_commitment"],
+            "consumption": value["batch"]["consumption_commitment"],
+            "cycles": [item["cycle_commitment"] for item in value["cycles"]],
+            "inventories": [item["zero_commitment"] for item in value["inventories"]],
+            "costs": [item["cost"]["receipt_commitment"] for item in value["cycles"]],
+            "continuation": handoff["continuation_commitment"],
+            "continuation_sha256": handoff["continuation_file_sha256"],
+            "continuation_bundle_sha256": handoff["continuation_bundle_sha256"],
+            "handoff_authentication": handoff["continuation_admission_commitment"],
+        })
+    return _canonical(value), _render(validated)
 
 
 def issue_completion_evidence(candidate: production.CampaignCandidate,
@@ -599,8 +659,15 @@ def issue_completion_evidence(candidate: production.CampaignCandidate,
         "version": PUBLICATION_VERSION, "result": "pass",
         "batch_commitment": candidate.approval.batch_commitment,
         "candidate_custody_root": candidate.custody_root,
+        "handoff_authentication_commitment": candidate.admission.admission_commitment,
         "evidence_name": EVIDENCE_NAME, "evidence_sha256": _sha(evidence),
         "report_name": REPORT_NAME, "report_sha256": _sha(report),
+        "continuation_name": CONTINUATION_NAME,
+        "continuation_sha256": candidate.admission.continuation_sha256,
+        "continuation_bundle_name": CONTINUATION_BUNDLE_NAME,
+        "continuation_bundle_sha256": candidate.admission.bundle_sha256,
+        "continuation_admission_name": CONTINUATION_ADMISSION_NAME,
+        "continuation_admission_sha256": _sha(candidate.admission.canonical_bytes()),
         "readback_required": True,
     }
     receipt = _canonical(receipt_value)

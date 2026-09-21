@@ -61,6 +61,16 @@ jobs:
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(/usr/bin/git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      - name: Prove exact production command cgroup boundary without AWS access
+        if: matrix.shard == 'baseline'
+        run: |
+          set -euo pipefail
+          source_root="$GITHUB_WORKSPACE/deploy/aws-feasibility"
+          sudo -n env -i HOME=/root LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+            /usr/bin/python3 -I -B -c \
+            'import sys; sys.path.insert(0,sys.argv[1]); import completion_campaign_aws_adapter as adapter; adapter.protected_command_scope_self_test()' \
+            "$source_root"
+
       - name: Run Linux lifecycle foundations without provider access
         run: |
           set -euo pipefail
