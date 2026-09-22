@@ -687,10 +687,12 @@ function semantics(e: CompletionEvidence): void {
         (mode !== "readiness" || post !== qemu.pre_ssh_runtime_fact_sha256),
       `cycle ${index + 1} exact remote QEMU bindings`,
     );
-    runtimeIdentities.push(qemu.runtime_identity_sha256);
-    liveMappings.push(qemu.live_mapping_sha256);
-    preSshRuntimeFacts.push(qemu.pre_ssh_runtime_fact_sha256);
-    if (qemu.post_ssh_runtime_fact_sha256 !== null) postSshRuntimeFacts.push(qemu.post_ssh_runtime_fact_sha256);
+    const hostScope = cycle.remote.host_boot_commitment;
+    runtimeIdentities.push(`${hostScope}:${qemu.runtime_identity_sha256}`);
+    liveMappings.push(`${hostScope}:${qemu.live_mapping_sha256}`);
+    preSshRuntimeFacts.push(`${hostScope}:${qemu.pre_ssh_runtime_fact_sha256}`);
+    if (qemu.post_ssh_runtime_fact_sha256 !== null)
+      postSshRuntimeFacts.push(`${hostScope}:${qemu.post_ssh_runtime_fact_sha256}`);
     check(cycle.cost.rate_source_commitment === e.cost.rate_source_commitment, `cycle ${index + 1} rate source`);
     check(
       cycle.cost.cost_micro_usd === ceilCost(duration, e.cost.aggregate_rate_micro_usd_per_hour),
@@ -724,10 +726,10 @@ function semantics(e: CompletionEvidence): void {
   distinct(operations, "operation");
   distinct(boots, "host boot");
   distinct(settlements, "effect settlement");
-  distinct(runtimeIdentities, "QEMU runtime identity");
-  distinct(liveMappings, "live mapping");
-  distinct(preSshRuntimeFacts, "pre-SSH runtime fact");
-  distinct(postSshRuntimeFacts, "post-SSH runtime fact");
+  distinct(runtimeIdentities, "host-scoped QEMU runtime identity");
+  distinct(liveMappings, "host-scoped live mapping");
+  distinct(preSshRuntimeFacts, "host-scoped pre-SSH runtime fact");
+  distinct(postSshRuntimeFacts, "host-scoped post-SSH runtime fact");
   check(
     postSshRuntimeFacts.length === 6 && new Set([...preSshRuntimeFacts, ...postSshRuntimeFacts]).size === 13,
     "cross-phase runtime fact replay",
@@ -1793,22 +1795,23 @@ function crossValidate(
         freshness.pre_destroy_receipt === destroyResources.pre_destroy_receipt,
       `cycle ${index + 1} signed continuation freshness projection`,
     );
+    const hostScope = string(remote.host_boot_commitment, "host boot identity");
     for (const [name, value] of [
       ["state", apply.state_commitment],
       ["lineage", apply.state_lineage_commitment],
       ["instance", remote.instance_commitment],
       ["operation", remote.operation_commitment],
       ["boot", remote.host_boot_commitment],
-      ["runtime", qemu.runtime_identity_sha256],
-      ["mapping", qemu.live_mapping_sha256],
-      ["pre", qemu.pre_ssh_runtime_fact_sha256],
+      ["runtime", `${hostScope}:${string(qemu.runtime_identity_sha256, "runtime identity")}`],
+      ["mapping", `${hostScope}:${string(qemu.live_mapping_sha256, "mapping identity")}`],
+      ["pre", `${hostScope}:${string(qemu.pre_ssh_runtime_fact_sha256, "pre-SSH identity")}`],
       ["client", remote.client_key_commitment],
       ["host", remote.host_key_commitment],
       ["resource", runningResources.instance],
     ] as const)
       unique[name]?.push(string(value, `${name} identity`));
     if (qemu.post_ssh_runtime_fact_sha256 !== null)
-      postSsh.push(string(qemu.post_ssh_runtime_fact_sha256, "post-SSH identity"));
+      postSsh.push(`${hostScope}:${string(qemu.post_ssh_runtime_fact_sha256, "post-SSH identity")}`);
   }
   check(
     integer(continuation.first_apply_unix_ns, "continuation first apply") ===

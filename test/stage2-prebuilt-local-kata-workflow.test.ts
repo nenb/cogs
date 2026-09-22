@@ -180,7 +180,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
-test("checked-in v7 authenticates the timeout-corrected H/G static package through the exact G bridge", () => {
+test("checked-in v7 remains decodable but the failed H/G package cannot regain authority", () => {
   const result = spawnSync(
     "python3",
     [
@@ -198,9 +198,20 @@ def sha(raw): return hashlib.sha256(raw).hexdigest()
 paths=sorted(path for path in package.rglob('*') if path.is_file())
 require(len(paths)==13 and all(not path.is_symlink() for path in package.rglob('*')), 'unsafe v7 package')
 guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
-guard['_reviewed_constants'](); guard['_authenticate_control']()
+try:
+ guard['_reviewed_constants']()
+except guard['retirement']['RetirementError']:
+ pass
+else:
+ raise AssertionError('retired H/G/Q regained admission')
+try:
+ guard['_authenticate_control']()
+except guard['GuardError']:
+ pass
+else:
+ raise AssertionError('historical H/G static package authenticated current H sources')
 for target,digest in guard['G_RETIREMENT_CONSUMERS'].items():
- require(sha((current/target).read_bytes())==digest, 'G retirement pin differs')
+ require(sha((current/target).read_bytes())==digest, 'current retirement pin differs')
 sys.path.insert(0,str(current/'deploy/aws-feasibility/remote'))
 import completion_kata_preparation as codec
 control=codec.load_control((package/'stage2-local-static-control-v2.json').read_bytes())
@@ -387,13 +398,13 @@ test("mixed preflight rejects stale repository variables before acquisition", ()
     GITHUB_SHA: qualification,
     GITHUB_ACTOR: "nenb",
     GITHUB_TRIGGERING_ACTOR: "nenb",
-    H: "d98571b9f2be446ed478464d23df532d91b94e53",
-    G: "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33",
-    EXACT_IMPLEMENTATION_HEAD: "d98571b9f2be446ed478464d23df532d91b94e53",
-    EXACT_CONTROL_HEAD: "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33",
+    H: "a".repeat(40),
+    G: "b".repeat(40),
+    EXACT_IMPLEMENTATION_HEAD: "a".repeat(40),
+    EXACT_CONTROL_HEAD: "b".repeat(40),
     EXACT_QUALIFICATION_HEAD: qualification,
-    CONFIGURED_IMPLEMENTATION_HEAD: "d98571b9f2be446ed478464d23df532d91b94e53",
-    CONFIGURED_CONTROL_HEAD: "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33",
+    CONFIGURED_IMPLEMENTATION_HEAD: "a".repeat(40),
+    CONFIGURED_CONTROL_HEAD: "b".repeat(40),
     CONFIGURED_QUALIFICATION_HEAD: qualification,
     CONFIGURED_AUTHORIZED_ACTOR: "nenb",
   };

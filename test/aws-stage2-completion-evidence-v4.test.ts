@@ -36,6 +36,11 @@ function reject(change: (value: Record<string, any>) => void, label: string): vo
   change(value);
   assert.throws(() => validateAwsStage2CompletionEvidence(value), CompletionEvidenceValidationError, label);
 }
+function accept(change: (value: Record<string, any>) => void, label: string): void {
+  const value = fixture();
+  change(value);
+  assert.doesNotThrow(() => validateAwsStage2CompletionEvidence(value), label);
+}
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -56,9 +61,10 @@ function hash(raw: string | Buffer): string {
 // Build all six members from the canonical formal composition producer. The
 // test bundle is opaque; the production workflow additionally requires offline
 // Cosign verification over the same immutable snapshot.
-const formalPackages = new Map<number, Record<string, any>>();
-function formalPackage(runId: number): Record<string, any> {
-  const existing = formalPackages.get(runId);
+const formalPackages = new Map<string, Record<string, any>>();
+function formalPackage(runId: number, repeatHostLocal = false): Record<string, any> {
+  const key = `${runId}:${repeatHostLocal}`;
+  const existing = formalPackages.get(key);
   if (existing) return existing;
   const result = spawnSync("python3", ["-I", "-B", "test/stage2-production-approval.py", "--composition-samples"], {
     cwd: root,
@@ -68,16 +74,17 @@ function formalPackage(runId: number): Record<string, any> {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       TMPDIR: tmpdir(),
       COGS_TEST_COMPOSITION_RUN_ID: String(runId),
+      ...(repeatHostLocal ? { COGS_TEST_COMPOSITION_REPEAT_HOST_LOCAL: "1" } : {}),
     },
   });
   assert.equal(result.status, 0, result.stderr);
   const value = JSON.parse(result.stdout) as Record<string, any>;
-  formalPackages.set(runId, value);
+  formalPackages.set(key, value);
   return value;
 }
-function packageFixture(directory: string, runId = 1): void {
+function packageFixture(directory: string, runId = 1, repeatHostLocal = false): void {
   fs.mkdirSync(directory, { mode: 0o700 });
-  const samples = formalPackage(runId);
+  const samples = formalPackage(runId, repeatHostLocal);
   const evidenceRaw = samples.evidence as string;
   const reportRaw = samples.report as string;
   const continuationRaw = samples.continuation as string;
@@ -321,6 +328,29 @@ test("complete six-member package validator rejects coherent cross-package subst
       () => validateAwsStage2CompletionPackage(first, testSignatureVerifier),
       /handoff|producer|admission|continuation/u,
     );
+  } finally {
+    fs.rmSync(rootDirectory, { recursive: true, force: true });
+  }
+});
+
+test("complete six-member package accepts equal host-local observations on distinct boots", () => {
+  const rootDirectory = fs.mkdtempSync(join(tmpdir(), "cogs-completion-package-host-scope-"));
+  const directory = join(rootDirectory, "package");
+  try {
+    packageFixture(directory, 40, true);
+    const evidence = JSON.parse(
+      fs.readFileSync(join(directory, "aws-stage2-completion-evidence-v4.json"), "utf8"),
+    ) as Record<string, any>;
+    const first = evidence.cycles[0].remote;
+    const second = evidence.cycles[1].remote;
+    assert.notEqual(first.host_boot_commitment, second.host_boot_commitment);
+    for (const field of ["runtime_identity_sha256", "live_mapping_sha256", "pre_ssh_runtime_fact_sha256"])
+      assert.equal(first.bindings.qemu[field], second.bindings.qemu[field], field);
+    assert.notEqual(
+      second.bindings.qemu.pre_ssh_runtime_fact_sha256,
+      second.bindings.qemu.post_ssh_runtime_fact_sha256,
+    );
+    validateAwsStage2CompletionPackage(directory, testSignatureVerifier);
   } finally {
     fs.rmSync(rootDirectory, { recursive: true, force: true });
   }
@@ -807,17 +837,25 @@ test("seven cycles, 21 measurements, eight detailed inventories, common bindings
     value.cycles[4].remote.instance_commitment = value.cycles[3].remote.instance_commitment;
   }, "instance replay");
   for (const field of ["live_mapping_sha256", "pre_ssh_runtime_fact_sha256", "post_ssh_runtime_fact_sha256"])
-    reject((value) => {
+    accept((value) => {
       value.cycles[4].remote.bindings.qemu[field] = value.cycles[3].remote.bindings.qemu[field];
-    }, `${field} replay`);
-  reject((value) => {
+    }, `${field} may repeat across distinct host boots`);
+  accept((value) => {
     value.cycles[4].remote.bindings.qemu.post_ssh_runtime_fact_sha256 =
       value.cycles[3].remote.bindings.qemu.pre_ssh_runtime_fact_sha256;
-  }, "pre fact replayed as post");
-  reject((value) => {
+  }, "pre fact may repeat as post across distinct host boots");
+  accept((value) => {
     value.cycles[4].remote.bindings.qemu.pre_ssh_runtime_fact_sha256 =
       value.cycles[3].remote.bindings.qemu.post_ssh_runtime_fact_sha256;
-  }, "post fact replayed as pre");
+  }, "post fact may repeat as pre across distinct host boots");
+  reject((value) => {
+    value.cycles[4].remote.bindings.qemu.post_ssh_runtime_fact_sha256 =
+      value.cycles[4].remote.bindings.qemu.pre_ssh_runtime_fact_sha256;
+  }, "same-host pre fact replayed as post");
+  reject((value) => {
+    value.cycles[4].remote.host_boot_commitment = value.cycles[3].remote.host_boot_commitment;
+    value.cycles[4].freshness.host_boot = value.cycles[3].freshness.host_boot;
+  }, "host scope replay");
   reject((value) => {
     value.cycles[4].effects.apply.state_commitment = value.cycles[3].effects.apply.state_commitment;
   }, "cycle state graft");

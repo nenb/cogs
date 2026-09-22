@@ -352,11 +352,14 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  tuple(item.host_boot_commitment for item in candidate.remotes),
                  tuple(item.client_key_commitment for item in candidate.remotes),
                  tuple(item.host_key_commitment for item in candidate.remotes),
-                 tuple(item.bindings.qemu.runtime_identity_sha256
+                 tuple((item.host_boot_commitment,
+                        item.bindings.qemu.runtime_identity_sha256)
                        for item in candidate.remotes),
-                 tuple(item.bindings.qemu.live_mapping_sha256
+                 tuple((item.host_boot_commitment,
+                        item.bindings.qemu.live_mapping_sha256)
                        for item in candidate.remotes),
-                 tuple(item.bindings.qemu.pre_ssh_runtime_fact_sha256
+                 tuple((item.host_boot_commitment,
+                        item.bindings.qemu.pre_ssh_runtime_fact_sha256)
                        for item in candidate.remotes),
                  tuple(dict(row[2].resource_commitments)["instance"]
                        for row in candidate.effects),
@@ -367,10 +370,13 @@ def _validate_and_project(candidate: production.CampaignCandidate) -> dict[str, 
                  tuple(dict(row[3].resource_commitments)["pre_destroy_receipt"]
                        for row in candidate.effects),
              )), "cycle freshness replay")
-    post_facts = tuple(item.bindings.qemu.post_ssh_runtime_fact_sha256
+    post_facts = tuple((item.host_boot_commitment,
+                        item.bindings.qemu.post_ssh_runtime_fact_sha256)
                        for item in candidate.remotes if
                        item.bindings.qemu.post_ssh_runtime_fact_sha256 is not None)
-    pre_facts = {item.bindings.qemu.pre_ssh_runtime_fact_sha256 for item in candidate.remotes}
+    pre_facts = {(item.host_boot_commitment,
+                  item.bindings.qemu.pre_ssh_runtime_fact_sha256)
+                 for item in candidate.remotes}
     client_keys = {item.client_key_commitment for item in candidate.remotes}
     host_keys = {item.host_key_commitment for item in candidate.remotes}
     _require(len(post_facts) == len(set(post_facts)) == 6

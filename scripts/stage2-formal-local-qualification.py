@@ -550,8 +550,8 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
             and set(os.listdir(root)) == expected_members,
             "artifact batch inventory differs")
     rows = []; batches = set(); identity_sets = {name: set() for name in
-        ("host_boot_id", "operation", "rootfs", "runtime", "client_key", "host_key")}
-    live_mappings, pre_ssh_facts, post_ssh_facts = set(), set(), set()
+        ("host_boot_id", "operation", "rootfs", "client_key", "host_key")}
+    runtimes, live_mappings, pre_ssh_facts, post_ssh_facts = set(), set(), set(), set()
     total = 0; shared_bindings = None
     for ordinal in range(1, 8):
         receipt_raw, status_raw, status = validate_cycle_directory(root / f"cycle-{ordinal}", expected, ordinal)
@@ -564,14 +564,18 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
         artifact = custody_by_ordinal[ordinal]
         require(status["artifact_name"] == artifact["name"], "status and API artifact names differ")
         qmp = receipt["qmp_lineage"]
-        require(qmp["live_mapping_sha256"] not in live_mappings
-                and qmp["qemu_process_sha256"] not in pre_ssh_facts,
-                "reused live runtime observation")
-        live_mappings.add(qmp["live_mapping_sha256"]); pre_ssh_facts.add(qmp["qemu_process_sha256"])
+        host_boot = status["identities"]["host_boot_id"]
+        scoped = ((host_boot, qmp["runtime_identity_sha256"]),
+                  (host_boot, qmp["live_mapping_sha256"]),
+                  (host_boot, qmp["qemu_process_sha256"]))
+        require(scoped[0] not in runtimes and scoped[1] not in live_mappings
+                and scoped[2] not in pre_ssh_facts,
+                "reused host-scoped live runtime observation")
+        runtimes.add(scoped[0]); live_mappings.add(scoped[1]); pre_ssh_facts.add(scoped[2])
         if receipt["route"] == "readiness":
-            post = receipt["runtime_readiness_lineage"]["qemu_process_sha256"]
+            post = (host_boot, receipt["runtime_readiness_lineage"]["qemu_process_sha256"])
             require(post not in post_ssh_facts and post not in pre_ssh_facts,
-                    "reused post-SSH runtime observation")
+                    "reused host-scoped post-SSH runtime observation")
             post_ssh_facts.add(post)
         batches.add(status["batch_commitment"]); total += status["workload_measurements"]
         for name, seen in identity_sets.items():
@@ -585,7 +589,8 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
             "artifact_archive_digest": artifact["archive_digest"],
             "identities": status["identities"]})
     require(len(batches) == 1 and total == 21
-            and len(live_mappings) == len(pre_ssh_facts) == 7 and len(post_ssh_facts) == 6
+            and len(runtimes) == len(live_mappings) == len(pre_ssh_facts) == 7
+            and len(post_ssh_facts) == 6
             and len(pre_ssh_facts | post_ssh_facts) == 13
             and [row["mode"] for row in rows] == list(CYCLE_MODES)
             and len(identity_sets["operation"] | identity_sets["rootfs"]) == 14

@@ -430,20 +430,11 @@ with tempfile.TemporaryDirectory() as temporary:
         rejected(lambda hostile=hostile: formal.validate_receipt(
             formal.canonical(hostile), expected, 2))
 
-    # Every identity class, ordinal, artifact, status and canonical byte sequence is fail-closed.
-    for identity in ("host_boot_id", "operation_token", "rootfs_token", "runtime",
+    # Globally scoped identities remain unique across every host.
+    for identity in ("host_boot_id", "operation_token", "rootfs_token",
                      "client_key_commitment", "host_key_commitment"):
         hostile = receipt(2); prior = receipt(1)
         if identity == "host_boot_id": hostile["timing"][identity] = prior["timing"][identity]
-        elif identity == "runtime":
-            qmp_names = ("qemu_argv_sha256", "qemu_pid", "qemu_starttime",
-                "qemu_executable_device", "qemu_executable_inode", "observer_qmp_device",
-                "observer_qmp_inode", "kvm_device", "kvm_inode", "kvm_rdev", "kvm_api")
-            for name in qmp_names: hostile["qmp_lineage"][name] = prior["qmp_lineage"][name]
-            hostile["qmp_lineage"]["runtime_identity_sha256"] = prior["qmp_lineage"]["runtime_identity_sha256"]
-            hostile["runtime_readiness_lineage"]["runtime_identity_sha256"] = prior["qmp_lineage"]["runtime_identity_sha256"]
-            hostile["runtime_readiness_lineage"]["qmp_identity"] = [
-                hostile["qmp_lineage"][name] for name in qmp_names[1:]]
         elif identity.endswith("key_commitment"):
             hostile["key_freshness"][identity] = prior["key_freshness"][identity]
         else:
@@ -456,6 +447,27 @@ with tempfile.TemporaryDirectory() as temporary:
             rejected(lambda: aggregate(other.name))
         finally: other.cleanup()
 
+    # Host-local PID/device/inode namespaces may legitimately repeat on a distinct boot.
+    prior = receipt(2); repeated = receipt(3)
+    repeated["qmp_lineage"] = copy.deepcopy(prior["qmp_lineage"])
+    for name in ("live_mapping_sha256", "runtime_identity_sha256", "qemu_process_sha256", "qmp_identity"):
+        repeated["runtime_readiness_lineage"][name] = copy.deepcopy(
+            prior["runtime_readiness_lineage"][name])
+    other = tempfile.TemporaryDirectory()
+    try:
+        for ordinal in range(1, 8): write_cycle(other.name, ordinal, repeated if ordinal == 3 else receipt(ordinal))
+        aggregate(other.name)
+    finally: other.cleanup()
+
+    # The same local observations under the same boot are actual host-context reuse.
+    reused_host = copy.deepcopy(repeated)
+    reused_host["timing"]["host_boot_id"] = prior["timing"]["host_boot_id"]
+    other = tempfile.TemporaryDirectory()
+    try:
+        for ordinal in range(1, 8): write_cycle(other.name, ordinal, reused_host if ordinal == 3 else receipt(ordinal))
+        rejected(lambda: aggregate(other.name))
+    finally: other.cleanup()
+
     for left, right in (("operation_token", "rootfs_token"),):
         hostile = receipt(2); hostile[left] = receipt(1)[right]
         hostile["runtime_readiness_lineage"]["operation_token"] = hostile[left]
@@ -464,27 +476,21 @@ with tempfile.TemporaryDirectory() as temporary:
             for ordinal in range(1, 8): write_cycle(other.name, ordinal, hostile if ordinal == 2 else receipt(ordinal))
             rejected(lambda: aggregate(other.name))
         finally: other.cleanup()
-    for live_fact in ("mapping", "pre", "post", "post-from-pre", "pre-from-post"):
-        hostile = receipt(3); prior = receipt(2)
-        if live_fact == "mapping":
-            hostile["qmp_lineage"]["live_mapping_sha256"] = prior["qmp_lineage"]["live_mapping_sha256"]
-            hostile["runtime_readiness_lineage"]["live_mapping_sha256"] = prior["qmp_lineage"]["live_mapping_sha256"]
-        elif live_fact == "pre":
-            hostile["qmp_lineage"]["qemu_process_sha256"] = prior["qmp_lineage"]["qemu_process_sha256"]
-        elif live_fact == "post":
-            hostile["runtime_readiness_lineage"]["qemu_process_sha256"] = \
-                prior["runtime_readiness_lineage"]["qemu_process_sha256"]
-        elif live_fact == "post-from-pre":
-            hostile["runtime_readiness_lineage"]["qemu_process_sha256"] = prior["qmp_lineage"]["qemu_process_sha256"]
-        else:
-            hostile["qmp_lineage"]["qemu_process_sha256"] = \
-                prior["runtime_readiness_lineage"]["qemu_process_sha256"]
-        other = tempfile.TemporaryDirectory()
-        try:
-            for ordinal in range(1, 8):
-                write_cycle(other.name, ordinal, hostile if ordinal == 3 else receipt(ordinal))
-            rejected(lambda: aggregate(other.name))
-        finally: other.cleanup()
+    # Cross-phase process digests are also host-scoped, while each receipt still
+    # rejects equality between its own pre- and post-SSH observations.
+    cross_host = receipt(3); prior = receipt(2)
+    cross_host["runtime_readiness_lineage"]["qemu_process_sha256"] = \
+        prior["qmp_lineage"]["qemu_process_sha256"]
+    other = tempfile.TemporaryDirectory()
+    try:
+        for ordinal in range(1, 8):
+            write_cycle(other.name, ordinal, cross_host if ordinal == 3 else receipt(ordinal))
+        aggregate(other.name)
+    finally: other.cleanup()
+    same_host = receipt(3)
+    same_host["runtime_readiness_lineage"]["qemu_process_sha256"] = \
+        same_host["qmp_lineage"]["qemu_process_sha256"]
+    rejected(lambda: formal.validate_receipt(formal.canonical(same_host), expected, 3))
 
     hostile = receipt(2); hostile["key_freshness"]["client_key_commitment"] = receipt(1)["key_freshness"]["host_key_commitment"]
     other = tempfile.TemporaryDirectory()
@@ -689,6 +695,8 @@ with tempfile.TemporaryDirectory() as source_root:
             REVIEWED_CONTROL_SHA256=expected["EXPECTED_CONTROL_SHA256"],
             REVIEWED_ROOTFS_DESCRIPTOR_SHA256=expected["EXPECTED_ROOTFS_DESCRIPTOR_SHA256"],
             REVIEWED_WORKFLOW_SHA256=hashlib.sha256(guard.WORKFLOW.read_bytes()).hexdigest(),
+            G_RETIREMENT_CONSUMERS={name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+                                    for name in guard.G_RETIREMENT_CONSUMERS},
             REVIEWED_STATIC_CONTROL_RUN_ID=61, REVIEWED_STATIC_CONTROL_ARTIFACT_ID=62,
             REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST=expected["EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST"]):
         assert guard.guard(guard_environment, guard_event)["result_schema_sha256"] == expected["EXPECTED_RESULT_SCHEMA_SHA256"]
