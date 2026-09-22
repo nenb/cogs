@@ -58,7 +58,7 @@ assert tasks[2]['gross_lines'] == 6800 and tasks[2]['gross_bytes'] == 3300000
 assert tasks[3]['gross_lines'] == 400 and tasks[3]['gross_bytes'] == 9500000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':607,'gross_bytes':1700000}
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':900,'gross_bytes':3500000}
-assert b['source_limits'] == {'tracked_files':1563,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1564,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})
@@ -753,7 +753,6 @@ test("ADR0354 corrects only protected timeout fixtures before a fresh H/G/Q chai
       "[0354](0354-correct-protected-timeout-tests-before-control.md)",
     ),
   );
-  assert.equal(existsSync("docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md"), false);
 });
 
 test("ADR0355 freezes timeout-corrected H and authorizes only direct-child G controls", () => {
@@ -791,7 +790,36 @@ test("ADR0355 freezes timeout-corrected H and authorizes only direct-child G con
       "[0355](0355-freeze-timeout-corrected-H-and-authorize-control.md)",
     ),
   );
-  assert.equal(existsSync("docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md"), false);
+});
+
+test("ADR0356 binds the timeout-corrected static observation and authorizes qualification only", () => {
+  const path = "docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md";
+  const adr = readFileSync(path, "utf8").replace(/\s+/gu, " ");
+  for (const phrase of [
+    "d98571b9f2be446ed478464d23df532d91b94e53",
+    "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33",
+    "35670440520",
+    "10670334621",
+    "35670986936",
+    "10670965964",
+    "sha256:1cc6451ad6d77bfdf35fb6b1b919ae83e620858a4c2613e3343f4608e6cfd9d1",
+    "exact thirteen independently read-back members",
+    "byte for byte and without reserialization",
+    "one commit whose sole parent is exact G",
+    "exactly one first-created attempt-one exact H/G/Q mixed preflight",
+    "exactly one first-created attempt-one seven-runner formal local qualification run",
+    "no retry, stitching, fallback, historical evidence reuse, or arbitrary ordinal resume",
+    "raises the tracked-file source limit from 1,563 to 1,564",
+    "1,507-line / 5,200,000-byte final-HGQ maximum",
+    "22,157 lines and 21,500,000 bytes remain unchanged",
+    "grant no release, Issue 42 closure, AWS, provider, OpenTofu, SSM, inventory, planning, approval, deployment, or campaign authority",
+  ])
+    assert.ok(adr.includes(phrase), phrase);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes(
+      "[0356](0356-establish-timeout-corrected-Q-and-authorize-qualification.md)",
+    ),
+  );
 });
 
 test("central checker accepts the current cumulative linear plan", () => {

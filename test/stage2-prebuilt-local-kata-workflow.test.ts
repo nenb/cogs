@@ -137,13 +137,13 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "1ef6aae3506fded805d8277ec4bce02e585c0650"/u);
-  assert.match(guard, /REVIEWED_CONTROL_HEAD = "fce64662b39b2a21e9b384eba8408ecd5311047a"/u);
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "d98571b9f2be446ed478464d23df532d91b94e53"/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33"/u);
   assert.match(
     guard,
-    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "09cadffc28159e2f459d0da2003648934710baed9c6a5d29132b0f0ae2300314"/u,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "de3adf761aac2a4b7ff33b6064814fe86c2fccd04bd4c3020ce2e7b469e13a3b"/u,
   );
-  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "4c2e0e0377ba80a3206f91489b2420bf61688fb757b0d9de1a8090b0cc851656"/u);
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "06f7446c88f72741a3598aa3a15e990690f87b3180529d66cffbfc0add2eebad"/u);
   assert.equal(
     /REVIEWED_WORKFLOW_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(workflow).digest("hex"),
@@ -158,19 +158,19 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   );
   assert.match(
     guard,
-    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "757d1ddff8b58febc5686fd81ae14d03a0bbb6eb689549da5918c5acc924a17e"/u,
+    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "da61f77767c81c95c0e06cb047448acfe92b19bb98907cec6e9acc83981967b5"/u,
   );
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 34876857175/u);
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10361229317/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 35670986936/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10670965964/u);
   assert.match(
     guard,
-    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:478275cdb16c9614a32854239d98d6f9d9ce6e5cffd466b5def69a1760108b5d"/u,
+    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:1cc6451ad6d77bfdf35fb6b1b919ae83e620858a4c2613e3343f4608e6cfd9d1"/u,
   );
-  assert.match(preflight, /H=1ef6aae3506fded805d8277ec4bce02e585c0650/u);
-  assert.match(preflight, /G=fce64662b39b2a21e9b384eba8408ecd5311047a/u);
-  assert.match(preflight, /MANIFEST=09cadffc28159e2f459d0da2003648934710baed9c6a5d29132b0f0ae2300314/u);
-  assert.match(preflight, /CONTROL=4c2e0e0377ba80a3206f91489b2420bf61688fb757b0d9de1a8090b0cc851656/u);
-  assert.match(preflight, /DESCRIPTOR=757d1ddff8b58febc5686fd81ae14d03a0bbb6eb689549da5918c5acc924a17e/u);
+  assert.match(preflight, /H=d98571b9f2be446ed478464d23df532d91b94e53/u);
+  assert.match(preflight, /G=431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33/u);
+  assert.match(preflight, /MANIFEST=de3adf761aac2a4b7ff33b6064814fe86c2fccd04bd4c3020ce2e7b469e13a3b/u);
+  assert.match(preflight, /CONTROL=06f7446c88f72741a3598aa3a15e990690f87b3180529d66cffbfc0add2eebad/u);
+  assert.match(preflight, /DESCRIPTOR=da61f77767c81c95c0e06cb047448acfe92b19bb98907cec6e9acc83981967b5/u);
   assert.match(guard, /control\["producer"\]\["control_revision"\] == REVIEWED_CONTROL_HEAD/u);
   assert.match(guard, /_authenticate_control\(\)/u);
   assert.ok(
@@ -180,7 +180,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
-test("checked-in v7 remains exact old H/G data and rejects the changed diagnostic candidate", () => {
+test("checked-in v7 authenticates the timeout-corrected H/G static package through the exact G bridge", () => {
   const result = spawnSync(
     "python3",
     [
@@ -198,11 +198,7 @@ def sha(raw): return hashlib.sha256(raw).hexdigest()
 paths=sorted(path for path in package.rglob('*') if path.is_file())
 require(len(paths)==13 and all(not path.is_symlink() for path in package.rglob('*')), 'unsafe v7 package')
 guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
-guard['_reviewed_constants'](); GuardError=guard['GuardError']
-try: guard['_authenticate_control']()
-except GuardError as error:
- require(str(error)=='selected H source differs at Q', 'candidate mismatch diagnostic differs')
-else: raise AssertionError('old Q authenticated changed candidate H bytes')
+guard['_reviewed_constants'](); guard['_authenticate_control']()
 for target,digest in guard['G_RETIREMENT_CONSUMERS'].items():
  require(sha((current/target).read_bytes())==digest, 'G retirement pin differs')
 sys.path.insert(0,str(current/'deploy/aws-feasibility/remote'))
@@ -214,9 +210,9 @@ require(envelope.value['implementation']['revision']==guard['REVIEWED_IMPLEMENTA
 require(envelope.value['control_revision']==guard['REVIEWED_CONTROL_HEAD'], 'G differs')
 require(envelope.value['rootfs']['prebuilt_descriptor_sha256']==guard['REVIEWED_ROOTFS_DESCRIPTOR_SHA256'], 'descriptor differs')
 require(len(contracts)==10 and len(runtime.value['executables'])==10, 'control codec differs')
-require(sha((package/'stage2-local-static-control-v2.json').read_bytes())=='4c2e0e0377ba80a3206f91489b2420bf61688fb757b0d9de1a8090b0cc851656', 'control differs')
-require(sha((package/'stage2-local-execution-envelope-v3.json').read_bytes())=='2b77e9d24d009f5b4c509cc6a5f05bd852550f9ad14584bc05139dc45e081954', 'envelope differs')
-require(sha((package/'stage2-local-runtime-manifest-v3.json').read_bytes())=='dfd088149455789a4e3992c5211892a0256c13558273f7a154d968d539498c67', 'runtime differs')
+require(sha((package/'stage2-local-static-control-v2.json').read_bytes())=='06f7446c88f72741a3598aa3a15e990690f87b3180529d66cffbfc0add2eebad', 'control differs')
+require(sha((package/'stage2-local-execution-envelope-v3.json').read_bytes())=='3cdd368820c4eeb5992bab833dcbb1d3e6e598e561390396d9c83ed23284222b', 'envelope differs')
+require(sha((package/'stage2-local-runtime-manifest-v3.json').read_bytes())=='57c209e20c5151d566b6baea8a8c07dd1bdecf0d6632c64b62c327c4bf84ff00', 'runtime differs')
 `,
     ],
     { encoding: "utf8", timeout: 30_000 },
@@ -391,13 +387,13 @@ test("mixed preflight rejects stale repository variables before acquisition", ()
     GITHUB_SHA: qualification,
     GITHUB_ACTOR: "nenb",
     GITHUB_TRIGGERING_ACTOR: "nenb",
-    H: "1ef6aae3506fded805d8277ec4bce02e585c0650",
-    G: "fce64662b39b2a21e9b384eba8408ecd5311047a",
-    EXACT_IMPLEMENTATION_HEAD: "1ef6aae3506fded805d8277ec4bce02e585c0650",
-    EXACT_CONTROL_HEAD: "fce64662b39b2a21e9b384eba8408ecd5311047a",
+    H: "d98571b9f2be446ed478464d23df532d91b94e53",
+    G: "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33",
+    EXACT_IMPLEMENTATION_HEAD: "d98571b9f2be446ed478464d23df532d91b94e53",
+    EXACT_CONTROL_HEAD: "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33",
     EXACT_QUALIFICATION_HEAD: qualification,
-    CONFIGURED_IMPLEMENTATION_HEAD: "1ef6aae3506fded805d8277ec4bce02e585c0650",
-    CONFIGURED_CONTROL_HEAD: "fce64662b39b2a21e9b384eba8408ecd5311047a",
+    CONFIGURED_IMPLEMENTATION_HEAD: "d98571b9f2be446ed478464d23df532d91b94e53",
+    CONFIGURED_CONTROL_HEAD: "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33",
     CONFIGURED_QUALIFICATION_HEAD: qualification,
     CONFIGURED_AUTHORIZED_ACTOR: "nenb",
   };
