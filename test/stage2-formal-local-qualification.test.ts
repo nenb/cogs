@@ -61,8 +61,8 @@ test("typed formal producers compose with publication, seven-cycle aggregation, 
     ajv.addSchema(JSON.parse(readFileSync(`schemas/${name}`, "utf8")));
   }
   const receipt = ajv.getSchema("https://cogs.dev/schemas/stage2-formal-local-cycle-receipt-v2.json");
-  const qualified = ajv.getSchema("https://cogs.dev/schemas/stage2-pre-aws-qualification-package-v5.json");
-  const historical = ajv.getSchema("https://cogs.dev/schemas/stage2-pre-aws-qualification-package-v4.json");
+  const qualified = ajv.getSchema("https://cogs.dev/schemas/stage2-pre-aws-qualification-package-v6.json");
+  const historical = ajv.getSchema("https://cogs.dev/schemas/stage2-pre-aws-qualification-package-v5.json");
   assert.ok(receipt && qualified && historical);
   assert.equal(samples.receipts.length, 7);
   for (const value of samples.receipts) {

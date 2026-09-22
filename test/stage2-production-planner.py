@@ -107,7 +107,7 @@ with tempfile.TemporaryDirectory() as temporary:
     fixture = importlib.util.module_from_spec(fixture_spec); fixture_spec.loader.exec_module(fixture)
     package = fixture.qualification_package(bindings, hashlib.sha256(control_raw).hexdigest())
     package_path, control_path, descriptor_path = (
-        root / "pre-aws-package-v5.json", root / "control.json", root / "descriptor.json")
+        root / "pre-aws-package-v6.json", root / "control.json", root / "descriptor.json")
     package_path.write_bytes(planner.canonical(package)); control_path.write_bytes(control_raw)
     descriptor_path.write_bytes(descriptor_raw)
     planner.eligibility(package_path, (h, g, q))

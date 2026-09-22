@@ -265,7 +265,7 @@ jobs:
           umask 077
           input="$RUNNER_TEMP/approval-input"; install -d -m 0700 "$input"
           for name in approval.json approval-authentication.json approval-authentication.bundle.json \
-            cosign pre-aws-package-v5.json provider-package.json provider-package.tar \
+            cosign pre-aws-package-v6.json provider-package.json provider-package.tar \
             provider-package.tar.sha256 sigstore-trusted-root.json tofu; do
             cp --no-preserve=mode,ownership "$RUNNER_TEMP/approval/$name" "$input/$name"
           done

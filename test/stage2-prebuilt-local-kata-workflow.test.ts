@@ -12,48 +12,124 @@ const qualifier = readFileSync("scripts/stage2-formal-local-qualification.py", "
 const preflightWorkflow = readFileSync(".github/workflows/stage2-prebuilt-mixed-hg-preflight.yml", "utf8");
 const preflight = readFileSync("scripts/stage2-prebuilt-mixed-hg-preflight.sh", "utf8");
 const staging = readFileSync("scripts/stage2-stage-prebuilt-control.py", "utf8");
-const imageGate = `if test "\${ImageOS-}" != ubuntu24 || test "\${ImageVersion-}" != 20260907.300.1; then
-            /usr/bin/printf '%s\\n' 'stage2.runner-image.rejected' >&2
-            exit 2
-          fi`;
+const imageGateStart = `if [[ "\${ImageOS-}" != ubuntu24 || ! "\${ImageVersion-}" =~ ^[0-9]{8}\\.[0-9]+\\.[0-9]+$ ]]; then`;
+const imageGateBoundary = '\n          test "$GITHUB_EVENT_NAME"';
+const imageGate = preflightWorkflow.slice(
+  preflightWorkflow.indexOf(imageGateStart),
+  preflightWorkflow.indexOf(imageGateBoundary, preflightWorkflow.indexOf(imageGateStart)),
+);
 
-test("runner image admission is exact on preflight and all nine formal runners", () => {
-  assert.equal(preflightWorkflow.split(imageGate).length - 1, 1);
-  assert.equal(workflow.split(imageGate).length - 1, 3);
+test("runner image admission authenticates official releases and accepts mixed rollout versions", () => {
+  assert.ok(imageGate.startsWith(imageGateStart) && imageGate.endsWith("          fi"));
+  assert.equal(preflightWorkflow.split(imageGateStart).length - 1, 1);
+  assert.equal(workflow.split(imageGateStart).length - 1, 3);
+  assert.ok(imageGate.includes('.id | type == "number" and . > 0 and . <= 9007199254740991 and . == floor'));
+  assert.ok(imageGate.includes("runner_release_id=$(/usr/bin/jq -er '.id | tostring' \"$runner_release\") || exit 1"));
+  assert.ok(imageGate.includes('"$runner_release_tag" "$runner_release_id" "$runner_release_commit"'));
   const admission = workflow.slice(workflow.indexOf("  admission:"), workflow.indexOf("  local-kata:"));
   const local = workflow.slice(workflow.indexOf("  local-kata:"), workflow.indexOf("  aggregate:"));
   const aggregate = workflow.slice(workflow.indexOf("  aggregate:"));
-  for (const block of [admission, local, aggregate]) assert.ok(block.includes(imageGate));
-  assert.ok(preflightWorkflow.indexOf(imageGate) < preflightWorkflow.indexOf("gh api --paginate"));
-  assert.ok(local.indexOf(imageGate) < local.indexOf("git init --quiet"));
-  assert.ok(aggregate.indexOf(imageGate) < aggregate.indexOf("git init --quiet"));
-  for (const [os, version, status] of [
-    ["ubuntu24", "20260907.300.1", 0],
-    ["ubuntu24", "20260831.293.1", 2],
-    ["ubuntu-24.04", "20260907.300.1", 2],
-    ["ubuntu24", "20260907.300", 2],
-    ["", "20260907.300.1", 2],
-    ["ubuntu24", "$(printf injected)", 2],
-  ] as const) {
+  for (const block of [admission, local, aggregate]) {
+    assert.ok(block.includes(imageGateStart));
+    assert.match(block, /releases\/tags\/\$encoded_runner_release_tag/u);
+    assert.match(block, /git\/ref\/tags\/\$encoded_runner_release_tag/u);
+  }
+  assert.ok(preflightWorkflow.indexOf(imageGateStart) < preflightWorkflow.indexOf("gh api --paginate"));
+  assert.ok(local.indexOf(imageGateStart) < local.indexOf("git init --quiet"));
+  assert.ok(aggregate.indexOf(imageGateStart) < aggregate.indexOf("git init --quiet"));
+
+  const temporary = mkdtempSync(join(tmpdir(), "cogs-runner-image-"));
+  const gh = join(temporary, "gh");
+  writeFileSync(
+    gh,
+    `#!/bin/bash
+set -euo pipefail
+endpoint="$2"
+tag="\${endpoint##*/}"
+tag="\${tag//%2F//}"
+commit=e75633902841aa5479c759492b73409e6d317f12
+case "\${GH_MOCK_MODE-official}:$endpoint" in
+  absent:*) exit 1 ;;
+  malformed:*) printf '{not-json' ;;
+  mismatch:*/releases/tags/*)
+    tag=ubuntu24/19990101.1
+    printf '{"id":392922326,"tag_name":"%s","target_commitish":"%s","draft":false,"html_url":"https://github.com/actions/runner-images/releases/tag/%s"}\\n' "$tag" "$commit" "$tag" ;;
+  draft:*/releases/tags/*)
+    printf '{"id":392922326,"tag_name":"%s","target_commitish":"%s","draft":true,"html_url":"https://github.com/actions/runner-images/releases/tag/%s"}\\n' "$tag" "$commit" "$tag" ;;
+  ref-mismatch:*/git/ref/tags/*)
+    printf '{"ref":"refs/tags/%s","object":{"type":"commit","sha":"%s"}}\\n' "$tag" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+  fractional:*/releases/tags/*)
+    printf '{"id":1.5,"tag_name":"%s","target_commitish":"%s","draft":false,"html_url":"https://github.com/actions/runner-images/releases/tag/%s"}\\n' "$tag" "$commit" "$tag" ;;
+  *:*/releases/tags/*)
+    printf '{"id":392922326,"tag_name":"%s","target_commitish":"%s","draft":false,"html_url":"https://github.com/actions/runner-images/releases/tag/%s"}\\n' "$tag" "$commit" "$tag" ;;
+  *:*/git/ref/tags/*)
+    printf '{"ref":"refs/tags/%s","object":{"type":"commit","sha":"%s"}}\\n' "$tag" "$commit" ;;
+  *) exit 1 ;;
+esac
+`,
+    { mode: 0o700 },
+  );
+  const run = (imageOs: string | undefined, imageVersion: string | undefined, mode = "official") => {
+    const runner = join(temporary, "runner");
+    const githubEnv = join(temporary, "github-env");
+    rmSync(runner, { recursive: true, force: true });
+    mkdirSync(runner);
+    writeFileSync(githubEnv, "");
+    const env: NodeJS.ProcessEnv = {
+      PATH: `${temporary}:${process.env.PATH ?? ""}`,
+      RUNNER_TEMP: runner,
+      GITHUB_ENV: githubEnv,
+      GH_MOCK_MODE: mode,
+    };
+    if (imageOs !== undefined) env.ImageOS = imageOs;
+    if (imageVersion !== undefined) env.ImageVersion = imageVersion;
     const result = spawnSync(
       "bash",
       ["--noprofile", "--norc", "-c", `set -euo pipefail\n${imageGate}\nprintf ADMITTED`],
       {
         encoding: "utf8",
-        env: { ImageOS: os, ImageVersion: version },
+        env,
       },
     );
-    assert.equal(result.status, status);
-    assert.equal(result.stdout, status === 0 ? "ADMITTED" : "");
-    assert.equal(result.stderr, status === 0 ? "" : "stage2.runner-image.rejected\n");
-  }
-  for (const env of [{ ImageOS: "ubuntu24" }, { ImageVersion: "20260907.300.1" }, {}]) {
-    const result = spawnSync("bash", ["--noprofile", "--norc", "-c", `${imageGate}\nprintf ADMITTED`], {
-      encoding: "utf8",
-      env,
-    });
-    assert.equal(result.status, 2);
-    assert.equal(result.stdout, "");
+    return { result, evidence: readFileSync(githubEnv, "utf8") };
+  };
+  try {
+    for (const version of ["20260907.300.1", "20260920.314.1"]) {
+      const { result, evidence } = run("ubuntu24", version);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, "ADMITTED");
+      assert.match(
+        evidence,
+        new RegExp(`COGS_RUNNER_IMAGE_RELEASE_TAG=ubuntu24/${version.replace(/\.[^.]+$/u, "")}`, "u"),
+      );
+      assert.match(evidence, /COGS_RUNNER_IMAGE_RELEASE_COMMIT=[0-9a-f]{40}/u);
+    }
+    for (const [os, version, mode] of [
+      ["ubuntu-24.04", "20260920.314.1", "official"],
+      ["ubuntu24", "20260920.314", "official"],
+      ["ubuntu24", "weekly", "official"],
+      ["ubuntu24", "20260920.314.1", "absent"],
+      ["ubuntu24", "20260920.314.1", "malformed"],
+      ["ubuntu24", "20260920.314.1", "mismatch"],
+      ["ubuntu24", "20260920.314.1", "draft"],
+      ["ubuntu24", "20260920.314.1", "ref-mismatch"],
+      ["ubuntu24", "20260920.314.1", "fractional"],
+    ] as const) {
+      const { result } = run(os, version, mode);
+      assert.equal(result.status, 2, `${os ?? "absent"}/${version ?? "absent"}/${mode}`);
+      assert.match(result.stderr, /stage2\.runner-image\.rejected/u);
+    }
+    for (const [os, version] of [
+      ["ubuntu24", undefined],
+      [undefined, "20260920.314.1"],
+      [undefined, undefined],
+    ] as const) {
+      const { result } = run(os, version);
+      assert.equal(result.status, 2);
+      assert.match(result.stderr, /stage2\.runner-image\.rejected/u);
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
   assert.match(local, /stage2-stage-prebuilt-control\.py[\s\S]{0,120}verify-host/u);
   assert.match(preflightWorkflow, /Compare every ambient host closure before mutation/u);
@@ -188,7 +264,7 @@ test("checked-in v7 remains decodable but the failed H/G package cannot regain a
       "-B",
       "-c",
       `
-import hashlib,runpy,sys
+import hashlib,json,runpy,sys
 from pathlib import Path
 current=Path.cwd()
 package=current/'deploy/aws-feasibility/remote/stage2-completion-local-control-v7'
@@ -214,6 +290,8 @@ for target,digest in guard['G_RETIREMENT_CONSUMERS'].items():
  require(sha((current/target).read_bytes())==digest, 'current retirement pin differs')
 sys.path.insert(0,str(current/'deploy/aws-feasibility/remote'))
 import completion_kata_preparation as codec
+historical_envelope=json.loads((package/'stage2-local-execution-envelope-v3.json').read_bytes())
+codec.MANDATORY_SECURITY_SOURCES=frozenset(row['path'] for row in historical_envelope['implementation']['selected_sources'])
 control=codec.load_control((package/'stage2-local-static-control-v2.json').read_bytes())
 members={row['name']:(package/row['name']).read_bytes() for row in control.value['members']}
 envelope,runtime,contracts=codec.validate_control_members(control,members)
@@ -281,7 +359,7 @@ test("aggregation is exact, artifact-complete, attempt-one, and non-AWS only", (
   assert.match(workflow, /CYCLE_ARTIFACT_DIGEST: \$\{\{ steps\.cycle_upload\.outputs\.artifact-digest \}\}/u);
   assert.match(workflow, /CYCLE_JOB_RESULT: \$\{\{ needs\.local-kata\.result \}\}/u);
   assert.match(workflow, /test "\$CYCLE_JOB_RESULT" = success/u);
-  assert.match(qualifier, /pre-aws-package-v5\.json/u);
+  assert.match(qualifier, /pre-aws-package-v6\.json/u);
   assert.doesNotMatch(workflow, /pre-aws-package-v4\.json|\.py aggregate\s*>/u);
   assert.match(workflow, /stage2-formal-local-qualification\.py publish-package\n/u);
   assert.match(workflow, /stage2-formal-local-qualification\.py package-readback\n/u);

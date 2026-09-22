@@ -31,10 +31,14 @@ test("prebuilt static control is additive, first-created, no-KVM, and exact publ
   const adjuncts = workflow.indexOf("Stage authenticated publication adjuncts after immutable acquisition");
   const control = workflow.indexOf("Produce deterministic non-authoritative control candidate");
   assert.ok(descriptor > 0 && descriptor < immutable && immutable < adjuncts && adjuncts < control);
-  const retirement = workflow.indexOf("# ADR0357 additive V4 retirement mirror; selection only, never ancestors.");
-  const image = workflow.indexOf('if test "${ImageOS-}" != ubuntu24 || test "${ImageVersion-}" != 20260907.300.1');
+  const retirement = workflow.indexOf("# ADR0360 additive V5 retirement mirror; selection only, never ancestors.");
+  const image = workflow.indexOf(`runner_release_tag="ubuntu24/\${ImageVersion%.*}"`);
   assert.ok(retirement >= 0 && retirement < image && image < workflow.indexOf("gh api --paginate"));
-  assert.equal(workflow.match(/stage2\.runner-image\.rejected/gu)?.length, 1);
+  assert.match(workflow, /releases\/tags\/\$encoded_runner_release_tag/u);
+  assert.match(workflow, /git\/ref\/tags\/\$encoded_runner_release_tag/u);
+  assert.match(workflow, /COGS_RUNNER_IMAGE_RELEASE_TAG="\$COGS_RUNNER_IMAGE_RELEASE_TAG"/u);
+  assert.match(workflow, /ImageOS="\$ImageOS" ImageVersion="\$ImageVersion"/u);
+  assert.equal(workflow.match(/stage2\.runner-image\.rejected/gu)?.length, 2);
   assert.match(workflow, /if: always\(\) && steps\.boundary\.outcome != 'skipped'/u);
   assert.match(workflow, /if test "\$IMMUTABLE_INTENT" = true; then[\s\S]*cogs-stage2-immutable-preparation\.json/u);
   assert.match(

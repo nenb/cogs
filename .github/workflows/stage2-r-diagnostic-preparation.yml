@@ -138,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           /usr/bin/python3 -I -B scripts/stage2-production-planner.py eligibility \
-            "$RUNNER_TEMP/qualification/pre-aws-package-v5.json" \
+            "$RUNNER_TEMP/qualification/pre-aws-package-v6.json" \
             "$IMPLEMENTATION_HEAD" "$CONTROL_HEAD" "$QUALIFICATION_HEAD"
           package=deploy/aws-feasibility/remote/stage2-completion-local-control-v7
           python3 -I -B - "$package/stage2-local-execution-envelope-v3.json" \
@@ -169,7 +169,7 @@ jobs:
         run: |
           set -euo pipefail
           /usr/bin/python3 -I -B scripts/stage2-production-planner.py \
-            "$RUNNER_TEMP/qualification/pre-aws-package-v5.json" \
+            "$RUNNER_TEMP/qualification/pre-aws-package-v6.json" \
             deploy/aws-feasibility/remote/stage2-completion-local-control-v7/stage2-local-static-control-v2.json \
             "$RUNNER_TEMP/descriptor.json" "$RUNNER_TEMP/tofu" "$RUNNER_TEMP/planning"
           # The planner intentionally never stages its local provider bootstrap
@@ -224,8 +224,8 @@ jobs:
           out="$RUNNER_TEMP/approval"; install -d -m 0700 "$out"
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py issue \
             "$RUNNER_TEMP/planning-readback/approval-draft.json" >"$out/approval.json"
-          install -m 0600 "$RUNNER_TEMP/planning-readback/pre-aws-package-v5.json" \
-            "$out/pre-aws-package-v5.json"
+          install -m 0600 "$RUNNER_TEMP/planning-readback/pre-aws-package-v6.json" \
+            "$out/pre-aws-package-v6.json"
           cp -R "$RUNNER_TEMP/planning-readback/plans" "$out/plans"
           install -m 0555 "$RUNNER_TEMP/planning-readback/tofu" "$out/tofu"
           for name in provider-package.json provider-package.tar provider-package.tar.sha256; do

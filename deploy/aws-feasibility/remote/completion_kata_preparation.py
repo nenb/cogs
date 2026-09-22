@@ -31,16 +31,19 @@ sys.path.insert(0, str(_REMOTE_MODULE_ROOT))
 import completion_guest_workloads_v3 as final_guest
 
 CONTROL_VERSION = "cogs.stage2-local-static-control-package/v2"
-ENVELOPE_VERSION = "cogs.stage2-local-execution-envelope/v3"
+ENVELOPE_VERSION = "cogs.stage2-local-execution-envelope/v4"
+LEGACY_ENVELOPE_VERSION = "cogs.stage2-local-execution-envelope/v3"
 RUNTIME_VERSION = "cogs.stage2-local-runtime-manifest/v3"
 CONTRACT_VERSION = "cogs.stage2-local-executable-closure/v1"
 AUTHORITY = "non-authoritative-reviewed-static-control-data"
+RUNNER_IMAGE_VERSION = "cogs.github-hosted-runner-image/v1"
 SOURCE_ROOT = Path("/var/lib/cogs/stage2-completion-v1/source")
 CONTROL_ROOT = Path("/var/lib/cogs/stage2-completion-v1/control")
 OBSERVATION_ROOT = Path("/var/lib/cogs/stage2-completion-v1/control-observation-v1")
 SOURCE_MANIFEST = ".cogs-stage2-source-manifest-v1.json"
 CONTROL_MEMBER = "stage2-local-static-control-v2.json"
-ENVELOPE_MEMBER = "stage2-local-execution-envelope-v3.json"
+ENVELOPE_MEMBER = "stage2-local-execution-envelope-v4.json"
+LEGACY_ENVELOPE_MEMBER = "stage2-local-execution-envelope-v3.json"
 RUNTIME_MEMBER = "stage2-local-runtime-manifest-v3.json"
 PREBUILT_INPUT_ROOT = Path("/var/lib/cogs/stage2-completion-v1/prebuilt-rootfs-input-v1")
 PREBUILT_DESCRIPTOR_ROOT = Path("/var/lib/cogs/stage2-prebuilt-rootfs-descriptor-v1")
@@ -167,16 +170,16 @@ MANDATORY_SECURITY_SOURCES = frozenset({
     "deploy/aws-feasibility/remote/run-stage2-completion-readiness-rehearsal.sh",
     "config/stage2-completion-ssh-readiness-v1.json",
     "docs/security-evidence/kata-3.32.0-qmp-source-contract.json",
-    "schemas/stage2-local-execution-envelope-v3.json",
+    "schemas/stage2-local-execution-envelope-v4.json",
     "schemas/stage2-local-runtime-manifest-v3.json",
     "schemas/stage2-local-static-control-package-v2.json",
     "schemas/aws-stage2-completion-evidence-v3.json",
     "schemas/aws-stage2-completion-production-approval-v5.json",
     "schemas/aws-stage2-production-evidence-upload-receipt-v2.json",
     "schemas/stage2-formal-local-cycle-receipt-v2.json",
-    "schemas/stage2-formal-local-cycle-status-v2.json",
+    "schemas/stage2-formal-local-cycle-status-v3.json",
     "schemas/stage2-formal-local-artifact-custody-v2.json",
-    "schemas/stage2-pre-aws-qualification-package-v5.json",
+    "schemas/stage2-pre-aws-qualification-package-v6.json",
     "schemas/stage2-prebuilt-rootfs-descriptor-v1.json",
     "scripts/stage2-formal-local-qualification.py",
     "scripts/stage2-hosted-opt-mode.py",
@@ -753,13 +756,48 @@ def load_runtime(raw):
     return StaticDescription(raw, _sha(raw), value)
 
 
+def validate_runner_image(value):
+    _exact_keys(value, ("version", "image_label", "image_os", "image_version",
+                         "release_tag", "release_id", "release_commit"))
+    _require(value["version"] == RUNNER_IMAGE_VERSION
+             and value["image_label"] == "ubuntu-24.04"
+             and value["image_os"] == "ubuntu24"
+             and type(value["image_version"]) is str
+             and type(value["release_id"]) is int and not isinstance(value["release_id"], bool)
+             and 0 < value["release_id"] <= 9_007_199_254_740_991
+             and type(value["release_commit"]) is str and len(value["release_commit"]) == 40
+             and all(item in HEX for item in value["release_commit"]))
+    parts = value["image_version"].split(".")
+    _require(len(parts) == 3 and len(parts[0]) == 8 and all(part.isascii() and part.isdigit() for part in parts)
+             and value["release_tag"] == f"ubuntu24/{parts[0]}.{parts[1]}")
+    return value
+
+
+def runner_image_from_environment(environ=os.environ):
+    value = {
+        "version": RUNNER_IMAGE_VERSION,
+        "image_label": "ubuntu-24.04",
+        "image_os": environ.get("ImageOS", ""),
+        "image_version": environ.get("ImageVersion", ""),
+        "release_tag": environ.get("COGS_RUNNER_IMAGE_RELEASE_TAG", ""),
+        "release_id": int(environ.get("COGS_RUNNER_IMAGE_RELEASE_ID", "0")),
+        "release_commit": environ.get("COGS_RUNNER_IMAGE_RELEASE_COMMIT", ""),
+    }
+    return validate_runner_image(value)
+
+
 def validate_envelope_value(value):
-    _exact_keys(value, ("version", "authority", "directional_binding", "control_revision",
-                         "implementation", "package", "rootfs", "runtime", "programs",
-                         "result_binding_base", "receipt"))
-    _require(value["version"] == ENVELOPE_VERSION and value["authority"] == AUTHORITY)
+    common = ("version", "authority", "directional_binding", "control_revision",
+              "implementation", "package", "rootfs", "runtime", "programs",
+              "result_binding_base", "receipt")
+    version = value.get("version") if type(value) is dict else None
+    _require(version in {LEGACY_ENVELOPE_VERSION, ENVELOPE_VERSION})
+    _exact_keys(value, (*common, "runner_image") if version == ENVELOPE_VERSION else common)
+    _require(value["authority"] == AUTHORITY)
     _require(value["directional_binding"] == "control-revision-g-describes-earlier-implementation-revision-h")
     _git_revision(value["control_revision"])
+    if version == ENVELOPE_VERSION:
+        validate_runner_image(value["runner_image"])
     _validate_implementation(value["implementation"])
     package = value["package"]
     _exact_keys(package, ("candidate_contract_sha256", "candidate_result_sha256", "final_pin_sha256", "identity"))
@@ -852,7 +890,9 @@ def validate_control_value(value):
         kinds.append(row["kind"])
     _require(names == sorted(set(names), key=lambda item: item.encode("ascii")))
     _require(kinds.count("envelope") == kinds.count("runtime-manifest") == 1 and kinds.count("executable-closure") == 10)
-    _require({row["name"] for row in members if row["kind"] == "envelope"} == {ENVELOPE_MEMBER})
+    envelope_names = {row["name"] for row in members if row["kind"] == "envelope"}
+    _require(len(envelope_names) == 1 and next(iter(envelope_names)) in
+             {LEGACY_ENVELOPE_MEMBER, ENVELOPE_MEMBER})
     _require({row["name"] for row in members if row["kind"] == "runtime-manifest"} == {RUNTIME_MEMBER})
     producer = value["producer"]
     _exact_keys(producer, ("classification", "control_revision", "implementation_revision",
@@ -878,8 +918,11 @@ def validate_control_members(control, members):
     for row in control.value["members"]:
         raw = members[row["name"]]
         _require(type(raw) is bytes and len(raw) == row["size"] and _sha(raw) == row["sha256"], "control member differs")
-    envelope = load_envelope(members[ENVELOPE_MEMBER])
+    envelope_name = next(row["name"] for row in control.value["members"] if row["kind"] == "envelope")
+    envelope = load_envelope(members[envelope_name])
     runtime = load_runtime(members[RUNTIME_MEMBER])
+    _require((envelope_name, envelope.value["version"]) in {
+        (LEGACY_ENVELOPE_MEMBER, LEGACY_ENVELOPE_VERSION), (ENVELOPE_MEMBER, ENVELOPE_VERSION)})
     _require(envelope.value["implementation"] == control.value["implementation"])
     _require(envelope.value["runtime"]["manifest_sha256"] == runtime.sha256)
     shared_rootfs = ("manifest_sha256", "manifest_size", "ustar_sha256", "ustar_size",
@@ -1242,7 +1285,7 @@ def _source_digest(implementation, path):
 
 
 def build_control_bytes(implementation, runtime, package, rootfs_contract_sha256, contracts,
-                        control_revision, prebuilt_custody):
+                        control_revision, prebuilt_custody, runner_image=None):
     """Pure deterministic producer used by the fixed no-KVM collector and tests."""
     _require(type(contracts) is dict and set(contracts) == {row[0] for row in EXECUTABLES})
     clean_runtime = json.loads(canonical_bytes(runtime))
@@ -1277,6 +1320,7 @@ def build_control_bytes(implementation, runtime, package, rootfs_contract_sha256
     envelope = {"version": ENVELOPE_VERSION, "authority": AUTHORITY,
                 "directional_binding": "control-revision-g-describes-earlier-implementation-revision-h",
                 "control_revision": control_revision,
+                "runner_image": validate_runner_image(runner_image or runner_image_from_environment()),
                 "implementation": implementation, "package": final,
                 "rootfs": {"contract_sha256": rootfs_contract_sha256,
                            **{name: clean_runtime["rootfs"][name] for name in
@@ -1536,9 +1580,10 @@ def collect_fixed_candidate(builder=build_control_bytes):
                "identity": final.package_identity.value()}
     control_revision = os.environ.get("COGS_STAGE2_CONTROL_REVISION", "")
     _git_revision(control_revision)
-    return builder(implementation, runtime, package,
-                   "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
-                   contracts, control_revision, prebuilt_custody)
+    arguments = (implementation, runtime, package,
+                 "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
+                 contracts, control_revision, prebuilt_custody)
+    return builder(*arguments, runner_image_from_environment()) if builder is build_control_bytes else builder(*arguments)
 
 
 def generate_implementation_h_candidate_control_bytes():

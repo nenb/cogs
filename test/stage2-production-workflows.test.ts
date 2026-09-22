@@ -31,7 +31,7 @@ test("future planning authority is first-created, exact H/G/Q, and separately au
   assert.match(planning, /\.\[\]\.workflow_runs\[\]/u);
   assert.match(planning, /map\(\.id\) == \[\$current\]/u);
   assert.match(planning, /stage2-prebuilt-local-kata-qualification\.yml/u);
-  assert.match(planning, /pre-aws-package-v5\.json/u);
+  assert.match(planning, /pre-aws-package-v6\.json/u);
   assert.match(planning, /qualification_head/u);
   assert.doesNotMatch(planning, /report_artifact_id|receipt_artifact_id/u);
   assert.match(planning, /run_attempt == 1/u);
@@ -42,7 +42,7 @@ test("future planning authority is first-created, exact H/G/Q, and separately au
   assert.match(planner, /"show", "-json"/u);
   assert.match(planner, /approval_batch_commitment/u);
   assert.match(planner, /qualification_revision/u);
-  assert.match(planner, /stage2-pre-aws-qualification-package\/v5/u);
+  assert.match(planner, /stage2-pre-aws-qualification-package\/v6/u);
   assert.match(planner, /O_NOFOLLOW \| os\.O_NONBLOCK/u);
   assert.match(issuer, /O_NOFOLLOW \| os\.O_NONBLOCK/u);
   for (const source of [planner, providerEntry]) {

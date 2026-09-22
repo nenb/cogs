@@ -630,9 +630,20 @@ def prebuilt_host_check_tests():
     real_load = prebuilt_staging._load_module
     def historical_load(*arguments):
         module = real_load(*arguments)
+        historical_schemas = {
+            "schemas/stage2-local-execution-envelope-v4.json":
+                "schemas/stage2-local-execution-envelope-v3.json",
+            "schemas/stage2-formal-local-cycle-status-v3.json":
+                "schemas/stage2-formal-local-cycle-status-v2.json",
+            "schemas/stage2-pre-aws-qualification-package-v6.json":
+                "schemas/stage2-pre-aws-qualification-package-v5.json",
+        }
         module.MANDATORY_SECURITY_SOURCES = frozenset(
-            path for path in module.MANDATORY_SECURITY_SOURCES
+            historical_schemas.get(path, path)
+            for path in module.MANDATORY_SECURITY_SOURCES
             if path != "scripts/stage2-hosted-opt-mode.py")
+        historical_paths = {row["path"] for row in control_value["implementation"]["selected_sources"]}
+        assert module.MANDATORY_SECURITY_SOURCES <= historical_paths
         return module
     prebuilt_staging.SOURCE = historical; prebuilt_staging.os.geteuid = lambda: 1000
     try:

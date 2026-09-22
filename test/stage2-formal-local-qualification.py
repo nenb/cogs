@@ -6,6 +6,7 @@ import importlib.util
 import json
 import io
 import inspect
+import os
 from pathlib import Path
 import stat
 from types import SimpleNamespace
@@ -40,6 +41,14 @@ guard = load("stage2_formal_guard_test", "scripts/stage2-prebuilt-local-qualific
 
 def d(value): return hashlib.sha256(value.encode()).hexdigest()
 
+runner_image = {"version": "cogs.github-hosted-runner-image/v1", "image_label": "ubuntu-24.04",
+    "image_os": "ubuntu24", "image_version": "20260920.314.1",
+    "release_tag": "ubuntu24/20260920.314", "release_id": 392922326,
+    "release_commit": "e75633902841aa5479c759492b73409e6d317f12"}
+os.environ.update({"ImageOS": runner_image["image_os"], "ImageVersion": runner_image["image_version"],
+    "COGS_RUNNER_IMAGE_RELEASE_TAG": runner_image["release_tag"],
+    "COGS_RUNNER_IMAGE_RELEASE_ID": str(runner_image["release_id"]),
+    "COGS_RUNNER_IMAGE_RELEASE_COMMIT": runner_image["release_commit"]})
 expected = {
     "EXPECTED_IMPLEMENTATION_HEAD": "1" * 40,
     "EXPECTED_CONTROL_HEAD": "2" * 40,
@@ -73,7 +82,8 @@ historical = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-contr
 assert formal.CONTROL_PACKAGE == guard.CONTROL_PACKAGE
 assert formal.CONTROL_PACKAGE.name == "stage2-completion-local-control-v7"
 control = json.loads((historical / formal.CONTROL_MEMBER).read_bytes())
-envelope = json.loads((historical / formal.ENVELOPE_MEMBER).read_bytes())
+historical_envelope_member = next(row["name"] for row in control["members"] if row["kind"] == "envelope")
+envelope = json.loads((historical / historical_envelope_member).read_bytes())
 runtime_raw = (historical / formal.RUNTIME_MEMBER).read_bytes()
 selected = [{"path": path, "size": len((ROOT / path).read_bytes()),
              "sha256": hashlib.sha256((ROOT / path).read_bytes()).hexdigest()}
@@ -88,8 +98,12 @@ control["implementation"]["source_manifest_sha256"] = expected["EXPECTED_SOURCE_
 control["producer"].update(control_revision=expected["EXPECTED_CONTROL_HEAD"],
     implementation_revision=expected["EXPECTED_IMPLEMENTATION_HEAD"],
     source_manifest_sha256=expected["EXPECTED_SOURCE_MANIFEST_SHA256"])
+envelope["version"] = "cogs.stage2-local-execution-envelope/v4"
 envelope["implementation"] = copy.deepcopy(control["implementation"])
 envelope["control_revision"] = expected["EXPECTED_CONTROL_HEAD"]
+envelope["runner_image"] = copy.deepcopy(runner_image)
+envelope_row = next(row for row in control["members"] if row["kind"] == "envelope")
+envelope_row["name"] = formal.ENVELOPE_MEMBER
 base = envelope["result_binding_base"]
 base["source_head"] = expected["EXPECTED_IMPLEMENTATION_HEAD"]
 base["source_manifest_sha256"] = expected["EXPECTED_SOURCE_MANIFEST_SHA256"]
@@ -238,10 +252,11 @@ def receipt(ordinal):
     return json.loads(receipt_bytes(ordinal))
 
 
-def write_cycle(root, ordinal, value=None):
+def write_cycle(root, ordinal, value=None, image=runner_image):
     raw = receipt_bytes(ordinal) if value is None else formal.canonical(value)
     status = formal.status_value(raw, expected, ordinal,
-        f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-{expected['EXPECTED_CONTROL_HEAD']}-71-1")
+        f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-{expected['EXPECTED_CONTROL_HEAD']}-71-1",
+        image)
     path = Path(root) / f"cycle-{ordinal}"; path.mkdir()
     (path / "receipt.json").write_bytes(raw); (path / "status.json").write_bytes(formal.canonical(status))
 
@@ -327,11 +342,21 @@ with tempfile.TemporaryDirectory() as cycle_parent:
     write_cycle(cycle_parent, 2)
     rejected(lambda: formal.validate_cycle_artifact_root(cycle_parent, expected, 1))
 
+with tempfile.TemporaryDirectory() as mixed_image_root:
+    prior_image = {**runner_image, "image_version": "20260907.300.1",
+                   "release_tag": "ubuntu24/20260907.300", "release_id": 387000001,
+                   "release_commit": "a" * 40}
+    for ordinal in range(1, 8):
+        write_cycle(mixed_image_root, ordinal, image=runner_image if ordinal % 2 else prior_image)
+    mixed_package = json.loads(aggregate(mixed_image_root))
+    assert {row["runner_image"]["image_version"] for row in mixed_package["cycles"]} == {
+        "20260907.300.1", "20260920.314.1"}
+
 with tempfile.TemporaryDirectory() as temporary:
     for ordinal in range(1, 8): write_cycle(temporary, ordinal)
     package_raw = aggregate(temporary)
     package = formal.decode(package_raw, 96 * 1024)
-    assert package["version"] == "cogs.stage2-pre-aws-qualification-package/v5"
+    assert package["version"] == "cogs.stage2-pre-aws-qualification-package/v6"
     assert "runtime_commitment" not in package
     assert package["runtime_manifest_sha256"] == runtime.sha256
     assert package["cycle_count"] == 7 and package["workload_measurements"] == 21
@@ -345,7 +370,9 @@ with tempfile.TemporaryDirectory() as temporary:
     assert package["mixed_preflight_run_id"] == 63
     assert package["static_control_observation"] == {
         "run_id": 61, "artifact_id": 62,
-        "artifact_archive_digest": "sha256:" + d("static-archive")}
+        "artifact_archive_digest": "sha256:" + d("static-archive"),
+        "runner_image": runner_image}
+    assert all(row["runner_image"] == runner_image for row in package["cycles"])
     assert package["cycle_artifact_custody_sha256"] == hashlib.sha256(custody()).hexdigest()
     assert [row["mode"] for row in package["cycles"]] == list(formal.CYCLE_MODES)
     assert [row["artifact_id"] for row in package["cycles"]] == list(range(701, 708))
@@ -356,6 +383,16 @@ with tempfile.TemporaryDirectory() as temporary:
     for outcome in ("failure", "cancelled", "skipped", ""):
         rejected(lambda outcome=outcome: aggregate(temporary, outcome))
     rejected(lambda: aggregate(temporary, expected_value={**expected, "GITHUB_RUN_ATTEMPT": "2"}))
+    status_path = Path(temporary) / "cycle-2/status.json"
+    status_raw = status_path.read_bytes(); hostile_status = json.loads(status_raw)
+    for field, value in (("runner_image", None), ("release_tag", "ubuntu24/other"),
+                         ("release_commit", "4" * 39), ("release_id", True)):
+        hostile = copy.deepcopy(hostile_status)
+        if field == "runner_image": del hostile[field]
+        else: hostile["runner_image"][field] = value
+        status_path.write_bytes(formal.canonical(hostile))
+        rejected(lambda: aggregate(temporary))
+    status_path.write_bytes(status_raw)
 
     # The actual package command owns exclusive storage, completes short writes,
     # fsyncs both files and both directories, and emits no upload-eligible success
@@ -391,7 +428,7 @@ with tempfile.TemporaryDirectory() as temporary:
             assert not output.getvalue()
             if fault is None:
                 assert not errors.getvalue() and calls == [False, False, True, True]
-                assert (destination / "pre-aws-package-v5.json").read_bytes() == package_raw
+                assert (destination / "pre-aws-package-v6.json").read_bytes() == package_raw
                 assert (destination / "cycle-artifact-custody-v2.json").read_bytes() == custody()
                 assert stat.S_IMODE(destination.stat().st_mode) == 0o555
             else: assert errors.getvalue() in {"stage2-formal-local-qualification: io.failed\n",
@@ -404,7 +441,7 @@ with tempfile.TemporaryDirectory() as temporary:
         formal.package_readback(published, readback)
         extra = readback / "extra"; extra.write_bytes(b"unexpected")
         rejected(lambda: formal.package_readback(published, readback)); extra.unlink()
-        member = readback / "pre-aws-package-v5.json"; saved = member.read_bytes(); member.unlink()
+        member = readback / "pre-aws-package-v6.json"; saved = member.read_bytes(); member.unlink()
         member.symlink_to(published / member.name)
         rejected(lambda: formal.package_readback(published, readback)); member.unlink()
         formal.os.link(published / member.name, member)
