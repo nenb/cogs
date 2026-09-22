@@ -15,13 +15,13 @@ const python = (samples = false) =>
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
   });
 
-test("V3 static control is deterministic, no-KVM, and hostile-input closed", () => {
+test("V4 static control is deterministic, no-KVM, and hostile-input closed", () => {
   const result = python();
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /static V3 control\/no-KVM admission hostile matrix passed/u);
+  assert.match(result.stdout, /static V4 control\/no-KVM admission hostile matrix passed/u);
 });
 
-test("historical and V3 static schemas compile independently", () => {
+test("historical and V4 static schemas compile independently", () => {
   const result = python(true);
   assert.equal(result.status, 0, result.stderr);
   const samples = JSON.parse(result.stdout) as Record<string, Record<string, unknown>>;
@@ -40,13 +40,14 @@ test("historical and V3 static schemas compile independently", () => {
     "stage2-local-runtime-manifest-v2.json",
     "stage2-local-static-control-package-v2.json",
     "stage2-local-execution-envelope-v3.json",
+    "stage2-local-execution-envelope-v4.json",
     "stage2-local-runtime-manifest-v3.json",
   ]) {
     ajv.addSchema(JSON.parse(readFileSync(join(root, "schemas", file), "utf8")) as object);
   }
   for (const [name, file] of [
     ["control", "stage2-local-static-control-package-v2.json"],
-    ["envelope", "stage2-local-execution-envelope-v3.json"],
+    ["envelope", "stage2-local-execution-envelope-v4.json"],
     ["runtime", "stage2-local-runtime-manifest-v3.json"],
   ] as const) {
     const validate = ajv.getSchema(`https://cogs.invalid/schemas/${file}`);

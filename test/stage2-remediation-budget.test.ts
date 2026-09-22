@@ -8,20 +8,20 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0358 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0360 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8400,1300000),(5050,2200000),(6207,3300000),(350,9500000),(2150,5200000)]
-assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
-assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
-assert len(tasks[-1]['paths']) == 55
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8400,1300000),(5050,2200000),(6300,3300000),(400,9500000),(3800,5200000)]
+assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (23950,21500000)
+assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (41950,29500000)
+assert len(tasks[-1]['paths']) == 65
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
-for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/stage2-formal-local-qualification.py','test/stage2-prebuilt-rehearsal-grant.py']:
+for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','config/stage2-retired-revisions-v5.json','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','docs/adr/0360-retire-runner-image-rejected-generation.md','schemas/stage2-formal-local-cycle-status-v3.json','schemas/stage2-local-execution-envelope-v4.json','schemas/stage2-pre-aws-qualification-package-v6.json','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/aws-stage2-completion-kata-static-control.py','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts','test/stage2-local-workflow-scripts.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 13
@@ -48,7 +48,9 @@ assert 'docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.
 assert 'docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md' in integration
 assert 'docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md' in integration
 assert 'docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md' in integration
+assert 'docs/adr/0360-retire-runner-image-rejected-generation.md' in integration
 assert 'config/stage2-retired-revisions-v4.json' in integration
+assert 'config/stage2-retired-revisions-v5.json' in integration
 local=tasks[2]['paths']
 assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
 assert '.github/workflows/stage2-r-diagnostic-campaign.yml' in local
@@ -58,10 +60,10 @@ assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in tasks[0]['paths']
 assert 'schemas/aws-stage2-completion-production-approval-v6.json' in tasks[0]['paths']
 assert 'test/stage2-production-workflows.test.ts' in tasks[0]['paths']
-assert tasks[2]['gross_lines'] == 6207 and tasks[2]['gross_bytes'] == 3300000
-assert tasks[3]['gross_lines'] == 350 and tasks[3]['gross_bytes'] == 9500000
+assert tasks[2]['gross_lines'] == 6300 and tasks[2]['gross_bytes'] == 3300000
+assert tasks[3]['gross_lines'] == 400 and tasks[3]['gross_bytes'] == 9500000
 assert tasks[-1]['pre_h_cap'] == {'gross_lines':607,'gross_bytes':1700000}
-assert tasks[-1]['post_h_reserve'] == {'gross_lines':1500,'gross_bytes':3500000}
+assert tasks[-1]['post_h_reserve'] == {'gross_lines':3150,'gross_bytes':3500000}
 assert b['source_limits'] == {'tracked_files':1564,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
@@ -83,15 +85,15 @@ assert m['PRODUCT_TEST_FINAL_H_REVISION'] == '5ea2064daa3e62ddbd68fc0f0bb20db1eb
 assert m['PRODUCT_TEST_FINAL_H_PARENT'] == 'ede3c228eea1efb4cd3a435b969f59aeb7f71c10'
 assert m['PRODUCT_TEST_FINAL_H_TREE'] == 'b8734d91e693a01a29d49a9a4d5f9eb3843ad374'
 assert m['PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP'] == (607,1700000)
-assert m['PRODUCT_TEST_FINAL_HGQ_POST_H_CAP'] == (1500,3500000)
+assert m['PRODUCT_TEST_FINAL_HGQ_POST_H_CAP'] == (3150,3500000)
 names=m['PRODUCT_TEST_TASK_MAXIMA']
 def empty(): return {name:0 for name in names}
 pre_lines=empty(); pre_bytes=empty(); post_lines=empty(); post_bytes=empty()
 pre_lines['final-HGQ']=607; pre_bytes['final-HGQ']=1700000
-post_lines['final-HGQ']=1500; post_bytes['final-HGQ']=3500000
+post_lines['final-HGQ']=3150; post_bytes['final-HGQ']=3500000
 lines,raw=m['_enforce_product_test_consumption'](pre_lines,pre_bytes,post_lines,post_bytes)
-assert (lines['final-HGQ'],raw['final-HGQ']) == (2107,5200000)
-for position,key,excess in [(0,'final-HGQ',608),(1,'final-HGQ',1700001),(2,'final-HGQ',1501),(3,'final-HGQ',3500001)]:
+assert (lines['final-HGQ'],raw['final-HGQ']) == (3757,5200000)
+for position,key,excess in [(0,'final-HGQ',608),(1,'final-HGQ',1700001),(2,'final-HGQ',3151),(3,'final-HGQ',3500001)]:
  values=[empty(),empty(),empty(),empty()]; values[position][key]=excess
  try: m['_enforce_product_test_consumption'](*values)
  except m['LineBudgetError']: pass
@@ -99,7 +101,7 @@ for position,key,excess in [(0,'final-HGQ',608),(1,'final-HGQ',1700001),(2,'fina
 b,_,_,_,_=m['_remediation_budget']()
 _,_,observed_pre_lines,observed_pre_bytes,observed_post_lines,observed_post_bytes=m['_product_test_consumption_segments'](b)
 assert (observed_pre_lines['final-HGQ'],observed_pre_bytes['final-HGQ']) == (576,241849)
-assert 0 < observed_post_lines['final-HGQ'] <= 1500
+assert 0 < observed_post_lines['final-HGQ'] <= 3150
 assert observed_post_bytes['final-HGQ'] <= 3500000
 `);
 });
@@ -155,6 +157,34 @@ test("ADR0358 freezes host-scoped H and authorizes only direct-child G controls"
     readFileSync("docs/adr/README.md", "utf8").includes("[0358](0358-freeze-host-scoped-H-and-authorize-control.md)"),
   );
   assert.equal(existsSync("docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md"), false);
+});
+
+test("ADR0360 retires the image-rejected generation and authenticates assigned images", () => {
+  const adr = readFileSync("docs/adr/0360-retire-runner-image-rejected-generation.md", "utf8").replace(/\s+/gu, " ");
+  for (const text of [
+    "21848f84f01d42f28ce2f6f2a177bfe62af8fc58",
+    "35716917245",
+    "35732877526",
+    "35733919360",
+    "zero artifacts",
+    "ImageVersion=20260920.314.1",
+    "actions/runner-images",
+    "tag-ref commit",
+    "All nineteen pre-effect selectors",
+    "execution envelope V4",
+    "cycle-status V3",
+    "pre-aws-package-v6.json",
+    "one wholly fresh protected H/G/Q",
+    "Q's seven GitHub-hosted KVM cycles",
+    "R's later seven sequential AWS",
+    "global headroom",
+    "from 2,150 to 3,800",
+    "from 1,500 to 3,150",
+  ])
+    assert.ok(adr.includes(text), text);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes("[0360](0360-retire-runner-image-rejected-generation.md)"),
+  );
 });
 
 test("ADR0351 expressly authorizes every R3 task reallocation before merge", () => {

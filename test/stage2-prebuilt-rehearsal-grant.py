@@ -52,13 +52,13 @@ def load(name):
 with tempfile.TemporaryDirectory() as directory:
     path = Path(directory) / "policy.json"
     good = retirement["POLICY"].read_bytes()
-    bad = [b"", b"{", b"[]", b"null", b"{}", b"x" * 4097, b'{"version":NaN}',
+    bad = [b"", b"{", b"[]", b"null", b"{}", b"x" * 8193, b'{"version":NaN}',
            b'{"version":1,"version":2}', b'[' * 1100 + b']' * 1100, b'\xff']
     policy = json.loads(good)
-    assert policy["version"] == "cogs.stage2-retired-revisions/v4"
+    assert policy["version"] == "cogs.stage2-retired-revisions/v5"
     assert policy["predecessor"] == {
-        "version": "cogs.stage2-retired-revisions/v3",
-        "sha256": "3064490893b1fac4a2945b5b90bec89efbfdf1bea97e0b557550950d7dae63ad"}
+        "version": "cogs.stage2-retired-revisions/v4",
+        "sha256": "588468079ddcc6161a8cbc2bacc84d3cca2aac6e03a0325e2af72d846c9efa5d"}
     assert policy["revisions"]["9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e"] == "ADR0348"
     assert policy["runs"]["34831612221"] == "ADR0348"
     assert policy["revisions"]["5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c"] == "ADR0353"
@@ -74,9 +74,17 @@ with tempfile.TemporaryDirectory() as directory:
     assert policy["runs"]["35685410662"] == "ADR0357"
     assert policy["artifacts"]["10678755703"] == "ADR0357"
     assert policy["artifacts"]["10677874983"] == "ADR0357"
+    assert policy["revisions"]["306727e28ed8b0257d84b7c6fdfd6ba1fde5a22c"] == "ADR0360"
+    assert policy["revisions"]["21848f84f01d42f28ce2f6f2a177bfe62af8fc58"] == "ADR0360"
+    assert policy["runs"]["35716917245"] == "ADR0360"
+    assert policy["runs"]["35732877526"] == "ADR0360"
+    assert policy["runs"]["35733919360"] == "ADR0360"
+    assert policy["artifacts"]["10690851656"] == "ADR0360"
+    assert policy["artifacts"]["10696531175"] == "ADR0360"
     assert retirement["POLICY_V1"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v1.json").read_bytes()
     assert retirement["POLICY_V2"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v2.json").read_bytes()
     assert retirement["POLICY_V3"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v3.json").read_bytes()
+    assert retirement["POLICY_V4"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v4.json").read_bytes()
     changed = copy.deepcopy(policy); changed["predecessor"]["sha256"] = "0" * 64
     bad.append(json.dumps(changed).encode())
     for group in ("revisions", "runs", "artifacts"):
@@ -107,7 +115,9 @@ mirror_suffix = ("9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e|34831612221|"
                  "d98571b9f2be446ed478464d23df532d91b94e53|431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33|"
                  "17380562a9fb9f7d08bea0269a9fdc5812b1faf7|35638724656|35670440520|35670986936|"
                  "35684568600|35685410662|10658466954|10670334621|10670965964|10678755703|"
-                 "10677962970|10678201915|10678118928|10677629335|10678169602|10677874983)")
+                 "10677962970|10678201915|10678118928|10677629335|10678169602|10677874983|"
+                 "306727e28ed8b0257d84b7c6fdfd6ba1fde5a22c|21848f84f01d42f28ce2f6f2a177bfe62af8fc58|"
+                 "35716917245|35732877526|35733919360|10690851656|10696531175)")
 mirrors = [path for path in (ROOT / ".github/workflows").glob("*.yml")
            if mirror_suffix in path.read_text()]
 assert len(mirrors) == 12

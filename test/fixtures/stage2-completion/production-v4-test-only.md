@@ -5,11 +5,11 @@ Status: pass-only rendering of validated, redacted completion evidence.
 ## Batch
 
 - Implementation revision: `1111111111111111111111111111111111111111`
-- Batch commitment: `fcf06aba664063d7ceabc4ebf81ab7006ac2e739c9dfa19124a8f4cf4d283c4a`
+- Batch commitment: `1756160d8e72955b899d34111dee4d15a37b7de961f9c2d624847a14c7eff598`
 - Cycles: 7 (one full, six readiness)
 - Fixed handoff boundary: after cycle 3
 - Continuation artifact digest: `sha256:8888888888888888888888888888888888888888888888888888888888888888`
-- Handoff authentication commitment: `aa17f503f342f49ba2dd207144da529eaacd437b40f0157195ba84090fea8afc`
+- Handoff authentication commitment: `9a82d48e2b46f1e34c010e4bf0f77fade867e12ff0ebdcf58185b8ef51ccea06`
 
 ## Measurements
 
@@ -30,7 +30,7 @@ Status: pass-only rendering of validated, redacted completion evidence.
 
 - State-bound destroy attempts: 7
 - Detailed inventory observations: 8
-- Final zero commitment: `feadfa1c04a66bb5de7ee83402759e725e0ff6aaffdddba33c3c32fdae11bf8c`
+- Final zero commitment: `7f62311206837f5a598d5ea3700918780cac4b8af8dc253104bacae155abab7d`
 - Aggregate cost: 7 micro-USD
 
 ## Limitations

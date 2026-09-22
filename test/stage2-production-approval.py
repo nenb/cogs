@@ -34,6 +34,10 @@ def load(name, path):
 def d(value): return hashlib.sha256(value.encode()).hexdigest()
 def canonical(value): return production._canonical(value) + b"\n"
 def sha(value): return hashlib.sha256(canonical(value)).hexdigest()
+RUNNER_IMAGE = {"version": "cogs.github-hosted-runner-image/v1", "image_label": "ubuntu-24.04",
+    "image_os": "ubuntu24", "image_version": "20260920.314.1",
+    "release_tag": "ubuntu24/20260920.314", "release_id": 392922326,
+    "release_commit": "e75633902841aa5479c759492b73409e6d317f12"}
 
 
 def bind_grants(package):
@@ -52,9 +56,9 @@ def bind_grants(package):
 
 
 def qualification_package(bindings, control_sha256):
-    """Complete synthetic v5 projection for the planner's fake command fixture."""
+    """Complete synthetic v6 projection for the planner's fake command fixture."""
     package = {
-        "version": "cogs.stage2-pre-aws-qualification-package/v5",
+        "version": "cogs.stage2-pre-aws-qualification-package/v6",
         "authority": "non-aws-prerequisite-evidence-only",
         "implementation_revision": bindings["source_head"], "control_revision": "2" * 40,
         "qualification_revision": "3" * 40,
@@ -75,9 +79,10 @@ def qualification_package(bindings, control_sha256):
             "artifacts": []},
         "mixed_preflight_run_id": 63,
         "static_control_observation": {"run_id": 61, "artifact_id": 62,
-            "artifact_archive_digest": "sha256:" + d("static-archive")},
+            "artifact_archive_digest": "sha256:" + d("static-archive"),
+            "runner_image": copy.deepcopy(RUNNER_IMAGE)},
         "cycles": [],
-        "predecessor_versions": [f"cogs.stage2-pre-aws-qualification-package/v{i}" for i in range(1, 5)],
+        "predecessor_versions": [f"cogs.stage2-pre-aws-qualification-package/v{i}" for i in range(1, 6)],
         "claims": {"formal_non_aws_qualification_passed": True, "aws_authorized": False,
             "aws_executed": False, "provider_executed": False, "promotion_authorized": False},
     }
@@ -90,6 +95,7 @@ def qualification_package(bindings, control_sha256):
             "receipt_sha256": d(f"receipt-{ordinal}"), "status_sha256": d(f"status-{ordinal}"),
             "artifact_name": name, "artifact_id": artifact["artifact_id"],
             "artifact_archive_digest": artifact["archive_digest"],
+            "runner_image": copy.deepcopy(RUNNER_IMAGE),
             "identities": {"host_boot_id": f"0000000{ordinal}-0000-4000-8000-00000000000{ordinal}",
                 **{role: d(f"{role}-{ordinal}") for role in (
                     "operation", "rootfs", "runtime", "client_key", "host_key")}}})
@@ -150,7 +156,7 @@ def hostile_packages(package):
         if grants: bind_grants(candidate)
         candidate["cycle_artifact_custody_sha256"] = sha(candidate["cycle_artifact_custody"])
         return label, candidate
-    for version in range(1, 5):
+    for version in range(1, 6):
         yield mutate(f"package-v{version}", lambda p: p.update(
             version=f"cogs.stage2-pre-aws-qualification-package/v{version}"))
     for field in ("workflow_sha256", "result_schema_sha256"):
@@ -179,6 +185,13 @@ def hostile_packages(package):
     yield mutate("retired-custody-run", lambda p: p["cycle_artifact_custody"]["workflow_run"].update(
         id=34302034014), True)
     yield mutate("reused-run", lambda p: p.update(mixed_preflight_run_id=p["static_control_observation"]["run_id"]))
+    for location in (lambda p: p["static_control_observation"]["runner_image"],
+                     lambda p: p["cycles"][0]["runner_image"]):
+        for field, value in (("image_os", "ubuntu22"), ("image_version", "weekly"),
+                             ("release_tag", "ubuntu24/other"), ("release_id", True),
+                             ("release_commit", "4" * 39)):
+            yield mutate("runner-image-" + field, lambda p, location=location, field=field, value=value:
+                         location(p).update({field: value}))
     for field in ("cycle_count", "workload_measurements", "mixed_preflight_run_id"):
         yield mutate("type-" + field, lambda p: p.update({field: True}))
     for field in ("grant_commitment", "receipt_sha256", "status_sha256"):

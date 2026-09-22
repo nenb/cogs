@@ -167,14 +167,14 @@ test("production approval issuance is canonical, provider-free, signed, and firs
   assert.match(workflow, /timeout-minutes: 30/u);
   assert.match(workflow, /\.size_in_bytes > 7000000000 and \.size_in_bytes < 8000000000/u);
   assert.match(signer, /cosign\/cosign@sha256:/u);
-  const copy = workflow.indexOf('install -m 0600 "$RUNNER_TEMP/planning/pre-aws-package-v5.json"');
-  const digest = workflow.indexOf('sha256sum "$out/pre-aws-package-v5.json"', copy);
+  const copy = workflow.indexOf('install -m 0600 "$RUNNER_TEMP/planning/pre-aws-package-v6.json"');
+  const digest = workflow.indexOf('sha256sum "$out/pre-aws-package-v6.json"', copy);
   const authenticate = workflow.indexOf("scripts/stage2-production-approval.py authenticate");
   const signerCall = workflow.indexOf('scripts/stage2-cosign-keyless-sign.sh "$out" "$identity"');
   assert.ok(copy >= 0 && digest > copy && authenticate > digest && signerCall > authenticate);
   assert.match(
     workflow,
-    /install -m 0600 "\$RUNNER_TEMP\/planning\/pre-aws-package-v5\.json" \\\n\s+"\$out\/pre-aws-package-v5\.json"/u,
+    /install -m 0600 "\$RUNNER_TEMP\/planning\/pre-aws-package-v6\.json" \\\n\s+"\$out\/pre-aws-package-v6\.json"/u,
   );
   assert.match(workflow.slice(copy, authenticate), /\.pre_aws_package_sha256/u);
   assert.match(workflow, /path: \$\{\{ runner.temp \}\}\/approval/u);

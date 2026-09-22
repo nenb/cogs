@@ -280,7 +280,7 @@ def main(arguments):
     package_raw, package = read(arguments[0]); control_raw, control = read(arguments[1])
     descriptor_raw, descriptor = read(arguments[2], 8192)
     tofu = Path(arguments[3]); output = Path(arguments[4])
-    require(package.get("version") == "cogs.stage2-pre-aws-qualification-package/v5"
+    require(package.get("version") == "cogs.stage2-pre-aws-qualification-package/v6"
             and package.get("authority") == "non-aws-prerequisite-evidence-only"
             and package.get("cycle_count") == 7 and package.get("workload_measurements") == 21
             and package.get("claims", {}).get("formal_non_aws_qualification_passed") is True

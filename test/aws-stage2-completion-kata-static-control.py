@@ -223,26 +223,38 @@ def values(manifest_digest="1" * 64):
     return source_implementation(), runtime, package, contracts
 
 
+runner_image = {"version": "cogs.github-hosted-runner-image/v1", "image_label": "ubuntu-24.04",
+                "image_os": "ubuntu24", "image_version": "20260920.314.1",
+                "release_tag": "ubuntu24/20260920.314", "release_id": 392922326,
+                "release_commit": "e75633902841aa5479c759492b73409e6d317f12"}
 implementation, runtime, package, contracts = values()
 first_control, first_members = preparation.build_control_bytes(
     implementation, runtime, package,
     "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
-    contracts, "2" * 40, prebuilt_custody())
+    contracts, "2" * 40, prebuilt_custody(), runner_image)
 second_control, second_members = preparation.build_control_bytes(
     copy.deepcopy(implementation), copy.deepcopy(runtime), copy.deepcopy(package),
     "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
-    copy.deepcopy(contracts), "2" * 40, copy.deepcopy(prebuilt_custody()))
+    copy.deepcopy(contracts), "2" * 40, copy.deepcopy(prebuilt_custody()), copy.deepcopy(runner_image))
 assert first_control == second_control and first_members == second_members
 control = preparation.load_control(first_control)
 envelope, runtime_description, loaded_contracts = preparation.validate_control_members(control, first_members)
 assert set(loaded_contracts) == {row[0] for row in preparation.EXECUTABLES}
+assert envelope.value["runner_image"] == runner_image
+for field, value in (("image_os", "ubuntu22"), ("image_version", "weekly"),
+                     ("release_tag", "ubuntu24/other"), ("release_id", True),
+                     ("release_commit", "4" * 39)):
+    hostile = copy.deepcopy(envelope.value); hostile["runner_image"][field] = value
+    reject(lambda hostile=hostile: preparation.validate_envelope_value(hostile))
+hostile = copy.deepcopy(envelope.value); del hostile["runner_image"]
+reject(lambda: preparation.validate_envelope_value(hostile))
 # A valid envelope from a distinct descriptor generation cannot be paired with
 # another valid runtime merely by rewriting its runtime-member commitment.
 other_implementation, other_runtime, other_package, other_contracts = values("3" * 64)
 _other_control, other_members = preparation.build_control_bytes(
     other_implementation, other_runtime, other_package,
     "8bb789127187f3687d1452a4690c4b700fd99ad9e9c97469b726541fad972506",
-    other_contracts, "2" * 40, prebuilt_custody("3" * 64))
+    other_contracts, "2" * 40, prebuilt_custody("3" * 64), runner_image)
 mixed_members = dict(first_members)
 mixed_envelope = json.loads(other_members[preparation.ENVELOPE_MEMBER])
 mixed_envelope["runtime"]["manifest_sha256"] = sha(first_members[preparation.RUNTIME_MEMBER])
@@ -516,4 +528,4 @@ if sys.argv[1:] == ["--samples"]:
 elif sys.argv[1:]:
     raise AssertionError("unexpected arguments")
 else:
-    print("static V3 control/no-KVM admission hostile matrix passed")
+    print("static V4 control/no-KVM admission hostile matrix passed")

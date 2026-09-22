@@ -18,9 +18,9 @@ CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
 Q_BINDING_ADAPTER = "scripts/stage2-prebuilt-local-qualification-guard.py"
 G_RETIREMENT_CONSUMERS = {
     ".github/workflows/stage2-prebuilt-local-kata-qualification.yml":
-        "0f9018ba6e8342b27b63d80a3095414594d5c47a9f5a119ff2ddba00f830a48c",
+        "e8060741fbd3bf70ffc95ae786db5bb953adf031a0bce5e025db1a1c4f3aff42",
     "scripts/stage2-revision-retirement.py":
-        "b0cfc1774f7658215b9e0bd4ac54ed0ce1b2f99d1b59ec915e5498679b5d9c37",
+        "da1789c2c59f4647676beed83357afdc936f2a2fb9c2dd2778bfa63fe54cb963",
 }
 REQUIRED_CONSUMERS = frozenset({
     ".github/workflows/stage2-prebuilt-local-kata-qualification.yml",
@@ -36,9 +36,9 @@ REQUIRED_CONSUMERS = frozenset({
     "deploy/aws-feasibility/remote/completion_formal_cycle_full.py",
     "deploy/aws-feasibility/remote/completion_formal_cycle_readiness.py",
     "schemas/stage2-formal-local-cycle-receipt-v2.json",
-    "schemas/stage2-formal-local-cycle-status-v2.json",
+    "schemas/stage2-formal-local-cycle-status-v3.json",
     "schemas/stage2-formal-local-artifact-custody-v2.json",
-    "schemas/stage2-pre-aws-qualification-package-v5.json",
+    "schemas/stage2-pre-aws-qualification-package-v6.json",
 })
 REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification.yml"
@@ -48,7 +48,7 @@ REVIEWED_IMPLEMENTATION_HEAD = "d98571b9f2be446ed478464d23df532d91b94e53"
 REVIEWED_CONTROL_HEAD = "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33"
 REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "de3adf761aac2a4b7ff33b6064814fe86c2fccd04bd4c3020ce2e7b469e13a3b"
 REVIEWED_CONTROL_SHA256 = "06f7446c88f72741a3598aa3a15e990690f87b3180529d66cffbfc0add2eebad"
-REVIEWED_WORKFLOW_SHA256 = "0f9018ba6e8342b27b63d80a3095414594d5c47a9f5a119ff2ddba00f830a48c"
+REVIEWED_WORKFLOW_SHA256 = "e8060741fbd3bf70ffc95ae786db5bb953adf031a0bce5e025db1a1c4f3aff42"
 # Self-contained formal receipt v2 contract, not the ordinary local report schema.
 REVIEWED_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 # No dispatch value can supply the independently reviewed static custody.
@@ -73,7 +73,7 @@ MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
 # Bootstrap veto code must be authenticated before it executes, even when v6
 # does not exist yet. This is a source seal, not successor H/G/Q authority.
-RETIREMENT_SOURCE_SHA256 = "b0cfc1774f7658215b9e0bd4ac54ed0ce1b2f99d1b59ec915e5498679b5d9c37"
+RETIREMENT_SOURCE_SHA256 = "da1789c2c59f4647676beed83357afdc936f2a2fb9c2dd2778bfa63fe54cb963"
 
 
 class GuardError(Exception):
@@ -160,7 +160,7 @@ def _authenticate_control():
              and control["producer"]["source_manifest_sha256"] == implementation["source_manifest_sha256"]
              == REVIEWED_IMPLEMENTATION_MANIFEST_SHA256, "reviewed implementation differs")
     held = {}
-    for kind, name in (("envelope", "stage2-local-execution-envelope-v3.json"),
+    for kind, name in (("envelope", "stage2-local-execution-envelope-v4.json"),
                        ("runtime-manifest", "stage2-local-runtime-manifest-v3.json")):
         rows = [row for row in control["members"] if row["kind"] == kind]
         _require(len(rows) == 1 and rows[0]["name"] == name, "control member differs")
@@ -170,7 +170,18 @@ def _authenticate_control():
         value = _json(member_raw); _require(_canonical(value) == member_raw)
         held[kind] = (value, _sha(member_raw))
     envelope, _ = held["envelope"]; runtime, runtime_sha = held["runtime-manifest"]
-    _require(envelope["version"] == "cogs.stage2-local-execution-envelope/v3"
+    image = envelope.get("runner_image")
+    image_version = image.get("image_version") if type(image) is dict else None
+    _require(type(image) is dict and set(image) == {"version", "image_label", "image_os",
+             "image_version", "release_tag", "release_id", "release_commit"}
+             and image["version"] == "cogs.github-hosted-runner-image/v1"
+             and image["image_label"] == "ubuntu-24.04" and image["image_os"] == "ubuntu24"
+             and type(image_version) is str and re.fullmatch(r"[0-9]{8}\.[0-9]+\.[0-9]+", image_version)
+             and image["release_tag"] == "ubuntu24/" + image_version.rsplit(".", 1)[0]
+             and type(image["release_id"]) is int and 0 < image["release_id"] <= 9_007_199_254_740_991
+             and type(image["release_commit"]) is str and SHA1.fullmatch(image["release_commit"]),
+             "runner image identity differs")
+    _require(envelope["version"] == "cogs.stage2-local-execution-envelope/v4"
              and runtime["version"] == "cogs.stage2-local-runtime-manifest/v3"
              and envelope["control_revision"] == REVIEWED_CONTROL_HEAD
              and envelope["implementation"] == implementation

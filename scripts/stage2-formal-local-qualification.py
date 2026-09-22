@@ -20,12 +20,12 @@ FORMAL_MODULE = ROOT / "deploy/aws-feasibility/remote/completion_formal_cycle_au
 RESULT_SCHEMA = ROOT / "schemas/stage2-formal-local-cycle-receipt-v2.json"
 CONTROL_PACKAGE = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v7"
 CONTROL_MEMBER = "stage2-local-static-control-v2.json"
-ENVELOPE_MEMBER = "stage2-local-execution-envelope-v3.json"
+ENVELOPE_MEMBER = "stage2-local-execution-envelope-v4.json"
 RUNTIME_MEMBER = "stage2-local-runtime-manifest-v3.json"
 MAX_CONTROL_BYTES = 4 * 1024 * 1024
 MAX_RECEIPT_BYTES, MAX_STATUS_BYTES = 96 * 1024, 8 * 1024
 MAX_CUSTODY_BYTES, MAX_API_BYTES = 16 * 1024, 1024 * 1024
-PACKAGE_MEMBERS = {"pre-aws-package-v5.json": 96 * 1024,
+PACKAGE_MEMBERS = {"pre-aws-package-v6.json": 96 * 1024,
                    "cycle-artifact-custody-v2.json": MAX_CUSTODY_BYTES}
 CYCLE_PUBLICATION_ROOT = Path("/var/tmp")
 AUTHORITY = "non-cloud-formal-qualification-cycle-only"
@@ -54,6 +54,8 @@ NETWORK_MARKERS = ["route-baseline-no-default", "direct-tcp-denied", "direct-udp
 WORKLOAD_DIGESTS = {"GIT": "73ccf2bce069d96d1dbd7e927e0fbd9205dcedfdb4a8ff104eb29e3f3e9e0b7c",
     "BUILD": "08702b0d8605121987d29dd7e4941e87f0063776f20229e14c57529fd7d4ddcf",
     "INSTALL": "78aa672b7bd34a21fdd70d9adc2beb1693be06c8ad910db359456f8e5e57d7b2"}
+RUNNER_IMAGE_KEYS = {"version", "image_label", "image_os", "image_version",
+    "release_tag", "release_id", "release_commit"}
 SOURCE_KEYS = {"source_head", "source_manifest_sha256", "host_attestation_sha256",
     "runtime_manifest_sha256", "rootfs_sha256", "rootfs_descriptor_sha256",
     "rootfs_package_manifest_sha256", "rootfs_provenance_sha256",
@@ -138,6 +140,30 @@ def upload_digest(value):
     return value
 def exact_keys(value, names, code="validation.failed"):
     require(type(value) is dict and set(value) == set(names), code)
+def runner_image(value):
+    exact_keys(value, RUNNER_IMAGE_KEYS)
+    version = value.get("image_version")
+    require(value.get("version") == "cogs.github-hosted-runner-image/v1"
+            and value.get("image_label") == "ubuntu-24.04" and value.get("image_os") == "ubuntu24"
+            and type(version) is str and re.fullmatch(r"[0-9]{8}\.[0-9]+\.[0-9]+", version)
+            and value.get("release_tag") == "ubuntu24/" + version.rsplit(".", 1)[0]
+            and type(value.get("release_id")) is int
+            and 0 < value["release_id"] <= SAFE_INTEGER
+            and type(value.get("release_commit")) is str
+            and SHA1.fullmatch(value["release_commit"]) is not None,
+            "runner image identity differs")
+    return value
+def runner_image_from_environment(environ=os.environ):
+    try:
+        release_id = int(environ.get("COGS_RUNNER_IMAGE_RELEASE_ID", "0"))
+    except ValueError as error:
+        raise FormalQualificationError("runner image identity differs") from error
+    return runner_image({"version": "cogs.github-hosted-runner-image/v1",
+        "image_label": "ubuntu-24.04", "image_os": environ.get("ImageOS", ""),
+        "image_version": environ.get("ImageVersion", ""),
+        "release_tag": environ.get("COGS_RUNNER_IMAGE_RELEASE_TAG", ""),
+        "release_id": release_id,
+        "release_commit": environ.get("COGS_RUNNER_IMAGE_RELEASE_COMMIT", "")})
 def load_authority(path=FORMAL_MODULE):
     spec = importlib.util.spec_from_file_location("stage2_formal_cycle_authority_workflow", path)
     require(spec is not None and spec.loader is not None)
@@ -195,7 +221,7 @@ def validate_grant(value, expected=None, ordinal=None, authority=None):
         wanted = issue_grant(grant.ordinal, expected, authority)
         require(grant == wanted, "grant does not bind exact batch, ordinal, H, and G")
     return grant
-def authenticated_source_bindings(grant):
+def authenticated_control(grant):
     """Recompute all static fields from authenticated control, not batch consensus.
 
     Fixed member names are intentional: no receipt/dispatch supplied paths or
@@ -222,13 +248,14 @@ def authenticated_source_bindings(grant):
     require(envelope["implementation"] == control["implementation"]
             and envelope["runtime"]["manifest_sha256"] == runtime_sha256,
             "control.authentication")
+    image = runner_image(envelope.get("runner_image"))
     base = envelope["result_binding_base"]
     exact_keys(base, SOURCE_KEYS - {"host_attestation_sha256", "runtime_manifest_sha256"},
                "control.authentication")
     executables = runtime["executables"]
     require(type(executables) is list and len(executables) >= 5, "control.authentication")
-    return {**base, "host_attestation_sha256": hashlib.sha256(canonical(executables[:5])).hexdigest(),
-            "runtime_manifest_sha256": runtime_sha256}
+    return ({**base, "host_attestation_sha256": hashlib.sha256(canonical(executables[:5])).hexdigest(),
+             "runtime_manifest_sha256": runtime_sha256}, image)
 
 def validate_receipt(raw, expected=None, ordinal=None):
     value = decode(raw, MAX_RECEIPT_BYTES)
@@ -263,7 +290,7 @@ def validate_receipt(raw, expected=None, ordinal=None):
     require(all(type(item) is int and item == 1 for item in value["lifecycle_objects"].values()))
     bindings = value["source_bindings"]
     exact_keys(bindings, SOURCE_KEYS, "receipt.source_bindings.keyset")
-    require(bindings == authenticated_source_bindings(grant),
+    require(bindings == authenticated_control(grant)[0],
             "receipt.source_bindings.authentication")
     require(bindings["source_head"] == grant.implementation_revision
             and bindings["source_manifest_sha256"] == grant.source_manifest_sha256
@@ -352,10 +379,11 @@ def validate_receipt(raw, expected=None, ordinal=None):
                 and identity[6] == qmp["kvm_device"] and identity[7] == qmp["kvm_inode"]
                 and identity[8] == qmp["kvm_rdev"] and identity[9] == 12)
     return value, grant, measurements
-def status_value(receipt_raw, expected, ordinal, artifact_name):
+def status_value(receipt_raw, expected, ordinal, artifact_name, image):
     receipt, grant, measurements = validate_receipt(receipt_raw, expected, ordinal)
-    return {"version": "cogs.stage2-formal-local-cycle-status/v2", "authority": STATUS_AUTHORITY,
+    return {"version": "cogs.stage2-formal-local-cycle-status/v3", "authority": STATUS_AUTHORITY,
         "batch_commitment": grant.batch_commitment, "ordinal": ordinal, "mode": grant.mode,
+        "runner_image": runner_image(image),
         "grant_commitment": grant.grant_commitment,
         "qualification_revision": expected["EXPECTED_QUALIFICATION_HEAD"],
         "workflow_run": {"id": grant.workflow_run_id, "attempt": 1},
@@ -374,7 +402,8 @@ def status_value(receipt_raw, expected, ordinal, artifact_name):
 def validate_status(raw, receipt_raw, expected, ordinal):
     value = decode(raw, MAX_STATUS_BYTES)
     artifact = f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1"
-    require(raw == canonical(status_value(receipt_raw, expected, ordinal, artifact)),
+    require(raw == canonical(status_value(receipt_raw, expected, ordinal, artifact,
+                                          runner_image(value.get("runner_image")))),
             "cycle status differs")
     return value
 def expected_artifact_name(expected, ordinal):
@@ -495,7 +524,8 @@ def publish(staging, expected, ordinal, runner_uid):
         validate_receipt(receipt_raw, expected, ordinal)
         artifact = (f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-"
                     f"{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1")
-        status_raw = canonical(status_value(receipt_raw, expected, ordinal, artifact))
+        status_raw = canonical(status_value(receipt_raw, expected, ordinal, artifact,
+                                            runner_image_from_environment()))
         os.fchown(directory, 0, 0); os.fchmod(directory, 0o700)
         for name, raw in (("receipt.json", receipt_raw), ("status.json", status_raw)):
             descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
@@ -587,7 +617,7 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
             "artifact_name": status["artifact_name"],
             "artifact_id": artifact["artifact_id"],
             "artifact_archive_digest": artifact["archive_digest"],
-            "identities": status["identities"]})
+            "runner_image": status["runner_image"], "identities": status["identities"]})
     require(len(batches) == 1 and total == 21
             and len(runtimes) == len(live_mappings) == len(pre_ssh_facts) == 7
             and len(post_ssh_facts) == 6
@@ -597,7 +627,8 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
             and len(identity_sets["client_key"] | identity_sets["host_key"]) == 14,
             "batch cardinality, mode, measurement, or cross-role identity differs")
     require(shared_bindings is not None)
-    return canonical({"version": "cogs.stage2-pre-aws-qualification-package/v5",
+    static_runner_image = authenticated_control(_grant)[1]
+    return canonical({"version": "cogs.stage2-pre-aws-qualification-package/v6",
         "authority": PACKAGE_AUTHORITY,
         "implementation_revision": expected["EXPECTED_IMPLEMENTATION_HEAD"],
         "control_revision": expected["EXPECTED_CONTROL_HEAD"],
@@ -616,6 +647,7 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
             "run_id": int(expected["EXPECTED_STATIC_CONTROL_RUN_ID"]),
             "artifact_id": int(expected["EXPECTED_STATIC_CONTROL_ARTIFACT_ID"]),
             "artifact_archive_digest": expected["EXPECTED_STATIC_CONTROL_ARTIFACT_DIGEST"],
+            "runner_image": static_runner_image,
         },
         "cycle_artifact_custody_sha256": hashlib.sha256(custody_raw).hexdigest(),
         "batch_commitment": next(iter(batches)), "cycle_count": 7,
@@ -623,7 +655,8 @@ def aggregate(root, custody_raw, expected, cycle_job_result="success"):
         "predecessor_versions": ["cogs.stage2-pre-aws-qualification-package/v1",
                                  "cogs.stage2-pre-aws-qualification-package/v2",
                                  "cogs.stage2-pre-aws-qualification-package/v3",
-                                 "cogs.stage2-pre-aws-qualification-package/v4"],
+                                 "cogs.stage2-pre-aws-qualification-package/v4",
+                                 "cogs.stage2-pre-aws-qualification-package/v5"],
         "claims": {"formal_non_aws_qualification_passed": True, "aws_authorized": False,
                    "aws_executed": False, "provider_executed": False,
                    "promotion_authorized": False}})
@@ -632,9 +665,9 @@ def package_members(directory):
     require(set(os.listdir(directory)) == set(PACKAGE_MEMBERS), "package inventory differs")
     members = {name: read_regular(name, maximum, directory)
                for name, maximum in PACKAGE_MEMBERS.items()}
-    package = decode(members["pre-aws-package-v5.json"], PACKAGE_MEMBERS["pre-aws-package-v5.json"])
+    package = decode(members["pre-aws-package-v6.json"], PACKAGE_MEMBERS["pre-aws-package-v6.json"])
     custody_raw = members["cycle-artifact-custody-v2.json"]
-    require(package["version"] == "cogs.stage2-pre-aws-qualification-package/v5"
+    require(package["version"] == "cogs.stage2-pre-aws-qualification-package/v6"
             and canonical(package["cycle_artifact_custody"]) == custody_raw
             and package["cycle_artifact_custody_sha256"] == hashlib.sha256(custody_raw).hexdigest())
     require(set(os.listdir(directory)) == set(PACKAGE_MEMBERS), "package inventory changed")
@@ -647,7 +680,7 @@ def publish_package(staging, root, custody_raw, expected, cycle_job_result):
     publication after an uncertain fsync. No shell-created output is accepted.
     """
     raw = aggregate(root, custody_raw, expected, cycle_job_result)
-    members = {"pre-aws-package-v5.json": raw, "cycle-artifact-custody-v2.json": custody_raw}
+    members = {"pre-aws-package-v6.json": raw, "cycle-artifact-custody-v2.json": custody_raw}
     for name, value in members.items(): decode(value, PACKAGE_MEMBERS[name])
     staging = Path(staging)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC

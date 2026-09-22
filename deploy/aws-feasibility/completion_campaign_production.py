@@ -370,8 +370,8 @@ class RemoteSourceBindings:
             if name != "source_head": _digest(item)
 
 
-QUALIFICATION_PACKAGE_VERSION = "cogs.stage2-pre-aws-qualification-package/v5"
-QUALIFICATION_PACKAGE_NAME = "pre-aws-package-v5.json"
+QUALIFICATION_PACKAGE_VERSION = "cogs.stage2-pre-aws-qualification-package/v6"
+QUALIFICATION_PACKAGE_NAME = "pre-aws-package-v6.json"
 QUALIFICATION_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 _QUALIFICATION_ROOT = Path(__file__).resolve().parents[2]
 
@@ -389,8 +389,23 @@ def _qualification_archive(value):
              ProductionApprovalError)
 
 
+def _qualification_runner_image(value):
+    _qualification_keys(value, ("version", "image_label", "image_os", "image_version",
+                                "release_tag", "release_id", "release_commit"))
+    version = value.get("image_version")
+    _require(value.get("version") == "cogs.github-hosted-runner-image/v1"
+             and value.get("image_label") == "ubuntu-24.04" and value.get("image_os") == "ubuntu24"
+             and type(version) is str and re.fullmatch(r"[0-9]{8}\.[0-9]+\.[0-9]+", version)
+             and value.get("release_tag") == "ubuntu24/" + version.rsplit(".", 1)[0]
+             and type(value.get("release_id")) is int
+             and 0 < value["release_id"] <= 9_007_199_254_740_991,
+             ProductionApprovalError)
+    _sha1(value.get("release_commit"))
+    return value
+
+
 def qualification_source_bindings(package):
-    """Strict, provider-free validation of the complete current v5 prerequisite.
+    """Strict, provider-free validation of the complete current v6 prerequisite.
 
     Only fixed local policy/contract files are read. Recompute every commitment
     represented by this projection; receipt/status/archive bytes themselves are
@@ -442,7 +457,7 @@ def qualification_source_bindings(package):
                  "fixture_commitment", "cycle_artifact_custody_sha256", "batch_commitment"):
         _digest(package[name])
     _require(type(package["predecessor_versions"]) is list and package["predecessor_versions"] == [
-        f"cogs.stage2-pre-aws-qualification-package/v{version}" for version in range(1, 5)],
+        f"cogs.stage2-pre-aws-qualification-package/v{version}" for version in range(1, 6)],
         ProductionApprovalError)
     try:
         workflow_raw = (_QUALIFICATION_ROOT /
@@ -466,7 +481,9 @@ def qualification_source_bindings(package):
     _require(type(run["attempt"]) is int and run["attempt"] == 1
              and run["head_sha"] == revisions[2], ProductionApprovalError)
     observation = package["static_control_observation"]
-    _qualification_keys(observation, ("run_id", "artifact_id", "artifact_archive_digest"))
+    _qualification_keys(observation, ("run_id", "artifact_id", "artifact_archive_digest",
+                                      "runner_image"))
+    _qualification_runner_image(observation["runner_image"])
     _qualification_positive(observation["run_id"])
     _qualification_positive(observation["artifact_id"])
     _qualification_positive(package["mixed_preflight_run_id"])
@@ -495,7 +512,9 @@ def qualification_source_bindings(package):
     receipt_hashes, status_hashes, grants = set(), set(), set()
     for ordinal, (cycle, artifact) in enumerate(zip(package["cycles"], custody["artifacts"]), 1):
         _qualification_keys(cycle, ("ordinal", "mode", "grant_commitment", "receipt_sha256",
-            "status_sha256", "artifact_name", "artifact_id", "artifact_archive_digest", "identities"))
+            "status_sha256", "artifact_name", "artifact_id", "artifact_archive_digest",
+            "runner_image", "identities"))
+        _qualification_runner_image(cycle["runner_image"])
         _qualification_keys(artifact, ("ordinal", "name", "artifact_id", "archive_digest"))
         name = f"stage2-formal-cycle-{ordinal}-{revisions[0]}-{revisions[1]}-{run['id']}-1"
         _require(type(cycle["ordinal"]) is type(artifact["ordinal"]) is int

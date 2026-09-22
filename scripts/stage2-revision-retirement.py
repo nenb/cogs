@@ -11,10 +11,12 @@ import sys
 POLICY_V1 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v1.json"
 POLICY_V2 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v2.json"
 POLICY_V3 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v3.json"
-POLICY = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v4.json"
+POLICY_V4 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v4.json"
+POLICY = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v5.json"
 POLICY_V1_SHA256 = "2fe7b704438d9e3f7493ee8be43760ac9f213d095d5411bee137126bc72153b5"
 POLICY_V2_SHA256 = "035e8c9dc9a8f2a78d1e4360aaf43cde41329771abe222ec7035bfb39dc14c6b"
 POLICY_V3_SHA256 = "3064490893b1fac4a2945b5b90bec89efbfdf1bea97e0b557550950d7dae63ad"
+POLICY_V4_SHA256 = "588468079ddcc6161a8cbc2bacc84d3cca2aac6e03a0325e2af72d846c9efa5d"
 REVISIONS_V1 = {
     "c30e0d69ec374cd812ff361e670e974d51b661c4": "ADR0330",
     "15d99b55f4910df94decdd7edcc80bf95aee492d": "ADR0330",
@@ -77,18 +79,24 @@ REVISIONS_V3 = {**REVISIONS_V2,
 RUNS_V3 = {**RUNS_V2, "35562735335": "ADR0353", "35572729553": "ADR0353",
            "35573039122": "ADR0353"}
 ARTIFACTS_V3 = {**ARTIFACTS_V2, "10622494382": "ADR0353", "10627325100": "ADR0353"}
-REVISIONS = {**REVISIONS_V3,
-             "d98571b9f2be446ed478464d23df532d91b94e53": "ADR0357",
-             "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33": "ADR0357",
-             "17380562a9fb9f7d08bea0269a9fdc5812b1faf7": "ADR0357"}
-RUNS = {**RUNS_V3, "35638724656": "ADR0357", "35670440520": "ADR0357",
-        "35670986936": "ADR0357", "35684568600": "ADR0357",
-        "35685410662": "ADR0357"}
-ARTIFACTS = {**ARTIFACTS_V3,
-             **{value: "ADR0357" for value in (
-                 "10658466954", "10670334621", "10670965964", "10678755703",
-                 "10677962970", "10678201915", "10678118928", "10677629335",
-                 "10678169602", "10677874983")}}
+REVISIONS_V4 = {**REVISIONS_V3,
+                "d98571b9f2be446ed478464d23df532d91b94e53": "ADR0357",
+                "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33": "ADR0357",
+                "17380562a9fb9f7d08bea0269a9fdc5812b1faf7": "ADR0357"}
+RUNS_V4 = {**RUNS_V3, "35638724656": "ADR0357", "35670440520": "ADR0357",
+           "35670986936": "ADR0357", "35684568600": "ADR0357",
+           "35685410662": "ADR0357"}
+ARTIFACTS_V4 = {**ARTIFACTS_V3,
+                **{value: "ADR0357" for value in (
+                    "10658466954", "10670334621", "10670965964", "10678755703",
+                    "10677962970", "10678201915", "10678118928", "10677629335",
+                    "10678169602", "10677874983")}}
+REVISIONS = {**REVISIONS_V4,
+             "306727e28ed8b0257d84b7c6fdfd6ba1fde5a22c": "ADR0360",
+             "21848f84f01d42f28ce2f6f2a177bfe62af8fc58": "ADR0360"}
+RUNS = {**RUNS_V4, "35716917245": "ADR0360", "35732877526": "ADR0360",
+        "35733919360": "ADR0360"}
+ARTIFACTS = {**ARTIFACTS_V4, "10690851656": "ADR0360", "10696531175": "ADR0360"}
 
 class RetirementError(ValueError):
     pass
@@ -144,10 +152,17 @@ def load_policy(path=POLICY):
                                                "sha256": POLICY_V2_SHA256},
                                "revisions": REVISIONS_V3, "runs": RUNS_V3,
                                "artifacts": ARTIFACTS_V3})
+    predecessor_v4, predecessor_v4_raw = document(POLICY_V4, 8192)
+    require(hashlib.sha256(predecessor_v4_raw).hexdigest() == POLICY_V4_SHA256)
+    require(predecessor_v4 == {"version": "cogs.stage2-retired-revisions/v4",
+                               "predecessor": {"version": predecessor_v3["version"],
+                                               "sha256": POLICY_V3_SHA256},
+                               "revisions": REVISIONS_V4, "runs": RUNS_V4,
+                               "artifacts": ARTIFACTS_V4})
     value, _raw = document(path, 8192)
-    require(value == {"version": "cogs.stage2-retired-revisions/v4",
-                      "predecessor": {"version": predecessor_v3["version"],
-                                      "sha256": POLICY_V3_SHA256},
+    require(value == {"version": "cogs.stage2-retired-revisions/v5",
+                      "predecessor": {"version": predecessor_v4["version"],
+                                      "sha256": POLICY_V4_SHA256},
                       "revisions": REVISIONS, "runs": RUNS,
                       "artifacts": ARTIFACTS})
     return value
