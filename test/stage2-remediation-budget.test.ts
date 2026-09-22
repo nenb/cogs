@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0357 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0358 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -18,10 +18,10 @@ assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','r
 assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8400,1300000),(5050,2200000),(6207,3300000),(350,9500000),(2150,5200000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (22157,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (40157,29500000)
-assert len(tasks[-1]['paths']) == 53
+assert len(tasks[-1]['paths']) == 55
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
-for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/stage2-formal-local-qualification.py','test/stage2-prebuilt-rehearsal-grant.py']:
+for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/stage2-formal-local-qualification.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 13
@@ -46,6 +46,8 @@ assert 'docs/adr/0354-correct-protected-timeout-tests-before-control.md' in inte
 assert 'docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md' in integration
 assert 'docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md' in integration
 assert 'docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md' in integration
+assert 'docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md' in integration
+assert 'docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md' in integration
 assert 'config/stage2-retired-revisions-v4.json' in integration
 local=tasks[2]['paths']
 assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
@@ -120,6 +122,39 @@ test("ADR0357 records terminal qualification and a zero-sum correction allocatio
     "source limits remain 1,564 tracked files",
   ])
     assert.ok(adr.includes(text), text);
+});
+
+test("ADR0358 freezes host-scoped H and authorizes only direct-child G controls", () => {
+  const path = "docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md";
+  const adr = readFileSync(path, "utf8").replace(/\s+/gu, " ");
+  for (const text of [
+    "306727e28ed8b0257d84b7c6fdfd6ba1fde5a22c",
+    "sole parent is retired Q `17380562a9fb9f7d08bea0269a9fdc5812b1faf7`",
+    "4a29519628b3435e4ad32d57ce58844e3d3ce52b",
+    "329acaa4a95a1f9dfb826c0db019d6ed377f521d",
+    "35706660527",
+    "35706660474",
+    "35712137203",
+    "35712137221",
+    "35716917245",
+    "10690851656",
+    "sha256:e52f96ec18b47fa9b069a168615b55ade95cfcf3b9583473f00268c7765311b1",
+    "4,353 entries and two byte-identical builds",
+    "one commit whose sole parent is exact H",
+    "exactly one first-created attempt-one trusted publisher",
+    "exactly one first-created attempt-one no-KVM static observation",
+    "preserve the accepted thirteen-member package byte-for-byte",
+    "G changes no H-owned executable or runtime behavior, workflow, Dockerfile, ordinary test, qualification constant, static package, retirement policy, campaign, provider, or production behavior",
+    "docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md",
+    "remains 2,150 lines and 5,200,000 bytes",
+    "source limits remain 1,564 tracked files",
+    "retires this generation",
+  ])
+    assert.ok(adr.includes(text), text);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes("[0358](0358-freeze-host-scoped-H-and-authorize-control.md)"),
+  );
+  assert.equal(existsSync("docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md"), false);
 });
 
 test("ADR0351 expressly authorizes every R3 task reallocation before merge", () => {
