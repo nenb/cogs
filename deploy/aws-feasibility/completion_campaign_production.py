@@ -489,6 +489,7 @@ def qualification_source_bindings(package):
     _require(package["batch_commitment"] == batch, ProductionApprovalError)
     identities = {name: set() for name in (
         "host_boot_id", "operation", "rootfs", "runtime", "client_key", "host_key")}
+    host_scoped_runtimes = set()
     artifact_ids = {observation["artifact_id"]}
     archives = {observation["artifact_archive_digest"]}
     receipt_hashes, status_hashes, grants = set(), set(), set()
@@ -527,10 +528,13 @@ def qualification_source_bindings(package):
                     is not None, ProductionApprovalError)
             else: _digest(identity)
             seen.add(identity)
+        host_scoped_runtimes.add((cycle["identities"]["host_boot_id"],
+                                  cycle["identities"]["runtime"]))
     _require(len(artifact_ids) == len(archives) == 8
              and len(receipt_hashes) == len(status_hashes) == len(grants) == 7
              and len(receipt_hashes | status_hashes) == 14
-             and all(len(seen) == 7 for seen in identities.values())
+             and all(len(seen) == 7 for role, seen in identities.items() if role != "runtime")
+             and len(host_scoped_runtimes) == 7
              and len(identities["operation"] | identities["rootfs"]) == 14
              and len(identities["client_key"] | identities["host_key"]) == 14
              and source.runtime_manifest_sha256 not in identities["runtime"]
@@ -1217,13 +1221,16 @@ def _validate_continuation(value, approval, run_id, run_attempt, classification)
         for name, identity in (
             ("state", apply.state_commitment), ("lineage", apply.state_lineage_commitment),
             ("instance", remote.instance_commitment), ("operation", remote.operation_commitment),
-            ("boot", remote.host_boot_commitment), ("runtime", qmp.runtime_identity_sha256),
-            ("mapping", qmp.live_mapping_sha256), ("pre_ssh", qmp.pre_ssh_runtime_fact_sha256),
+            ("boot", remote.host_boot_commitment),
+            ("runtime", (remote.host_boot_commitment, qmp.runtime_identity_sha256)),
+            ("mapping", (remote.host_boot_commitment, qmp.live_mapping_sha256)),
+            ("pre_ssh", (remote.host_boot_commitment, qmp.pre_ssh_runtime_fact_sha256)),
             ("client", remote.client_key_commitment), ("host", remote.host_key_commitment),
             ("resource", dict(running.resource_commitments)["instance"])):
             identities[name].append(identity)
         if qmp.post_ssh_runtime_fact_sha256 is not None:
-            post_ssh.append(qmp.post_ssh_runtime_fact_sha256)
+            post_ssh.append((remote.host_boot_commitment,
+                             qmp.post_ssh_runtime_fact_sha256))
     sequence, tip = _journal_checkpoint(value.consumption, value.grants,
                                          value.effects, value.cycle_commitments)
     _require(value.first_apply_unix_ns == value.effects[0][1].observed_started_unix_ns
@@ -1830,10 +1837,14 @@ class ProductionCampaignController:
         instances = [item.instance_commitment for item in remotes]
         operations = [item.operation_commitment for item in remotes]
         boots = [item.host_boot_commitment for item in remotes]
-        runtimes = [item.bindings.qemu.runtime_identity_sha256 for item in remotes]
-        live_mappings = [item.bindings.qemu.live_mapping_sha256 for item in remotes]
-        pre_ssh = [item.bindings.qemu.pre_ssh_runtime_fact_sha256 for item in remotes]
-        post_ssh = [item.bindings.qemu.post_ssh_runtime_fact_sha256 for item in remotes
+        runtimes = [(item.host_boot_commitment,
+                     item.bindings.qemu.runtime_identity_sha256) for item in remotes]
+        live_mappings = [(item.host_boot_commitment,
+                          item.bindings.qemu.live_mapping_sha256) for item in remotes]
+        pre_ssh = [(item.host_boot_commitment,
+                    item.bindings.qemu.pre_ssh_runtime_fact_sha256) for item in remotes]
+        post_ssh = [(item.host_boot_commitment,
+                     item.bindings.qemu.post_ssh_runtime_fact_sha256) for item in remotes
                     if item.bindings.qemu.post_ssh_runtime_fact_sha256 is not None]
         client_keys = [item.client_key_commitment for item in remotes]
         host_keys = [item.host_key_commitment for item in remotes]

@@ -180,12 +180,12 @@ class Harness:
             for category in ("git", "build", "install") for sample in range(1, 8)
         ) if grant.mode == "full" else ()
         operation = d(f"operation-{operation_ordinal}")
-        runtime_ordinal = (1 if self.mutate == "qemu_replay" and grant.ordinal == 2
-                           else grant.ordinal)
-        mapping_ordinal = (1 if self.mutate == "mapping_replay" and grant.ordinal == 2
-                           else grant.ordinal)
-        pre_ordinal = (1 if self.mutate == "pre_fact_replay" and grant.ordinal == 2
-                       else grant.ordinal)
+        runtime_ordinal = (1 if self.mutate in {"qemu_replay", "host_replay"}
+                           and grant.ordinal == 2 else grant.ordinal)
+        mapping_ordinal = (1 if self.mutate in {"mapping_replay", "host_replay"}
+                           and grant.ordinal == 2 else grant.ordinal)
+        pre_ordinal = (1 if self.mutate in {"pre_fact_replay", "host_replay"}
+                       and grant.ordinal == 2 else grant.ordinal)
         post_ordinal = (2 if self.mutate == "post_fact_replay" and grant.ordinal == 3
                         else grant.ordinal)
         qemu_values = dict(
@@ -219,7 +219,7 @@ class Harness:
             grant.grant_commitment, grant.batch_commitment, grant.ordinal, grant.mode,
             apply.state_commitment, apply.state_lineage_commitment,
             instance, d(f"host-{grant.ordinal}"),
-            operation, d(f"boot-{grant.ordinal}"),
+            operation, d(f"boot-{1 if self.mutate == 'host_replay' and grant.ordinal == 2 else grant.ordinal}"),
             (d("host-key-1") if self.mutate == "cross_key_replay" and grant.ordinal == 2
              else d(f"client-key-{grant.ordinal}")),
             d(f"host-key-{grant.ordinal}"), rootfs,
@@ -975,21 +975,24 @@ except production.ProductionCampaignError: pass
 else: raise AssertionError("controller replay accepted")
 
 for mutation in ("state", "instance", "instance_drift", "operation", "rootfs", "observer",
-                 "remote_source", "remote_parser", "remote_qemu", "qemu_replay",
-                 "mapping_replay", "pre_fact_replay", "post_fact_replay",
-                 "cross_pre_from_post", "cross_post_from_pre", "cross_key_replay",
-                 "instance_resource_replay"):
+                 "remote_source", "remote_parser", "remote_qemu", "host_replay",
+                 "cross_key_replay", "instance_resource_replay"):
     h = Harness(mutate=mutation)
     try: production.ProductionCampaignController(h.ports()).run_test_campaign()
     except production.ProductionCampaignError: pass
     else: raise AssertionError(f"{mutation} drift accepted")
 
+# Raw runtime, mapping and process observations are host-local. Equal values on
+# distinct boot commitments remain valid through both controller and issuer.
+for mutation in ("qemu_replay", "mapping_replay", "pre_fact_replay", "post_fact_replay",
+                 "cross_pre_from_post", "cross_post_from_pre"):
+    candidate = production.ProductionCampaignController(Harness(mutate=mutation).ports()).run_test_campaign()
+    issuer._project_test_candidate(candidate)
+
 # Evidence independently reconstructs every typed remote commitment; mutating a
 # controller-retained object cannot fall back to trust in the opaque host receipt.
 for mutation in ("remote_source", "remote_parser", "remote_qemu", "remote_instance",
-                 "remote_mapping", "remote_pre_fact", "remote_post_fact",
-                 "remote_cross_pre", "remote_cross_post", "remote_cross_key",
-                 "remote_instance_resource"):
+                 "remote_cross_key", "remote_instance_resource"):
     candidate = production.ProductionCampaignController(Harness().ports()).run_test_campaign()
     binding = candidate.remotes[1].bindings
     if mutation == "remote_source":
@@ -1000,21 +1003,6 @@ for mutation in ("remote_source", "remote_parser", "remote_qemu", "remote_instan
         object.__setattr__(binding.qemu, "qemu_pid", binding.qemu.qemu_pid + 1)
     elif mutation == "remote_instance":
         object.__setattr__(candidate.remotes[1], "instance_commitment", d("foreign-instance"))
-    elif mutation == "remote_mapping":
-        object.__setattr__(binding.qemu, "live_mapping_sha256",
-                           candidate.remotes[0].bindings.qemu.live_mapping_sha256)
-    elif mutation == "remote_pre_fact":
-        object.__setattr__(binding.qemu, "pre_ssh_runtime_fact_sha256",
-                           candidate.remotes[0].bindings.qemu.pre_ssh_runtime_fact_sha256)
-    elif mutation == "remote_post_fact":
-        object.__setattr__(binding.qemu, "post_ssh_runtime_fact_sha256",
-                           candidate.remotes[2].bindings.qemu.post_ssh_runtime_fact_sha256)
-    elif mutation == "remote_cross_pre":
-        object.__setattr__(binding.qemu, "pre_ssh_runtime_fact_sha256",
-                           candidate.remotes[2].bindings.qemu.post_ssh_runtime_fact_sha256)
-    elif mutation == "remote_cross_post":
-        object.__setattr__(binding.qemu, "post_ssh_runtime_fact_sha256",
-                           candidate.remotes[0].bindings.qemu.pre_ssh_runtime_fact_sha256)
     elif mutation == "remote_cross_key":
         object.__setattr__(candidate.remotes[1], "client_key_commitment",
                            candidate.remotes[0].host_key_commitment)

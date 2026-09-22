@@ -35,6 +35,11 @@
           "gross_lines": 8400,
           "gross_bytes": 1300000,
           "paths": [
+            ".pi/outcome-two/adr0091-plan-ab.md",
+            ".pi/outcome-two/adr0091-plan-cd.md",
+            ".pi/outcome-two/adr0091-plan-common.md",
+            ".pi/outcome-two/adr0091-plan-ei.md",
+            ".pi/outcome-two/adr0091-plan-holistic.md",
             "BUGS-TO-FIX.md",
             "biome.json",
             "config/external-review-remediation-budget-v1.json",
@@ -140,7 +145,7 @@
         },
         {
           "name": "local-tofu-ssm",
-          "gross_lines": 6800,
+          "gross_lines": 6207,
           "gross_bytes": 3300000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
@@ -169,7 +174,7 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 400,
+          "gross_lines": 350,
           "gross_bytes": 9500000,
           "paths": [
             ".gitleaksignore",
@@ -188,7 +193,7 @@
         },
         {
           "name": "final-HGQ",
-          "gross_lines": 1507,
+          "gross_lines": 2150,
           "gross_bytes": 5200000,
           "paths": [
             ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml",
@@ -203,6 +208,7 @@
             ".github/workflows/stage2-production-plan.yml",
             "config/stage2-retired-revisions-v2.json",
             "config/stage2-retired-revisions-v3.json",
+            "config/stage2-retired-revisions-v4.json",
             "deploy/aws-feasibility/remote/completion_kata_process.py",
             "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/00-ip.json",
             "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/01-tc.json",
@@ -224,6 +230,8 @@
             "docs/adr/0354-correct-protected-timeout-tests-before-control.md",
             "docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md",
             "docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md",
+            "docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md",
+            "scripts/stage2-formal-local-qualification.py",
             "scripts/stage2-prebuilt-local-qualification-guard.py",
             "scripts/stage2-prebuilt-mixed-hg-preflight.sh",
             "scripts/stage2-prebuilt-static-control-runtime-boundary.py",
@@ -234,6 +242,7 @@
             "test/aws-stage2-completion-kata-runtime.test.ts",
             "test/aws-stage2-completion-local-result.py",
             "test/aws-stage2-completion-local-result.test.ts",
+            "test/stage2-formal-local-qualification.py",
             "test/stage2-local-static-control-candidate-workflow.test.ts",
             "test/stage2-prebuilt-kvm-integration-diagnostic.test.ts",
             "test/stage2-prebuilt-local-kata-workflow.test.ts",
@@ -246,7 +255,7 @@
             "gross_bytes": 1700000
           },
           "post_h_reserve": {
-            "gross_lines": 900,
+            "gross_lines": 1500,
             "gross_bytes": 3500000
           }
         }
@@ -508,6 +517,11 @@
         ".github/workflows/stage2-rootfs-full-build-qualification.yml",
         ".github/workflows/stage2-workload-linux-foundations.yml",
         ".gitleaksignore",
+        ".pi/outcome-two/adr0091-plan-ab.md",
+        ".pi/outcome-two/adr0091-plan-cd.md",
+        ".pi/outcome-two/adr0091-plan-common.md",
+        ".pi/outcome-two/adr0091-plan-ei.md",
+        ".pi/outcome-two/adr0091-plan-holistic.md",
         "BUGS-TO-FIX.md",
         "README.md",
         "biome.json",
@@ -516,6 +530,7 @@
         "config/stage2-retired-revisions-v1.json",
         "config/stage2-retired-revisions-v2.json",
         "config/stage2-retired-revisions-v3.json",
+        "config/stage2-retired-revisions-v4.json",
         "deploy/aws-feasibility/.terraform.lock.hcl",
         "deploy/aws-feasibility/apply.sh",
         "deploy/aws-feasibility/check-plan.py",
@@ -688,6 +703,7 @@
         "docs/adr/0354-correct-protected-timeout-tests-before-control.md",
         "docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md",
         "docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md",
+        "docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",

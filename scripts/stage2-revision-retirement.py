@@ -10,9 +10,11 @@ import sys
 
 POLICY_V1 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v1.json"
 POLICY_V2 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v2.json"
-POLICY = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v3.json"
+POLICY_V3 = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v3.json"
+POLICY = Path(__file__).resolve().parents[1] / "config/stage2-retired-revisions-v4.json"
 POLICY_V1_SHA256 = "2fe7b704438d9e3f7493ee8be43760ac9f213d095d5411bee137126bc72153b5"
 POLICY_V2_SHA256 = "035e8c9dc9a8f2a78d1e4360aaf43cde41329771abe222ec7035bfb39dc14c6b"
+POLICY_V3_SHA256 = "3064490893b1fac4a2945b5b90bec89efbfdf1bea97e0b557550950d7dae63ad"
 REVISIONS_V1 = {
     "c30e0d69ec374cd812ff361e670e974d51b661c4": "ADR0330",
     "15d99b55f4910df94decdd7edcc80bf95aee492d": "ADR0330",
@@ -69,12 +71,24 @@ ARTIFACTS_V1 = {
 REVISIONS_V2 = {**REVISIONS_V1, "9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e": "ADR0348"}
 RUNS_V2 = {**RUNS_V1, "34831612221": "ADR0348"}
 ARTIFACTS_V2 = dict(ARTIFACTS_V1)
-REVISIONS = {**REVISIONS_V2,
-             "5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c": "ADR0353",
-             "4452a96acb1ad31ea8f6b242334f258ce0b0abab": "ADR0353"}
-RUNS = {**RUNS_V2, "35562735335": "ADR0353", "35572729553": "ADR0353",
-        "35573039122": "ADR0353"}
-ARTIFACTS = {**ARTIFACTS_V2, "10622494382": "ADR0353", "10627325100": "ADR0353"}
+REVISIONS_V3 = {**REVISIONS_V2,
+                "5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c": "ADR0353",
+                "4452a96acb1ad31ea8f6b242334f258ce0b0abab": "ADR0353"}
+RUNS_V3 = {**RUNS_V2, "35562735335": "ADR0353", "35572729553": "ADR0353",
+           "35573039122": "ADR0353"}
+ARTIFACTS_V3 = {**ARTIFACTS_V2, "10622494382": "ADR0353", "10627325100": "ADR0353"}
+REVISIONS = {**REVISIONS_V3,
+             "d98571b9f2be446ed478464d23df532d91b94e53": "ADR0357",
+             "431f7d2b63b4e5d4da7aca40e0f02ff0fca07f33": "ADR0357",
+             "17380562a9fb9f7d08bea0269a9fdc5812b1faf7": "ADR0357"}
+RUNS = {**RUNS_V3, "35638724656": "ADR0357", "35670440520": "ADR0357",
+        "35670986936": "ADR0357", "35684568600": "ADR0357",
+        "35685410662": "ADR0357"}
+ARTIFACTS = {**ARTIFACTS_V3,
+             **{value: "ADR0357" for value in (
+                 "10658466954", "10670334621", "10670965964", "10678755703",
+                 "10677962970", "10678201915", "10678118928", "10677629335",
+                 "10678169602", "10677874983")}}
 
 class RetirementError(ValueError):
     pass
@@ -123,10 +137,17 @@ def load_policy(path=POLICY):
                                                "sha256": POLICY_V1_SHA256},
                                "revisions": REVISIONS_V2, "runs": RUNS_V2,
                                "artifacts": ARTIFACTS_V2})
-    value, _raw = document(path, 4096)
-    require(value == {"version": "cogs.stage2-retired-revisions/v3",
-                      "predecessor": {"version": predecessor_v2["version"],
-                                      "sha256": POLICY_V2_SHA256},
+    predecessor_v3, predecessor_v3_raw = document(POLICY_V3, 4096)
+    require(hashlib.sha256(predecessor_v3_raw).hexdigest() == POLICY_V3_SHA256)
+    require(predecessor_v3 == {"version": "cogs.stage2-retired-revisions/v3",
+                               "predecessor": {"version": predecessor_v2["version"],
+                                               "sha256": POLICY_V2_SHA256},
+                               "revisions": REVISIONS_V3, "runs": RUNS_V3,
+                               "artifacts": ARTIFACTS_V3})
+    value, _raw = document(path, 8192)
+    require(value == {"version": "cogs.stage2-retired-revisions/v4",
+                      "predecessor": {"version": predecessor_v3["version"],
+                                      "sha256": POLICY_V3_SHA256},
                       "revisions": REVISIONS, "runs": RUNS,
                       "artifacts": ARTIFACTS})
     return value

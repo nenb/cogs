@@ -188,8 +188,9 @@ def hostile_packages(package):
     for field in ("ordinal", "mode", "artifact_name", "artifact_id", "artifact_archive_digest"):
         yield mutate("cycle-drift-" + field, lambda p: p["cycles"][0].update({field: p["cycles"][1][field]}))
     for role in package["cycles"][0]["identities"]:
-        yield mutate("reused-" + role, lambda p: p["cycles"][1]["identities"].update(
-            {role: p["cycles"][0]["identities"][role]}))
+        if role != "runtime":
+            yield mutate("reused-" + role, lambda p: p["cycles"][1]["identities"].update(
+                {role: p["cycles"][0]["identities"][role]}))
         yield mutate("invalid-" + role, lambda p: p["cycles"][0]["identities"].update({role: "invalid"}))
     for left, right in (("operation", "rootfs"), ("client_key", "host_key")):
         yield mutate("cross-role-" + left, lambda p: p["cycles"][1]["identities"].update(
@@ -234,6 +235,8 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
     issue, consume = formal["issue"], formal["consume"]
     assert issue.__code__ is cycle_evidence._issue_cycle_receipt.__code__
     private_raws, rootfs_tokens = [], []
+    repeat_host_local = os.environ.get("COGS_TEST_COMPOSITION_REPEAT_HOST_LOCAL") == "1"
+    host_local_seed = []
 
     class ComposedHarness(fixtures["Harness"]):
         def consume(self, value, commitment, observed):
@@ -302,6 +305,18 @@ def compose_campaign(formal, package_raw, approval_raw, authentication_raw):
                     except cycle_evidence.CycleEvidenceError: pass
                     else: raise AssertionError(f"foreign full proof accepted: {field}")
                     assert bad.static_custody.close_attempts == 1
+            if repeat_host_local:
+                if grant.ordinal == 1:
+                    host_local_seed.append(remote.bindings.qemu)
+                elif grant.ordinal == 2:
+                    assert len(host_local_seed) == 1
+                    qemu = replace(
+                        host_local_seed[0],
+                        operation_token=remote.operation_commitment,
+                        post_ssh_runtime_fact_sha256=
+                            remote.bindings.qemu.post_ssh_runtime_fact_sha256,
+                    )
+                    remote = replace(remote, bindings=replace(remote.bindings, qemu=qemu))
             return remote
 
     harness = ComposedHarness(approval_value=approval)
@@ -418,11 +433,15 @@ def main():
         rejected(lambda: issuer.emit(b"bounded-output\n"))
 
     composition_run_id = os.environ.get("COGS_TEST_COMPOSITION_RUN_ID", "1")
+    composition_repeat_host_local = os.environ.get(
+        "COGS_TEST_COMPOSITION_REPEAT_HOST_LOCAL", "")
     environment = {"GITHUB_SHA": "4" * 40, "COGS_STAGE2_CONTROL_REVISION": "2" * 40,
         "COGS_TEST_COMPOSITION_RUN_ID": composition_run_id,
         "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_ACTOR": "nenb",
         "COGS_STAGE2_EXECUTOR_PRINCIPAL_COMMITMENT": d("executor"),
         "COGS_STAGE2_APPROVAL_WORKFLOW_SHA256": d("workflow")}
+    if composition_repeat_host_local == "1":
+        environment["COGS_TEST_COMPOSITION_REPEAT_HOST_LOCAL"] = "1"
     with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, environment, clear=True):
         # Compose the real formal serializers/status/aggregate, retaining its
         # emitted bytes without repairing any producer/consumer boundary.
@@ -459,6 +478,16 @@ def main():
         assert approval.batch_commitment == production.approval_batch_commitment(value)
         assert approval.batch_commitment != production._commit(
             b"cogs.stage2-production-approved-batch/v5", production._approval_fields(value))
+
+        # Runtime identities contain host-local PID/device/inode observations.
+        # Their raw digest may repeat when the host boot scope remains distinct.
+        scoped_package = copy.deepcopy(package)
+        scoped_package["cycles"][1]["identities"]["runtime"] = \
+            scoped_package["cycles"][0]["identities"]["runtime"]
+        scoped_fields = {**issued, "pre_aws_package_sha256": sha(scoped_package)}
+        scoped_fields["batch_commitment"] = production.approval_batch_commitment(scoped_fields)
+        production.validate_approval_package(
+            production.ProductionApproval(**scoped_fields), scoped_package, sha(scoped_package))
 
         # The direct helper performs exactly one OIDC and one STS exchange,
         # validates returned expiration/runway, and only then exports masked
