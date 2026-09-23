@@ -516,7 +516,7 @@ def qualification_source_bindings(package):
             "runner_image", "identities"))
         _qualification_runner_image(cycle["runner_image"])
         _qualification_keys(artifact, ("ordinal", "name", "artifact_id", "archive_digest"))
-        name = f"stage2-formal-cycle-{ordinal}-{revisions[0]}-{revisions[1]}-{run['id']}-1"
+        name = f"stage2-formal-cycle-{ordinal}-{revisions[0]}-{revisions[1]}-{run['id']}-1-host-{_digest(str(cycle.get('artifact_name'))[-64:])}"
         _require(type(cycle["ordinal"]) is type(artifact["ordinal"]) is int
                  and cycle["ordinal"] == artifact["ordinal"] == ordinal
                  and cycle["mode"] == CYCLE_MODES[ordinal - 1]

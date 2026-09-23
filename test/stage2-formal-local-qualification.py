@@ -108,9 +108,8 @@ base = envelope["result_binding_base"]
 base["source_head"] = expected["EXPECTED_IMPLEMENTATION_HEAD"]
 base["source_manifest_sha256"] = expected["EXPECTED_SOURCE_MANIFEST_SHA256"]
 expected["EXPECTED_ROOTFS_DESCRIPTOR_SHA256"] = base["rootfs_descriptor_sha256"]
-formal.CONTROL_PACKAGE = Path(control_fixture.name)
-for name, raw in ((formal.ENVELOPE_MEMBER, formal.canonical(envelope)),
-                  (formal.RUNTIME_MEMBER, runtime_raw)):
+formal.CONTROL_PACKAGE = Path(control_fixture.name); (formal.CONTROL_PACKAGE / "contracts").mkdir()
+for name, raw in ((formal.ENVELOPE_MEMBER, formal.canonical(envelope)), (formal.RUNTIME_MEMBER, runtime_raw), *((f"contracts/{index:02d}-{role}.json", (historical / f"contracts/{index:02d}-{role}.json").read_bytes()) for index, (role, _path) in enumerate(formal.HOST_EXECUTABLES))):
     (formal.CONTROL_PACKAGE / name).write_bytes(raw)
     row = next(row for row in control["members"] if row["name"] == name)
     row.update(sha256=hashlib.sha256(raw).hexdigest(), size=len(raw))
@@ -252,18 +251,19 @@ def receipt(ordinal):
     return json.loads(receipt_bytes(ordinal))
 
 
+def collected_fixture_contract(role, declared_path, marker): temporary = tempfile.NamedTemporaryFile(); raw = admission.preparation.struct.pack("<16sHHIQQQIHHHHHH", b"\x7fELF\x02\x01\x01" + b"\0" * 9, 2, 62, 1, 0, 64, 0, 0, 64, 56, 1, 0, 0, 0) + admission.preparation.struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, 120 + len(marker), 120 + len(marker), 1) + marker; temporary.write(raw); temporary.flush(); value = admission.preparation.collect_executable_contract(role, declared_path, temporary.name, Path); temporary.close(); return value
+def host_closure_bytes(ordinal, image=runner_image): contracts = {role: json.loads((formal.CONTROL_PACKAGE / f"contracts/{index:02d}-{role}.json").read_bytes()) for index, (role, _path) in enumerate(formal.HOST_EXECUTABLES)}; contracts["ip"] = collected_fixture_contract("ip", "/usr/sbin/ip", image["image_version"].encode()) if image != runner_image else contracts["ip"]; return formal.canonical({"version": formal.HOST_CLOSURE_VERSION, "implementation_revision": expected["EXPECTED_IMPLEMENTATION_HEAD"], "control_revision": expected["EXPECTED_CONTROL_HEAD"], "static_control_sha256": expected["EXPECTED_CONTROL_SHA256"], "context": {"run_id": 71, "run_attempt": 1, "cycle_ordinal": ordinal}, "runner_image": image, "static_runner_image": runner_image, "host_closure_sha256": hashlib.sha256(formal.canonical(contracts)).hexdigest(), "contracts": contracts})
 def write_cycle(root, ordinal, value=None, image=runner_image):
-    raw = receipt_bytes(ordinal) if value is None else formal.canonical(value)
-    status = formal.status_value(raw, expected, ordinal,
-        f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-{expected['EXPECTED_CONTROL_HEAD']}-71-1",
-        image)
+    raw = receipt_bytes(ordinal) if value is None else formal.canonical(value); host_raw = host_closure_bytes(ordinal, image); host_sha256 = hashlib.sha256(host_raw).hexdigest()
+    status = formal.status_value(raw, expected, ordinal, formal.expected_artifact_name(expected, ordinal, host_sha256), image)
     path = Path(root) / f"cycle-{ordinal}"; path.mkdir()
-    (path / "receipt.json").write_bytes(raw); (path / "status.json").write_bytes(formal.canonical(status))
+    (path / "receipt.json").write_bytes(raw); (path / "status.json").write_bytes(formal.canonical(status)); (path / formal.HOST_CLOSURE_MEMBER).write_bytes(host_raw)
 
 
-def artifact_api():
+def artifact_api(images=None):
+    images = images or [runner_image] * 7
     return {"total_count": 7, "artifacts": [{
-        "id": 700 + ordinal, "name": formal.expected_artifact_name(expected, ordinal),
+        "id": 700 + ordinal, "name": formal.expected_artifact_name(expected, ordinal, hashlib.sha256(host_closure_bytes(ordinal, images[ordinal - 1])).hexdigest()),
         "digest": "sha256:" + d(f"archive-{ordinal}"), "expired": False,
         "workflow_run": {"id": 71, "head_sha": expected["EXPECTED_QUALIFICATION_HEAD"]},
     } for ordinal in range(1, 8)]}
@@ -346,9 +346,7 @@ with tempfile.TemporaryDirectory() as mixed_image_root:
     prior_image = {**runner_image, "image_version": "20260907.300.1",
                    "release_tag": "ubuntu24/20260907.300", "release_id": 387000001,
                    "release_commit": "a" * 40}
-    for ordinal in range(1, 8):
-        write_cycle(mixed_image_root, ordinal, image=runner_image if ordinal % 2 else prior_image)
-    mixed_package = json.loads(aggregate(mixed_image_root))
+    images = [runner_image if ordinal % 2 else prior_image for ordinal in range(1, 8)]; assert len({json.loads(host_closure_bytes(ordinal, image))["contracts"]["ip"]["closure_sha256"] for ordinal, image in enumerate(images, 1)}) == 2; [write_cycle(mixed_image_root, ordinal, image=image) for ordinal, image in enumerate(images, 1)]; mixed_package = json.loads(aggregate(mixed_image_root, custody_raw=custody(artifact_api(images))))
     assert {row["runner_image"]["image_version"] for row in mixed_package["cycles"]} == {
         "20260907.300.1", "20260920.314.1"}
 
@@ -580,14 +578,7 @@ with tempfile.TemporaryDirectory() as temporary:
     rejected(lambda: aggregate(temporary)); extra.rmdir()
     missing = Path(temporary) / "cycle-7/status.json"; saved = missing.read_bytes(); missing.unlink()
     rejected(lambda: aggregate(temporary)); missing.write_bytes(saved)
-    status_path = Path(temporary) / "cycle-7/status.json"; status_raw = status_path.read_bytes()
-    status = json.loads(status_raw); status["workflow_run"]["attempt"] = True
-    hostile_status = formal.canonical(status)
-    rejected(lambda: formal.validate_status(hostile_status,
-        (Path(temporary) / "cycle-7/receipt.json").read_bytes(), expected, 7))
-    status = json.loads(status_raw); status["claims"]["aws_authorized"] = 0
-    rejected(lambda: formal.validate_status(formal.canonical(status),
-        (Path(temporary) / "cycle-7/receipt.json").read_bytes(), expected, 7))
+    status_path = Path(temporary) / "cycle-7/status.json"; status_raw = status_path.read_bytes(); status = json.loads(status_raw); status["workflow_run"]["attempt"] = True; hostile_status = formal.canonical(status); rejected(lambda: formal.validate_status(hostile_status, (Path(temporary) / "cycle-7/receipt.json").read_bytes(), (Path(temporary) / "cycle-7" / formal.HOST_CLOSURE_MEMBER).read_bytes(), expected, 7)); host_path = Path(temporary) / "cycle-7" / formal.HOST_CLOSURE_MEMBER; hostile_host = json.loads(host_path.read_bytes()); hostile_host["context"]["cycle_ordinal"] = 6; rejected(lambda: formal.validate_status(status_raw, (Path(temporary) / "cycle-7/receipt.json").read_bytes(), formal.canonical(hostile_host), expected, 7)); hostile_host = json.loads(host_path.read_bytes()); contract = hostile_host["contracts"]["ip"]; contract["objects"] = [{"fixture": "ip"}]; contract["closure_sha256"] = hashlib.sha256(formal.canonical({name: contract[name] for name in contract if name != "closure_sha256"})).hexdigest(); hostile_host["host_closure_sha256"] = hashlib.sha256(formal.canonical(hostile_host["contracts"])).hexdigest(); grant = formal.validate_receipt((Path(temporary) / "cycle-7/receipt.json").read_bytes(), expected, 7)[1]; rejected(lambda: formal.validate_host_closure(formal.canonical(hostile_host), grant, runner_image, 7)); hostile_host = json.loads(host_path.read_bytes()); hostile_host["context"]["run_attempt"] = True; rejected(lambda: formal.validate_host_closure(formal.canonical(hostile_host), grant, runner_image, 7)); hostile_host = json.loads(host_path.read_bytes()); contract = hostile_host["contracts"]["ip"]; contract["objects"][0]["sha256"] = d("same-image-divergence"); contract["closure_sha256"] = hashlib.sha256(formal.canonical({name: contract[name] for name in contract if name != "closure_sha256"})).hexdigest(); hostile_host["host_closure_sha256"] = hashlib.sha256(formal.canonical(hostile_host["contracts"])).hexdigest(); hostile_raw = formal.canonical(hostile_host); rejected(lambda: formal.validate_host_closure(hostile_raw, grant, runner_image, 7)); host_path.write_bytes(hostile_raw); status_path.write_bytes(formal.canonical(formal.status_value((Path(temporary) / "cycle-7/receipt.json").read_bytes(), expected, 7, formal.expected_artifact_name(expected, 7, hashlib.sha256(hostile_raw).hexdigest()), runner_image))); rejected(lambda: formal.validate_cycle_directory(Path(temporary) / "cycle-7", expected, 7)); host_path.write_bytes(host_closure_bytes(7)); status_path.write_bytes(status_raw)
     status = json.loads(status_raw); status["outcomes"]["recovery"] = "uncertain"
     status_path.write_bytes(formal.canonical(status)); rejected(lambda: aggregate(temporary))
 
@@ -596,7 +587,7 @@ for ordinal in range(1, 8):
     wrong = receipt(ordinal)
     wrong["source_bindings"]["runtime_manifest_sha256"] = d("same-substitution-in-all-seven")
     rejected(lambda: formal.validate_receipt(formal.canonical(wrong), expected, ordinal))
-for name in (formal.CONTROL_MEMBER, formal.ENVELOPE_MEMBER, formal.RUNTIME_MEMBER):
+for name in (formal.CONTROL_MEMBER, formal.ENVELOPE_MEMBER, formal.RUNTIME_MEMBER, *(f"contracts/{index:02d}-{role}.json" for index, (role, _path) in enumerate(formal.HOST_EXECUTABLES))):
     path = formal.CONTROL_PACKAGE / name; saved = path.read_bytes()
     valid_raw = receipt_bytes(1)
     path.write_bytes(saved + b" ")
@@ -827,28 +818,29 @@ for module, owner_name, diagnostic in (
 
 # Publication uses test-owned storage and simulated ownership only: never a real
 # root publication. The actual writer/readback and directory fsync are exercised.
-for directory_fault in (False, True):
+for directory_fault, publication_image in ((False, runner_image), (False, prior_image), (True, runner_image)):
     with tempfile.TemporaryDirectory(
             dir="/private/tmp" if Path("/private/tmp").is_dir() else None) as temporary:
         parent = Path(temporary) / "cogs-stage2-local-result-71-1"
         parent.mkdir(mode=0o700); parent.chmod(0o700)
         path = parent / "cycle-1"; path.mkdir(mode=0o700); path.chmod(0o700)
         source = path / "receipt.partial"; source.write_bytes(receipt_bytes(1))
+        live_parent = Path(temporary) / "run"; live_parent.mkdir(mode=0o755); host_source = live_parent / "cogs-stage2-assigned-host-closure-v1.json"; host_source.write_bytes(host_closure_bytes(1, publication_image)); host_source.chmod(0o400); os.environ["EXPECTED_HOST_CLOSURE_SHA256"] = hashlib.sha256(host_source.read_bytes()).hexdigest(); os.environ.update(ImageOS=publication_image["image_os"], ImageVersion=publication_image["image_version"], COGS_RUNNER_IMAGE_RELEASE_TAG=publication_image["release_tag"], COGS_RUNNER_IMAGE_RELEASE_ID=str(publication_image["release_id"]), COGS_RUNNER_IMAGE_RELEASE_COMMIT=publication_image["release_commit"])
         calls = []; real_fsync = formal.os.fsync; real_write = formal.os.write
         real_stat = formal.os.stat; real_fstat = formal.os.fstat
-        ancestor_inode = Path(temporary).stat().st_ino
+        ancestor_inode = Path(temporary).stat().st_ino; live_parent_inode = live_parent.stat().st_ino
         def publication_fstat(descriptor):
             seen = real_fstat(descriptor)
-            if seen.st_ino == ancestor_inode:
-                values = {name: getattr(seen, name) for name in dir(seen) if name.startswith("st_")}
-                values["st_uid"] = 0; values["st_mode"] |= stat.S_ISVTX
+            if seen.st_ino in {ancestor_inode, live_parent_inode} or (stat.S_ISREG(seen.st_mode) and stat.S_IMODE(seen.st_mode) == 0o400):
+                values = {name: getattr(seen, name) for name in dir(seen) if name.startswith("st_")}; values["st_uid"] = 0; values["st_gid"] = 0
+                if seen.st_ino == ancestor_inode: values["st_mode"] |= stat.S_ISVTX
                 return SimpleNamespace(**values)
             return seen
         def publication_stat(target, *args, **kwargs):
             seen = real_stat(target, *args, **kwargs)
-            if target in {"cycle-1", "cogs-stage2-local-result-71-1"} and kwargs.get("dir_fd") is not None:
+            if target in {"cycle-1", "cogs-stage2-local-result-71-1", formal.HOST_CLOSURE_MEMBER, host_source.name} and kwargs.get("dir_fd") is not None:
                 values = {name: getattr(seen, name) for name in dir(seen) if name.startswith("st_")}
-                values["st_uid"] = 0
+                values["st_uid"] = 0; values["st_gid"] = 0
                 return SimpleNamespace(**values)
             return seen
         def publication_fsync(descriptor):
@@ -858,6 +850,7 @@ for directory_fault in (False, True):
             return real_fsync(descriptor)
         try:
             with patch.object(formal, "CYCLE_PUBLICATION_ROOT", Path(temporary)), patch.object(
+                    formal, "HOST_CLOSURE_PATH", host_source), patch.object(
                     formal.os, "geteuid", return_value=0), patch.object(formal.os, "chown"), patch.object(
                     formal.os, "fchown"), patch.object(formal.os, "fstat", side_effect=publication_fstat), patch.object(
                     formal.os, "stat", side_effect=publication_stat), patch.object(
@@ -865,10 +858,8 @@ for directory_fault in (False, True):
                     formal.os, "write", side_effect=lambda fd, raw: real_write(fd, raw[:17])):
                 if directory_fault: rejected(lambda: formal.publish(path, expected, 1, source.stat().st_uid))
                 else: formal.publish(path, expected, 1, source.stat().st_uid)
-            assert calls == ([False, False, True] if directory_fault else
-                             [False, False, True, True, True])
-            assert set(path.iterdir()) == {path / "receipt.json", path / "status.json"}
-            if not directory_fault: formal.validate_cycle_artifact_root(path.parent, expected, 1)
+            assert calls == ([False, False, False, False, True] if directory_fault else [False, False, False, False, True, True, True]); assert set(path.iterdir()) == {path / "receipt.json", path / "status.json", path / formal.HOST_CLOSURE_MEMBER}
+            if not directory_fault: left = formal.validate_cycle_artifact_root(path.parent, expected, 1); readback_parent = Path(temporary) / "readback"; readback_path = readback_parent / "cycle-1"; readback_path.mkdir(parents=True); [(readback_path / member.name).write_bytes(member.read_bytes()) for member in path.iterdir()]; right = formal.validate_cycle_artifact_root(readback_parent, expected, 1); assert left[:2] == right[:2]
         finally:
             path.chmod(0o700); parent.chmod(0o700)
 

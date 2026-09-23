@@ -33,7 +33,7 @@ def sha(raw):
 def reject(call):
     try:
         call()
-    except preparation.PreparationError:
+    except (preparation.PreparationError, admission.AdmissionError):
         return
     raise AssertionError("hostile static control was accepted")
 
@@ -267,6 +267,17 @@ mixed_envelope_row.update(sha256=sha(mixed_envelope_raw), size=len(mixed_envelop
 mixed_control = preparation.load_control(canonical(mixed_control_value))
 reject(lambda: preparation.validate_control_members(mixed_control, mixed_members))
 assert envelope.value["implementation"]["revision"] == "1" * 40
+host_contract_values = {role: loaded_contracts[role].value for role in admission.HOST_ROLES}
+host_package = {"version": admission.HOST_CLOSURE_VERSION, "implementation_revision": "1" * 40, "control_revision": "2" * 40, "static_control_sha256": control.sha256, "context": {"run_id": 71, "run_attempt": 1, "cycle_ordinal": 4}, "runner_image": runner_image, "static_runner_image": runner_image, "host_closure_sha256": sha(canonical(host_contract_values)), "contracts": host_contract_values}
+with tempfile.TemporaryDirectory() as temporary:
+    host_path = Path(temporary) / "host-closure.json"; host_path.write_bytes(canonical(host_package)); host_path.chmod(0o400); original_open = admission._open_absolute_regular
+    def open_host(_path, maximum): descriptor = os.open(host_path, os.O_RDONLY); return descriptor, os.open(host_path.parent, os.O_RDONLY), os.fstat(descriptor)
+    admission._open_absolute_regular = open_host; saved_environment = dict(os.environ)
+    try:
+        os.environ.update(GITHUB_RUN_ID="71", GITHUB_RUN_ATTEMPT="1", FORMAL_CYCLE_ORDINAL="4"); descriptors = []; assert set(admission._read_assigned_host_contracts(control, envelope, loaded_contracts, descriptors)) == set(loaded_contracts)
+        [os.close(descriptor) for descriptor in descriptors]; [(host_path.chmod(0o600), host_package["context"].__setitem__(name, True), host_path.write_bytes(canonical(host_package)), host_path.chmod(0o400), os.environ.__setitem__(environment, "True"), (descriptors := []), reject(lambda: admission._read_assigned_host_contracts(control, envelope, loaded_contracts, descriptors)), [os.close(descriptor) for descriptor in descriptors], host_path.chmod(0o600), host_package["context"].__setitem__(name, valid), host_path.write_bytes(canonical(host_package)), host_path.chmod(0o400), os.environ.__setitem__(environment, str(valid))) for name, environment, valid in (("run_id", "GITHUB_RUN_ID", 71), ("run_attempt", "GITHUB_RUN_ATTEMPT", 1), ("cycle_ordinal", "FORMAL_CYCLE_ORDINAL", 4))]
+        host_path.chmod(0o444); descriptors = []; reject(lambda: admission._read_assigned_host_contracts(control, envelope, loaded_contracts, descriptors)); [os.close(descriptor) for descriptor in descriptors]
+    finally: admission._open_absolute_regular = original_open; os.environ.clear(); os.environ.update(saved_environment)
 with tempfile.TemporaryDirectory() as temporary:
     original_control_root = immutable_preparation.CONTROL_ROOT
     immutable_preparation.CONTROL_ROOT = Path(temporary)

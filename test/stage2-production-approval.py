@@ -87,7 +87,7 @@ def qualification_package(bindings, control_sha256):
             "aws_executed": False, "provider_executed": False, "promotion_authorized": False},
     }
     for ordinal in range(1, 8):
-        name = f"stage2-formal-cycle-{ordinal}-{bindings['source_head']}-{'2' * 40}-71-1"
+        name = f"stage2-formal-cycle-{ordinal}-{bindings['source_head']}-{'2' * 40}-71-1-host-{d(f'assigned-host-{ordinal}')}"
         artifact = {"ordinal": ordinal, "name": name, "artifact_id": 700 + ordinal,
                     "archive_digest": "sha256:" + d(f"archive-{ordinal}")}
         package["cycle_artifact_custody"]["artifacts"].append(artifact)

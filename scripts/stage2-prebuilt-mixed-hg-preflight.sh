@@ -88,7 +88,9 @@ acquire_h() {
 host_check() {
   observed=$(/usr/bin/python3 -I -B \
     "$CONTROL_CHECKOUT/scripts/stage2-stage-prebuilt-control.py" verify-host "$H" "$G" "$CONTROL") || return
-  test "$observed" = host_closure_verified=true || return
+  test "$(/usr/bin/printf '%s\n' "$observed" | /usr/bin/head -n1)" = host_closure_verified=true || return
+  [[ "$(/usr/bin/printf '%s\n' "$observed" | /usr/bin/tail -n1)" =~ ^host_closure_sha256=[0-9a-f]{64}$ ]] || return
+  test "$(/usr/bin/printf '%s\n' "$observed" | /usr/bin/wc -l)" -eq 2 || return
   /usr/bin/printf '%s\n' "$observed"
 }
 
@@ -116,6 +118,7 @@ v=json.loads(sys.stdin.buffer.read()); assert (v["revision"],v["manifest_sha256"
   phase immutable
   immutable=$(sudo -n /usr/bin/timeout --foreground --signal=TERM --kill-after=10s 1770s \
     env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
+    GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" FORMAL_CYCLE_ORDINAL=0 \
     /usr/bin/python3 -I -B "$ROOT/deploy/aws-feasibility/remote/completion_kata_immutable_preparation.py") || return
   /usr/bin/python3 -I -c 'import json,sys
 v=json.loads(sys.stdin.buffer.read()); assert v == {"version":"cogs.stage2-local-immutable-preparation/v2","rootfs_artifact_count":1,"runtime_archive_count":2,"receipt_sha256":v["receipt_sha256"],"control_verified":True,"authority":"immutable-public-input-preparation-only"}; assert len(v["receipt_sha256"]) == 64' \
@@ -137,6 +140,7 @@ settle() {
       sudo -n /usr/bin/test -x "$ROOT/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh" || return
       sudo -n /usr/bin/timeout --signal=TERM --kill-after=10s 300s \
         env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+        GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" FORMAL_CYCLE_ORDINAL=0 \
         "$ROOT/deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh" && recovery=success
     else
       absent /var/lib/cogs && absent /opt/kata || return

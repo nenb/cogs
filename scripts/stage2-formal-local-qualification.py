@@ -24,6 +24,7 @@ ENVELOPE_MEMBER = "stage2-local-execution-envelope-v4.json"
 RUNTIME_MEMBER = "stage2-local-runtime-manifest-v3.json"
 MAX_CONTROL_BYTES = 4 * 1024 * 1024
 MAX_RECEIPT_BYTES, MAX_STATUS_BYTES = 96 * 1024, 8 * 1024
+MAX_HOST_CLOSURE_BYTES = 96 * 1024
 MAX_CUSTODY_BYTES, MAX_API_BYTES = 16 * 1024, 1024 * 1024
 PACKAGE_MEMBERS = {"pre-aws-package-v6.json": 96 * 1024,
                    "cycle-artifact-custody-v2.json": MAX_CUSTODY_BYTES}
@@ -34,6 +35,7 @@ STATUS_AUTHORITY = "non-aws-formal-qualification-cycle-status-only"
 PACKAGE_AUTHORITY = "non-aws-prerequisite-evidence-only"
 CUSTODY_AUTHORITY = "authenticated-github-actions-api-cycle-artifact-custody-only"
 CUSTODY_VERSION = "cogs.stage2-formal-local-artifact-custody/v2"
+HOST_CLOSURE_VERSION = "cogs.stage2-assigned-host-closure/v1"; HOST_CLOSURE_MEMBER = "host-closure.json"; HOST_CLOSURE_PATH = Path("/run/cogs-stage2-assigned-host-closure-v1.json"); HOST_EXECUTABLES = (("ip", "/usr/sbin/ip"), ("tc", "/usr/sbin/tc"), ("nft", "/usr/sbin/nft"), ("ssh", "/usr/bin/ssh"), ("ssh-keygen", "/usr/bin/ssh-keygen"))
 REPOSITORY = "nenb/cogs"
 CYCLE_MODES = ("full", "readiness", "readiness", "readiness", "readiness", "readiness", "readiness")
 SHA1, SHA256 = re.compile(r"[0-9a-f]{40}"), re.compile(r"[0-9a-f]{64}")
@@ -254,8 +256,10 @@ def authenticated_control(grant):
                "control.authentication")
     executables = runtime["executables"]
     require(type(executables) is list and len(executables) >= 5, "control.authentication")
+    static_contracts = {}
+    for index, ((role, path), row) in enumerate(zip(HOST_EXECUTABLES, executables[:5])): member = f"contracts/{index:02d}-{role}.json"; matches = [item for item in control["members"] if item["kind"] == "executable-closure" and item["name"] == member]; require((row["role"], row["source_class"], row["path"], row["contract_member"]) == (role, "host-path", path, member) and len(matches) == 1 and row["contract_sha256"] == matches[0]["sha256"], "control.authentication"); raw = read_regular(CONTROL_PACKAGE / member, MAX_CONTROL_BYTES); require(len(raw) == matches[0]["size"] and hashlib.sha256(raw).hexdigest() == matches[0]["sha256"], "control.authentication"); static_contracts[role] = raw
     return ({**base, "host_attestation_sha256": hashlib.sha256(canonical(executables[:5])).hexdigest(),
-             "runtime_manifest_sha256": runtime_sha256}, image)
+             "runtime_manifest_sha256": runtime_sha256}, image, static_contracts)
 
 def validate_receipt(raw, expected=None, ordinal=None):
     value = decode(raw, MAX_RECEIPT_BYTES)
@@ -379,6 +383,19 @@ def validate_receipt(raw, expected=None, ordinal=None):
                 and identity[6] == qmp["kvm_device"] and identity[7] == qmp["kvm_inode"]
                 and identity[8] == qmp["kvm_rdev"] and identity[9] == 12)
     return value, grant, measurements
+def validate_host_closure(raw, grant, image, ordinal):
+    value = decode(raw, MAX_HOST_CLOSURE_BYTES); exact_keys(value, {"version", "implementation_revision", "control_revision", "static_control_sha256", "context", "runner_image", "static_runner_image", "host_closure_sha256", "contracts"}); exact_keys(value["context"], {"run_id", "run_attempt", "cycle_ordinal"})
+    _bindings, static_image, static_contracts = authenticated_control(grant); context = value["context"]; require(type(context["run_id"]) is int and not isinstance(context["run_id"], bool) and context["run_id"] > 0 and type(context["run_attempt"]) is int and not isinstance(context["run_attempt"], bool) and type(context["cycle_ordinal"]) is int and not isinstance(context["cycle_ordinal"], bool) and value["version"] == HOST_CLOSURE_VERSION and value["implementation_revision"] == grant.implementation_revision and value["control_revision"] == grant.control_revision and value["static_control_sha256"] == grant.static_control_sha256 and context == {"run_id": grant.workflow_run_id, "run_attempt": 1, "cycle_ordinal": ordinal} and runner_image(value["runner_image"]) == runner_image(image) and runner_image(value["static_runner_image"]) == static_image); contracts = value["contracts"]; require(type(contracts) is dict and set(contracts) == {row[0] for row in HOST_EXECUTABLES})
+    for role, path in HOST_EXECUTABLES:
+        contract = contracts[role]; exact_keys(contract, {"version", "architecture", "role", "path", "dynamic_tags", "objects", "closure_sha256"}); objects = contract["objects"]; require(contract["version"] == "cogs.stage2-local-executable-closure/v1" and contract["architecture"] == "x86_64" and (contract["role"], contract["path"], contract["dynamic_tags"]) == (role, path, []) and type(objects) is list and 1 <= len(objects) <= 130)
+        paths, libraries = [], {}
+        for index, row in enumerate(objects):
+            exact_keys(row, {"kind", "path", "size", "sha256", "interpreter", "soname", "needed"}); object_path = row["path"]; require(row["kind"] in {"executable", "loader", "library"} and type(object_path) is str and object_path.startswith("/") and "//" not in object_path and "\\" not in object_path and os.path.normpath(object_path) == object_path and type(row["size"]) is int and not isinstance(row["size"], bool) and 0 < row["size"] <= 128 * 1024 * 1024); digest(row["sha256"]); require(row["interpreter"] is None or (row["kind"] == "executable" and type(row["interpreter"]) is str)); require(row["soname"] is None or (row["kind"] != "executable" and type(row["soname"]) is str and "/" not in row["soname"])); require(type(row["needed"]) is list and row["needed"] == sorted(set(row["needed"]))); paths.append(object_path)
+            if row["soname"] is not None: require(row["soname"] not in libraries); libraries[row["soname"]] = row
+            if index == 0: require(row["kind"] == "executable")
+        require(len(paths) == len(set(paths)) and sum(row["kind"] == "executable" for row in objects) == 1 and all(name in libraries for row in objects for name in row["needed"]), "invalid executable closure"); digest(contract["closure_sha256"]); body = {name: contract[name] for name in contract if name != "closure_sha256"}; require(contract["closure_sha256"] == hashlib.sha256(canonical(body)).hexdigest())
+    require(value["host_closure_sha256"] == hashlib.sha256(canonical(contracts)).hexdigest() and (runner_image(value["runner_image"]) != static_image or all(canonical(contracts[role]) == static_contracts[role] for role, _path in HOST_EXECUTABLES)), "host closure digest or same-image bytes differ")
+    return value
 def status_value(receipt_raw, expected, ordinal, artifact_name, image):
     receipt, grant, measurements = validate_receipt(receipt_raw, expected, ordinal)
     return {"version": "cogs.stage2-formal-local-cycle-status/v3", "authority": STATUS_AUTHORITY,
@@ -399,16 +416,15 @@ def status_value(receipt_raw, expected, ordinal, artifact_name, image):
             "independent_residue": "success", "publication": "success"},
         "claims": {"formal_non_aws_cycle_passed": True, "aws_authorized": False,
             "provider_executed": False, "promotion_authorized": False}}
-def validate_status(raw, receipt_raw, expected, ordinal):
+def expected_artifact_prefix(expected, ordinal): return f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1-host-"
+def expected_artifact_name(expected, ordinal, host_sha256): return expected_artifact_prefix(expected, ordinal) + digest(host_sha256)
+def artifact_host_sha256(name, expected, ordinal): prefix = expected_artifact_prefix(expected, ordinal); require(type(name) is str and name.startswith(prefix)); return digest(name[len(prefix):])
+def validate_status(raw, receipt_raw, host_raw, expected, ordinal):
     value = decode(raw, MAX_STATUS_BYTES)
-    artifact = f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1"
+    _receipt, grant, _measurements = validate_receipt(receipt_raw, expected, ordinal); host_sha256 = hashlib.sha256(host_raw).hexdigest(); validate_host_closure(host_raw, grant, runner_image(value.get("runner_image")), ordinal); artifact = expected_artifact_name(expected, ordinal, host_sha256)
     require(raw == canonical(status_value(receipt_raw, expected, ordinal, artifact,
-                                          runner_image(value.get("runner_image")))),
-            "cycle status differs")
+                                          value["runner_image"])), "cycle status differs")
     return value
-def expected_artifact_name(expected, ordinal):
-    return (f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-"
-            f"{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1")
 def custody_from_api(raw, expected):
     require(type(raw) is bytes and 0 < len(raw) <= MAX_API_BYTES, "bounded API response required")
     try:
@@ -436,8 +452,10 @@ def custody_from_api(raw, expected):
         by_name[item["name"]] = (artifact_id, digest_value)
     rows = []
     for ordinal in range(1, 8):
-        name = expected_artifact_name(expected, ordinal)
-        require(name in by_name, "expected cycle artifact absent from API inventory")
+        matches = [name for name in by_name
+                   if name.startswith(expected_artifact_prefix(expected, ordinal))]
+        require(len(matches) == 1, "expected cycle artifact absent from API inventory")
+        name = matches[0]; artifact_host_sha256(name, expected, ordinal)
         artifact_id, digest_value = by_name[name]
         rows.append({"ordinal": ordinal, "name": name, "artifact_id": artifact_id,
                      "archive_digest": digest_value})
@@ -464,8 +482,8 @@ def validate_custody(raw, expected):
             and type(value["artifacts"]) is list and len(value["artifacts"]) == 7)
     for ordinal, row in enumerate(value["artifacts"], 1):
         exact_keys(row, {"ordinal", "name", "artifact_id", "archive_digest"})
-        require(type(row["ordinal"]) is int and row["ordinal"] == ordinal
-                and row["name"] == expected_artifact_name(expected, ordinal))
+        require(type(row["ordinal"]) is int and row["ordinal"] == ordinal)
+        artifact_host_sha256(row["name"], expected, ordinal)
         positive(row["artifact_id"]); archive_digest(row["archive_digest"])
     require(len({row["artifact_id"] for row in value["artifacts"]}) == 7
             and len({row["archive_digest"] for row in value["artifacts"]}) == 7,
@@ -515,18 +533,24 @@ def publish(staging, expected, ordinal, runner_uid):
                 and stat.S_IMODE(held.st_mode) == 0o700
                 and set(os.listdir(directory)) == {"receipt.partial"}
                 and set(os.listdir(parent)) == {expected_name})
-        # Root ownership plus read/execute-only mode prevents the runner from
-        # replacing the upload pathname after descriptor-relative publication.
-        os.fchown(parent, 0, 0); os.fchmod(parent, 0o555)
+        # Lock both held directories before any root write; pathname substitution
+        # can then cause only a terminal identity mismatch, never redirected I/O.
+        os.fchown(parent, 0, 0); os.fchmod(parent, 0o555); os.fchown(directory, 0, 0); os.fchmod(directory, 0o700)
         partial = os.stat("receipt.partial", dir_fd=directory, follow_symlinks=False)
         require(stat.S_ISREG(partial.st_mode) and partial.st_uid == runner_uid and partial.st_nlink == 1)
         receipt_raw = read_regular("receipt.partial", MAX_RECEIPT_BYTES, directory)
-        validate_receipt(receipt_raw, expected, ordinal)
-        artifact = (f"stage2-formal-cycle-{ordinal}-{expected['EXPECTED_IMPLEMENTATION_HEAD']}-"
-                    f"{expected['EXPECTED_CONTROL_HEAD']}-{expected['GITHUB_RUN_ID']}-1")
-        status_raw = canonical(status_value(receipt_raw, expected, ordinal, artifact,
-                                            runner_image_from_environment()))
-        os.fchown(directory, 0, 0); os.fchmod(directory, 0o700)
+        _receipt, grant, _measurements = validate_receipt(receipt_raw, expected, ordinal)
+        host_parent = os.open(HOST_CLOSURE_PATH.parent, flags)
+        try:
+            host_parent_seen = os.fstat(host_parent); host_seen = os.stat(HOST_CLOSURE_PATH.name, dir_fd=host_parent, follow_symlinks=False); require(stat.S_ISDIR(host_parent_seen.st_mode) and host_parent_seen.st_uid == host_parent_seen.st_gid == 0 and not stat.S_IMODE(host_parent_seen.st_mode) & 0o022 and stat.S_ISREG(host_seen.st_mode) and host_seen.st_uid == host_seen.st_gid == 0 and stat.S_IMODE(host_seen.st_mode) == 0o400 and host_seen.st_nlink == 1)
+            host_raw = read_regular(HOST_CLOSURE_PATH.name, MAX_HOST_CLOSURE_BYTES, host_parent); host_after = os.stat(HOST_CLOSURE_PATH.name, dir_fd=host_parent, follow_symlinks=False); require((host_seen.st_dev, host_seen.st_ino, host_seen.st_mode, host_seen.st_uid, host_seen.st_gid, host_seen.st_nlink, host_seen.st_size) == (host_after.st_dev, host_after.st_ino, host_after.st_mode, host_after.st_uid, host_after.st_gid, host_after.st_nlink, host_after.st_size))
+        finally: os.close(host_parent)
+        image = runner_image_from_environment(); validate_host_closure(host_raw, grant, image, ordinal); host_sha256 = hashlib.sha256(host_raw).hexdigest(); require(host_sha256 == os.environ.get("EXPECTED_HOST_CLOSURE_SHA256"))
+        host_descriptor = os.open(HOST_CLOSURE_MEMBER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o400, dir_fd=directory)
+        try:
+            write_all(host_descriptor, host_raw); os.fchown(host_descriptor, 0, 0); os.fchmod(host_descriptor, 0o400); os.fsync(host_descriptor); staged_host = os.fstat(host_descriptor); require(stat.S_ISREG(staged_host.st_mode) and staged_host.st_uid == staged_host.st_gid == 0 and stat.S_IMODE(staged_host.st_mode) == 0o400 and staged_host.st_nlink == 1 and staged_host.st_size == len(host_raw))
+        finally: os.close(host_descriptor)
+        artifact = expected_artifact_name(expected, ordinal, host_sha256); status_raw = canonical(status_value(receipt_raw, expected, ordinal, artifact, image))
         for name, raw in (("receipt.json", receipt_raw), ("status.json", status_raw)):
             descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                                  | os.O_CLOEXEC, 0o400, dir_fd=directory)
@@ -534,7 +558,10 @@ def publish(staging, expected, ordinal, runner_uid):
                 write_all(descriptor, raw); os.fchown(descriptor, 0, 0)
                 os.fchmod(descriptor, 0o444); os.fsync(descriptor)
             finally: os.close(descriptor)
-        os.unlink("receipt.partial", dir_fd=directory); os.fchmod(directory, 0o555)
+        os.unlink("receipt.partial", dir_fd=directory); host_descriptor = os.open(HOST_CLOSURE_MEMBER, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+        try: os.fchmod(host_descriptor, 0o444); os.fsync(host_descriptor)
+        finally: os.close(host_descriptor)
+        os.fchmod(directory, 0o555)
         os.fsync(directory); os.fsync(parent); os.fsync(ancestor)
         named_parent = os.stat(expected_parent, dir_fd=ancestor, follow_symlinks=False)
         named = os.stat(expected_name, dir_fd=parent, follow_symlinks=False)
@@ -544,11 +571,12 @@ def publish(staging, expected, ordinal, runner_uid):
                 and (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
                 and named.st_uid == 0 and stat.S_IMODE(named.st_mode) == 0o555
                 and set(os.listdir(parent)) == {expected_name}
-                and set(os.listdir(directory)) == {"receipt.json", "status.json"})
+                and set(os.listdir(directory)) == {"receipt.json", "status.json", HOST_CLOSURE_MEMBER})
         frozen_receipt = read_regular("receipt.json", MAX_RECEIPT_BYTES, directory)
         frozen_status = read_regular("status.json", MAX_STATUS_BYTES, directory)
-        require(frozen_receipt == receipt_raw and frozen_status == status_raw)
-        validate_status(frozen_status, frozen_receipt, expected, ordinal)
+        frozen_host = read_regular(HOST_CLOSURE_MEMBER, MAX_HOST_CLOSURE_BYTES, directory)
+        require(frozen_receipt == receipt_raw and frozen_status == status_raw and frozen_host == host_raw)
+        validate_status(frozen_status, frozen_receipt, frozen_host, expected, ordinal)
     finally:
         if directory is not None: os.close(directory)
         if parent is not None: os.close(parent)
@@ -557,11 +585,12 @@ def validate_cycle_directory(path, expected, ordinal):
     path = Path(path)
     seen = path.lstat()
     require(stat.S_ISDIR(seen.st_mode) and not stat.S_ISLNK(seen.st_mode)
-            and set(os.listdir(path)) == {"receipt.json", "status.json"})
+            and set(os.listdir(path)) == {"receipt.json", "status.json", HOST_CLOSURE_MEMBER})
     receipt_raw = read_regular(path / "receipt.json", MAX_RECEIPT_BYTES)
     status_raw = read_regular(path / "status.json", MAX_STATUS_BYTES)
+    host_raw = read_regular(path / HOST_CLOSURE_MEMBER, MAX_HOST_CLOSURE_BYTES)
     validate_receipt(receipt_raw, expected, ordinal)
-    return receipt_raw, status_raw, validate_status(status_raw, receipt_raw, expected, ordinal)
+    return receipt_raw, status_raw, validate_status(status_raw, receipt_raw, host_raw, expected, ordinal)
 def validate_cycle_artifact_root(root, expected, ordinal):
     root = Path(root); seen = root.lstat()
     name = f"cycle-{ordinal}"
