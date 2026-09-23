@@ -33,6 +33,7 @@ MAX_ENVELOPE_BYTES = 131_072
 MAX_RUNTIME_MANIFEST_BYTES = 65_536
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_CONTRACT_BYTES = 262_144
+HOST_CLOSURE_PATH = "/run/cogs-stage2-assigned-host-closure-v1.json"; HOST_CLOSURE_VERSION = "cogs.stage2-assigned-host-closure/v1"; MAX_HOST_CLOSURE_BYTES = 96 * 1024; HOST_ROLES = ("ip", "tc", "nft", "ssh", "ssh-keygen")
 HEX = frozenset("0123456789abcdef")
 RECEIPT_VERSION = "cogs.stage2-local-private-receipt/v1"
 RECEIPT_DOMAIN = "cogs.stage2-local-private-receipt/v1\x00"
@@ -735,6 +736,18 @@ def _close_all(descriptors, primary=None):
         raise primary
 
 
+def _runner_image(value):
+    _keys(value, ("version", "image_label", "image_os", "image_version", "release_tag", "release_id", "release_commit")); version = value.get("image_version"); parts = version.split(".") if type(version) is str else []
+    _require(value.get("version") == "cogs.github-hosted-runner-image/v1" and value.get("image_label") == "ubuntu-24.04" and value.get("image_os") == "ubuntu24" and len(parts) == 3 and len(parts[0]) == 8 and all(part.isdigit() for part in parts) and value.get("release_tag") == "ubuntu24/" + version.rsplit(".", 1)[0] and type(value.get("release_id")) is int and 0 < value["release_id"] <= 9_007_199_254_740_991 and type(value.get("release_commit")) is str and len(value["release_commit"]) == 40 and set(value["release_commit"]) <= HEX, "assigned runner image identity differs")
+    return value
+def _read_assigned_host_contracts(control, envelope, static_contracts, descriptors):
+    descriptor, parent, status_value = _open_absolute_regular(HOST_CLOSURE_PATH, MAX_HOST_CLOSURE_BYTES); descriptors.extend((parent, descriptor)); _require(stat.S_IMODE(status_value.st_mode) == 0o400, "assigned host closure mode differs")
+    value = _decode(_read_held_raw(descriptor, status_value, MAX_HOST_CLOSURE_BYTES), MAX_HOST_CLOSURE_BYTES)
+    _keys(value, ("version", "implementation_revision", "control_revision", "static_control_sha256", "context", "runner_image", "static_runner_image", "host_closure_sha256", "contracts")); context = value["context"]; _keys(context, ("run_id", "run_attempt", "cycle_ordinal"))
+    _require(value["version"] == HOST_CLOSURE_VERSION and value["implementation_revision"] == envelope.value["implementation"]["revision"] and value["control_revision"] == control.value["producer"]["control_revision"] and value["static_control_sha256"] == control.sha256 and type(context["run_id"]) is int and context["run_id"] > 0 and type(context["run_attempt"]) is int and context["run_attempt"] == 1 and type(context["cycle_ordinal"]) is int and 0 <= context["cycle_ordinal"] <= 7 and str(context["run_id"]) == os.environ.get("GITHUB_RUN_ID", "") and str(context["run_attempt"]) == os.environ.get("GITHUB_RUN_ATTEMPT", "") and str(context["cycle_ordinal"]) == os.environ.get("FORMAL_CYCLE_ORDINAL", "0") and _runner_image(value["static_runner_image"]) == envelope.value["runner_image"], "assigned host closure binding differs")
+    image = _runner_image(value["runner_image"]); contracts = value["contracts"]; _require(type(contracts) is dict and set(contracts) == set(HOST_ROLES)); observed = {}
+    for role, _source, path in EXECUTABLES[:5]: contract_value = preparation.validate_contract_value(contracts[role], {"role": role, "path": path}); contract_raw = preparation.canonical_bytes(contract_value); observed[role] = preparation.StaticDescription(contract_raw, _sha(contract_raw), contract_value)
+    _require(value["host_closure_sha256"] == _sha(preparation.canonical_bytes(contracts)) and (image != value["static_runner_image"] or all(observed[role].raw == static_contracts[role].raw for role in HOST_ROLES)), "assigned host closure digest or same-image bytes differ"); return {**static_contracts, **observed}
 def _read_control_package():
     descriptors = []
     try:
@@ -1070,6 +1083,8 @@ def _static_routes():
                 _read_diagnostic_control_package() if diagnostic else
                 _read_control_package())
             descriptors.extend(held)
+            if not diagnostic and "FORMAL_CYCLE_ORDINAL" in os.environ: _require(os.path.lexists(HOST_CLOSURE_PATH), "assigned host closure absent")
+            if not diagnostic and os.path.lexists(HOST_CLOSURE_PATH): contracts = _read_assigned_host_contracts(control, envelope, contracts, descriptors)
             source_start = len(descriptors)
             _verify_complete_source(envelope.value["implementation"], descriptors)
             source_descriptors = tuple(descriptors[source_start:])

@@ -32,7 +32,7 @@
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 8400,
+          "gross_lines": 8430,
           "gross_bytes": 1300000,
           "paths": [
             ".pi/outcome-two/adr0091-plan-ab.md",
@@ -92,7 +92,7 @@
         },
         {
           "name": "product",
-          "gross_lines": 5050,
+          "gross_lines": 5049,
           "gross_bytes": 2200000,
           "paths": [
             ".github/workflows/insecure-container.yml",
@@ -154,7 +154,7 @@
         },
         {
           "name": "local-tofu-ssm",
-          "gross_lines": 6300,
+          "gross_lines": 6195,
           "gross_bytes": 3300000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
@@ -183,7 +183,7 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 400,
+          "gross_lines": 267,
           "gross_bytes": 9500000,
           "paths": [
             ".gitleaksignore",
@@ -201,7 +201,7 @@
         },
         {
           "name": "final-HGQ",
-          "gross_lines": 3800,
+          "gross_lines": 4009,
           "gross_bytes": 5200000,
           "paths": [
             ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml",
@@ -218,8 +218,11 @@
             "config/stage2-retired-revisions-v3.json",
             "config/stage2-retired-revisions-v4.json",
             "config/stage2-retired-revisions-v5.json",
+            "config/stage2-retired-revisions-v6.json",
+            "deploy/aws-feasibility/remote/completion_kata_admission.py",
             "deploy/aws-feasibility/remote/completion_kata_preparation.py",
             "deploy/aws-feasibility/remote/completion_kata_process.py",
+            "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh",
             "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/00-ip.json",
             "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/01-tc.json",
             "deploy/aws-feasibility/remote/stage2-completion-local-control-v7/contracts/02-nft.json",
@@ -247,6 +250,7 @@
             "docs/adr/0360-retire-runner-image-rejected-generation.md",
             "docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md",
             "docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md",
+            "docs/adr/0363-retire-cross-rollout-preflight-and-bind-assigned-host-closures.md",
             "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
             "schemas/stage2-formal-local-cycle-status-v3.json",
             "schemas/stage2-local-execution-envelope-v4.json",
@@ -256,6 +260,7 @@
             "scripts/stage2-prebuilt-mixed-hg-preflight.sh",
             "scripts/stage2-prebuilt-static-control-runtime-boundary.py",
             "scripts/stage2-revision-retirement.py",
+            "scripts/stage2-stage-prebuilt-control.py",
             "test/aws-stage2-completion-kata-mutable-bridges.test.ts",
             "test/aws-stage2-completion-kata-process.py",
             "test/aws-stage2-completion-kata-runtime.py",
@@ -276,11 +281,11 @@
             "test/stage2-prebuilt-static-control-runtime-boundary.py"
           ],
           "pre_h_cap": {
-            "gross_lines": 607,
+            "gross_lines": 604,
             "gross_bytes": 1700000
           },
           "post_h_reserve": {
-            "gross_lines": 3150,
+            "gross_lines": 3405,
             "gross_bytes": 3500000
           }
         }
@@ -567,6 +572,7 @@
         "config/stage2-retired-revisions-v3.json",
         "config/stage2-retired-revisions-v4.json",
         "config/stage2-retired-revisions-v5.json",
+        "config/stage2-retired-revisions-v6.json",
         "deploy/aws-feasibility/.terraform.lock.hcl",
         "deploy/aws-feasibility/apply.sh",
         "deploy/aws-feasibility/check-plan.py",
@@ -746,6 +752,7 @@
         "docs/adr/0360-retire-runner-image-rejected-generation.md",
         "docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md",
         "docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md",
+        "docs/adr/0363-retire-cross-rollout-preflight-and-bind-assigned-host-closures.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",

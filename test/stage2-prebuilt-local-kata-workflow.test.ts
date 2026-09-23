@@ -132,7 +132,6 @@ esac
     rmSync(temporary, { recursive: true, force: true });
   }
   assert.match(local, /stage2-stage-prebuilt-control\.py[\s\S]{0,120}verify-host/u);
-  assert.match(preflightWorkflow, /Compare every ambient host closure before mutation/u);
   assert.match(preflightWorkflow, /steps\.opt_scaffold\.outcome == 'success'/u);
 });
 
@@ -149,9 +148,9 @@ test("mixed host-check wrapper preserves exact status and output in its sanitize
     });
   };
   try {
-    const pass = run('print("host_closure_verified=true")\n');
+    const pass = run('print("host_closure_verified=true\\nhost_closure_sha256=" + "a" * 64)\n');
     assert.equal(pass.status, 0);
-    assert.equal(pass.stdout, "host_closure_verified=true\n");
+    assert.equal(pass.stdout, `host_closure_verified=true\nhost_closure_sha256=${"a".repeat(64)}\n`);
     assert.equal(pass.stderr, "");
     for (const body of ["raise SystemExit(2)\n", 'print("host_closure_verified=true")\nraise SystemExit(2)\n']) {
       const rejected = run(body);
@@ -256,7 +255,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
-test("checked-in v7 authenticates the accepted authenticated-runner H/G package through the exact G bridge", () => {
+test("checked-in v7 remains byte-valid but the terminal authenticated-runner H/G package is retired", () => {
   const result = spawnSync(
     "python3",
     [
@@ -274,17 +273,17 @@ def sha(raw): return hashlib.sha256(raw).hexdigest()
 paths=sorted(path for path in package.rglob('*') if path.is_file())
 require(len(paths)==13 and all(not path.is_symlink() for path in package.rglob('*')), 'unsafe v7 package')
 guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
-guard['_reviewed_constants'](); guard['_authenticate_control']()
-for target,digest in guard['G_RETIREMENT_CONSUMERS'].items():
- require(sha((current/target).read_bytes())==digest, 'G retirement pin differs')
+try: guard['_reviewed_constants']()
+except guard['retirement']['RetirementError']: pass
+else: raise AssertionError('terminal H/G constants were accepted')
 sys.path.insert(0,str(current/'deploy/aws-feasibility/remote'))
 import completion_kata_preparation as codec
 control=codec.load_control((package/'stage2-local-static-control-v2.json').read_bytes())
 members={row['name']:(package/row['name']).read_bytes() for row in control.value['members']}
 envelope,runtime,contracts=codec.validate_control_members(control,members)
-require(envelope.value['implementation']['revision']==guard['REVIEWED_IMPLEMENTATION_HEAD'], 'H differs')
-require(envelope.value['control_revision']==guard['REVIEWED_CONTROL_HEAD'], 'G differs')
-require(envelope.value['rootfs']['prebuilt_descriptor_sha256']==guard['REVIEWED_ROOTFS_DESCRIPTOR_SHA256'], 'descriptor differs')
+require(envelope.value['implementation']['revision']=='2076c2bd781a663d2b27fa478792fc133fa9fd42', 'historical H differs')
+require(envelope.value['control_revision']=='1956ea8da439de2ae137e6ccbc5650ca149fe815', 'historical G differs')
+require(envelope.value['rootfs']['prebuilt_descriptor_sha256']=='0ac75bf044aa20fc1b1047a5c0579b6489c1ec19502c0044061a5e1fd1597c2c', 'descriptor differs')
 require(len(contracts)==10 and len(runtime.value['executables'])==10, 'control codec differs')
 require(sha((package/'stage2-local-static-control-v2.json').read_bytes())=='b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a', 'control differs')
 require(sha((package/'stage2-local-execution-envelope-v4.json').read_bytes())=='db5219543713b3a9733306d0444a611aad9b9c3a8ba40a6059e037dc0feb95b9', 'envelope differs')
@@ -528,7 +527,6 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
     preflightWorkflow,
     /rev-list --parents -n1 "\$EXACT_CONTROL_HEAD"\)" = "\$EXACT_CONTROL_HEAD \$EXACT_IMPLEMENTATION_HEAD"/u,
   );
-  const hostCheck = preflightWorkflow.indexOf("Compare every ambient host closure before mutation");
   const normalization = preflightWorkflow.indexOf(
     "Normalize the exact hosted opt scaffold before immutable preparation",
   );
@@ -537,13 +535,6 @@ test("corrected mixed preflight remains no-KVM, H/G/Q-bound, and versioned", () 
   );
   const settlement = preflightWorkflow.indexOf("Independently repeat mandatory settlement after every outcome");
   const restoration = preflightWorkflow.indexOf("Restore the exact acquired hosted opt scaffold only after settlement");
-  assert.ok(
-    hostCheck > 0 &&
-      normalization > hostCheck &&
-      execution > normalization &&
-      settlement > execution &&
-      restoration > settlement,
-  );
   const normalized = preflightWorkflow.slice(normalization, execution);
   assert.match(normalized, /stage2-hosted-opt-mode\.py"[\s\S]*normalize "\$GITHUB_RUN_ID" "\$GITHUB_RUN_ATTEMPT"/u);
   assert.match(

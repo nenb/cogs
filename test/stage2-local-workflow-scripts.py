@@ -33,6 +33,7 @@ receipt = load("stage2_local_receipt_test", "scripts/stage2-local-upload-receipt
 control_staging = load("stage2_control_staging_test", "scripts/stage2-stage-reviewed-control.py")
 prebuilt_staging = load("stage2_prebuilt_staging_test", "scripts/stage2-stage-prebuilt-control.py")
 opt_mode = load("stage2_hosted_opt_mode_test", "scripts/stage2-hosted-opt-mode.py")
+import unittest.mock as mock; formal_workflow = (ROOT / ".github/workflows/stage2-prebuilt-local-kata-qualification.yml").read_text(); preflight_source = (ROOT / "scripts/stage2-prebuilt-mixed-hg-preflight.sh").read_text(); recovery_source = (ROOT / "deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh").read_text(); recovery_step = formal_workflow[formal_workflow.index("Invoke cleanup-only recovery"):formal_workflow.index("Settle fixed roots")]; assert all(f'{name}="${name}"' in recovery_step for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "FORMAL_CYCLE_ORDINAL")) and formal_workflow.index("Freeze exact typed cycle receipt, assigned-host closure") < formal_workflow.index("Remove only the unchanged assigned-image host closure after publication attempt") and "steps.publication.outcome == 'success' && steps.host_cleanup.outcome == 'success'" in formal_workflow and "/usr/bin/install" not in formal_workflow and 'GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" FORMAL_CYCLE_ORDINAL=0' in preflight_source and '"GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=1" "FORMAL_CYCLE_ORDINAL=$FORMAL_CYCLE_ORDINAL"' in recovery_source and 'TZ=UTC "$@"' in recovery_source
 
 
 def rejected(call, exception):
@@ -474,11 +475,11 @@ def prebuilt_host_check_tests():
     rootfs = {"custody": custody, "prebuilt_descriptor": {"producer": {"revision": "f" * 40}}}
     control = Description({"implementation": {"revision": "f" * 40},
         "producer": {"control_revision": "e" * 40}, "members": []})
-    envelope = Description({"rootfs": rootfs})
+    image = {"version": "cogs.github-hosted-runner-image/v1", "image_label": "ubuntu-24.04", "image_os": "ubuntu24", "image_version": "20260920.314.1", "release_tag": "ubuntu24/20260920.314", "release_id": 1, "release_commit": "a" * 40}; envelope = Description({"rootfs": rootfs, "runner_image": image})
     runtime = Description({"executables": rows})
     codec = type("Codec", (), {"MAX_CONTROL_BYTES": 4096,
         "load_control": lambda _self, _raw: control,
-        "validate_control_members": lambda _self, _control, _members: (envelope, runtime, contracts)})()
+        "validate_control_members": lambda _self, _control, _members: (envelope, runtime, contracts), "canonical_bytes": staticmethod(lambda value: json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"), "collect_executable_contract": lambda _self, role, *_args: contracts[role].value})()
     def retain(contract, descriptors, role):
         descriptor = os.open(contract["objects"][0]["path"], os.O_RDONLY)
         descriptors.append(descriptor); value = os.fstat(descriptor)
@@ -499,6 +500,7 @@ def prebuilt_host_check_tests():
         prebuilt_staging._load_admission = lambda: admission
         prebuilt_staging.os.geteuid = lambda: 1000
         arguments = ("f" * 40, "e" * 40, hashlib.sha256(control_raw).hexdigest())
+        saved_environment = dict(os.environ); admission._close_all = lambda descriptors: [os.close(descriptors.pop()) for _ in range(len(descriptors))]; os.environ.update(ImageOS="ubuntu24", ImageVersion=image["image_version"], COGS_RUNNER_IMAGE_RELEASE_TAG=image["release_tag"], COGS_RUNNER_IMAGE_RELEASE_ID="1", COGS_RUNNER_IMAGE_RELEASE_COMMIT="a" * 40, GITHUB_RUN_ID="1", GITHUB_RUN_ATTEMPT="1", FORMAL_CYCLE_ORDINAL="1")
         try:
             prebuilt_staging.verify_host_closures(*arguments)
             admission._read_held = lambda *_: "0" * 64
@@ -511,6 +513,7 @@ def prebuilt_host_check_tests():
         finally:
             (prebuilt_staging.SOURCE, prebuilt_staging._load_module,
              prebuilt_staging._load_admission, prebuilt_staging.os.geteuid) = original
+            os.environ.clear(); os.environ.update(saved_environment)
     remote_source = str(prebuilt_staging.CHECKOUT_ADMISSION.parent)
     sys.path.insert(0, remote_source)
     try:
@@ -524,6 +527,9 @@ def prebuilt_host_check_tests():
         rejected(lambda: reader._open_trusted_absolute_regular(str(untrusted), 1),
                  reader.AdmissionError)
         assert len(os.listdir(fd_root)) == descriptor_count
+        base = Path(temporary); roots = {name: base / name for name in ("static", "assigned")}; marker = {"static": b"static-image-elf", "assigned": b"assigned-image-elf"}; elf = lambda value: reader.preparation.struct.pack("<16sHHIQQQIHHHHHH", b"\x7fELF\x02\x01\x01" + b"\0" * 9, 2, 62, 1, 0, 64, 0, 0, 64, 56, 1, 0, 0, 0) + reader.preparation.struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, 120 + len(value), 120 + len(value), 1) + value; contracts = {name: {} for name in roots}; paths = {role: path for role, _source, path in reader.EXECUTABLES[:5]}; [(actual.parent.mkdir(parents=True, exist_ok=True), actual.write_bytes(elf(marker[name])), contracts[name].__setitem__(role, reader.preparation.collect_executable_contract(role, logical, actual, lambda path, root=root: root / path.lstrip("/")))) for name, root in roots.items() for role, logical in paths.items() for actual in (root / logical.lstrip("/"),)]; static = {role: reader.preparation.StaticDescription(reader.preparation.canonical_bytes(value), hashlib.sha256(reader.preparation.canonical_bytes(value)).hexdigest(), value) for role, value in contracts["static"].items()}; prior_image = {**image, "image_version": "20260907.300.1", "release_tag": "ubuntu24/20260907.300", "release_id": 2, "release_commit": "b" * 40}; control_description = types.SimpleNamespace(value={"producer": {"control_revision": "e" * 40}}, sha256="c" * 64); envelope_description = types.SimpleNamespace(value={"implementation": {"revision": "f" * 40}, "runner_image": image}); package = {"version": reader.HOST_CLOSURE_VERSION, "implementation_revision": "f" * 40, "control_revision": "e" * 40, "static_control_sha256": control_description.sha256, "context": {"run_id": 71, "run_attempt": 1, "cycle_ordinal": 1}, "runner_image": prior_image, "static_runner_image": image, "host_closure_sha256": hashlib.sha256(reader.preparation.canonical_bytes(contracts["assigned"])).hexdigest(), "contracts": contracts["assigned"]}; package_raw = reader.preparation.canonical_bytes(package); package_digest = hashlib.sha256(package_raw).hexdigest(); final_path, stage_base = base / prebuilt_staging.HOST_CLOSURE.name, base / prebuilt_staging.HOST_CLOSURE_STAGE.name; stage_path = stage_base.with_name(stage_base.name + "-" + package_digest); parent = os.open(base, os.O_RDONLY | os.O_DIRECTORY); real_stager_os = prebuilt_staging.os; simulated_os = types.SimpleNamespace(**vars(real_stager_os)); rooted = lambda seen: types.SimpleNamespace(**{**{name: getattr(seen, name) for name in dir(seen) if name.startswith("st_")}, "st_uid": 0, "st_gid": 0}); simulated_os.geteuid = lambda: 0; simulated_os.fchown = lambda *_: None; simulated_os.fstat = lambda descriptor: rooted(real_stager_os.fstat(descriptor)); simulated_os.stat = lambda *args, **kwargs: rooted(real_stager_os.stat(*args, **kwargs)); real_trusted = reader._open_trusted_absolute_regular; real_admission_os = reader.os; admission_os = types.SimpleNamespace(**vars(real_admission_os)); admission_os.fstat = lambda descriptor: rooted(real_admission_os.fstat(descriptor)) if final_path.exists() and real_admission_os.fstat(descriptor).st_ino == final_path.stat().st_ino else real_admission_os.fstat(descriptor); open_host = lambda _path, _maximum: ((descriptor := os.open(final_path, os.O_RDONLY)), os.open(base, os.O_RDONLY | os.O_DIRECTORY), rooted(os.fstat(descriptor)))
+        with mock.patch.object(prebuilt_staging, "HOST_CLOSURE", final_path), mock.patch.object(prebuilt_staging, "HOST_CLOSURE_STAGE", stage_base), mock.patch.object(prebuilt_staging, "os", simulated_os), mock.patch.object(prebuilt_staging, "_host_parent", side_effect=lambda: os.dup(parent)), mock.patch.object(reader, "os", admission_os), mock.patch.object(reader, "_open_absolute_regular", side_effect=open_host), mock.patch.object(reader, "_open_trusted_absolute_regular", side_effect=lambda path, maximum: real_trusted(path, maximum, os.getuid(), os.getgid(), str(roots["assigned"]))), mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "71", "GITHUB_RUN_ATTEMPT": "1", "FORMAL_CYCLE_ORDINAL": "1"}):
+            prebuilt_staging._publish_host_closure(parent, package_raw); assert final_path.read_bytes() == package_raw and not stage_path.exists(); descriptors = []; assigned = reader._read_assigned_host_contracts(control_description, envelope_description, static, descriptors); retained = []; objects = tuple(item for role in reader.HOST_ROLES for item in reader._retain_contract_objects(assigned[role].value, retained, role)); assert {item.sha256 for item in objects} == {hashlib.sha256(elf(marker["assigned"])).hexdigest()}; [os.close(descriptor) for descriptor in (*retained, *descriptors)]; final_path.chmod(0o600); package["runner_image"] = image; final_path.write_bytes(reader.preparation.canonical_bytes(package)); final_path.chmod(0o400); descriptors = []; rejected(lambda: reader._read_assigned_host_contracts(control_description, envelope_description, static, descriptors), reader.AdmissionError); [os.close(descriptor) for descriptor in descriptors]; final_path.chmod(0o600); final_path.write_bytes(package_raw); final_path.chmod(0o400); prebuilt_staging.cleanup_host_closures(package_digest); stage_path.mkdir(mode=0o700); partial = stage_path / final_path.name; partial.write_bytes(b"partial"); partial.chmod(0o400); prebuilt_staging.cleanup_host_closures(package_digest); stage_path.mkdir(mode=0o700); partial = stage_path / final_path.name; partial.write_bytes(package_raw); partial.chmod(0o400); os.link(partial, final_path); prebuilt_staging.cleanup_host_closures(package_digest); stage_path.mkdir(mode=0o700); partial = stage_path / final_path.name; partial.write_bytes(b"partial-linked"); partial.chmod(0o400); os.link(partial, final_path); rejected(lambda: prebuilt_staging.cleanup_host_closures(package_digest), prebuilt_staging.ControlStagingError); assert partial.exists() and final_path.exists(); final_path.unlink(); partial.unlink(); stage_path.rmdir(); stage_path.mkdir(mode=0o700); prebuilt_staging.cleanup_host_closures(package_digest); stage_path.mkdir(mode=0o700); foreign = stage_path / "foreign"; foreign.write_bytes(b"foreign"); rejected(lambda: prebuilt_staging.cleanup_host_closures(package_digest), prebuilt_staging.ControlStagingError); assert foreign.exists(); foreign.unlink(); stage_path.rmdir(); final_path.write_bytes(b"foreign"); final_path.chmod(0o400); rejected(lambda: prebuilt_staging.cleanup_host_closures(package_digest), prebuilt_staging.ControlStagingError); assert final_path.exists(); final_path.unlink(); foreign_stage = stage_base.with_name(stage_base.name + "-" + "0" * 64); foreign_stage.mkdir(mode=0o700); rejected(lambda: prebuilt_staging.cleanup_host_closures(package_digest), prebuilt_staging.ControlStagingError); assert foreign_stage.exists(); foreign_stage.rmdir(); os.close(parent); assert not stage_path.exists()
     real_reader_os = reader.os
     reader.os = types.SimpleNamespace(**vars(real_reader_os))
     calls = 0
@@ -630,14 +636,7 @@ def prebuilt_host_check_tests():
     real_load = prebuilt_staging._load_module
     def historical_load(*arguments):
         module = real_load(*arguments)
-        historical_schemas = {
-            "schemas/stage2-local-execution-envelope-v4.json":
-                "schemas/stage2-local-execution-envelope-v3.json",
-            "schemas/stage2-formal-local-cycle-status-v3.json":
-                "schemas/stage2-formal-local-cycle-status-v2.json",
-            "schemas/stage2-pre-aws-qualification-package-v6.json":
-                "schemas/stage2-pre-aws-qualification-package-v5.json",
-        }
+        historical_schemas = {"schemas/stage2-local-execution-envelope-v4.json": "schemas/stage2-local-execution-envelope-v3.json", "schemas/stage2-formal-local-cycle-status-v3.json": "schemas/stage2-formal-local-cycle-status-v2.json", "schemas/stage2-pre-aws-qualification-package-v6.json": "schemas/stage2-pre-aws-qualification-package-v5.json"}
         module.MANDATORY_SECURITY_SOURCES = frozenset(
             historical_schemas.get(path, path)
             for path in module.MANDATORY_SECURITY_SOURCES
@@ -646,6 +645,7 @@ def prebuilt_host_check_tests():
         assert module.MANDATORY_SECURITY_SOURCES <= historical_paths
         return module
     prebuilt_staging.SOURCE = historical; prebuilt_staging.os.geteuid = lambda: 1000
+    saved_environment = dict(os.environ); version = os.environ.get("ImageVersion", "20260920.314.1"); os.environ.update(ImageOS="ubuntu24", ImageVersion=version, COGS_RUNNER_IMAGE_RELEASE_TAG="ubuntu24/" + version.rsplit(".", 1)[0], COGS_RUNNER_IMAGE_RELEASE_ID="1", COGS_RUNNER_IMAGE_RELEASE_COMMIT="a" * 40, GITHUB_RUN_ID="1", GITHUB_RUN_ATTEMPT="1", FORMAL_CYCLE_ORDINAL="1")
     try:
         rejected(lambda: prebuilt_staging.retirement["select"](
             selected, runs=expected_runs, artifacts=expected_artifacts),
@@ -659,11 +659,7 @@ def prebuilt_host_check_tests():
             prebuilt_staging.verify_host_closures(
                 selected[0], selected[1], hashlib.sha256(control_raw).hexdigest())
         except Exception as error:
-            if platform.system() == "Linux" and platform.machine() == "x86_64":
-                assert type(error).__name__ == "AdmissionError"
-                assert str(error) == "executable closure source differs"
-            else:
-                assert type(error).__name__ in {"AdmissionError", "PreparationError", "FileNotFoundError"}
+            assert (type(error).__name__, str(error)) == ("ControlStagingError", "static runner image differs")
         else:
             assert os.environ.get("RUNNER_IMAGE_VERSION", os.environ.get("ImageVersion")) == "20260831.293.1"
         if platform.system() == "Linux" and platform.machine() == "x86_64":
@@ -671,8 +667,8 @@ def prebuilt_host_check_tests():
             control_value = json.loads(control_raw)
             member_raws = {row["name"]: (historical / row["name"]).read_bytes()
                            for row in control_value["members"]}
-            envelope_value = json.loads(member_raws["stage2-local-execution-envelope-v3.json"])
-            runtime_value = json.loads(member_raws["stage2-local-runtime-manifest-v3.json"])
+            envelope_value = json.loads(member_raws[codec.LEGACY_ENVELOPE_MEMBER]); envelope_member = codec.ENVELOPE_MEMBER
+            runtime_value = json.loads(member_raws["stage2-local-runtime-manifest-v3.json"]); envelope_value.update(version=codec.ENVELOPE_VERSION, runner_image=prebuilt_staging._runner_image()); member_raws[envelope_member] = member_raws.pop(codec.LEGACY_ENVELOPE_MEMBER); next(row for row in control_value["members"] if row["name"] == codec.LEGACY_ENVELOPE_MEMBER)["name"] = envelope_member
             host_rows = [row for row in runtime_value["executables"]
                          if row["source_class"] == "host-path"]
             assert [row["role"] for row in host_rows] == list(roles)
@@ -691,7 +687,7 @@ def prebuilt_host_check_tests():
                 envelope_value["runtime"]["executable_set_sha256"] = hashlib.sha256(
                     codec.canonical_bytes(runtime_value["executables"])).hexdigest()
                 envelope_raw = codec.canonical_bytes(envelope_value)
-                member_raws["stage2-local-execution-envelope-v3.json"] = envelope_raw
+                member_raws[envelope_member] = envelope_raw
                 for row in control_value["members"]:
                     raw_value = member_raws[row["name"]]
                     row.update(size=len(raw_value), sha256=hashlib.sha256(raw_value).hexdigest())
@@ -756,8 +752,7 @@ def prebuilt_host_check_tests():
                     prebuilt_staging.verify_host_closures(
                         selected[0], selected[1], hashlib.sha256(current_control).hexdigest())
                 except Exception as error:
-                    assert type(error).__name__ == "AdmissionError"
-                    assert str(error) == "executable closure source differs"
+                    assert (type(error).__name__, str(error)) == ("ControlStagingError", "same-image host closure differs")
                 else:
                     raise AssertionError("coherently rebound library mutation was accepted")
                 assert len(os.listdir("/proc/self/fd")) == descriptors
@@ -770,6 +765,7 @@ def prebuilt_host_check_tests():
     finally:
         (prebuilt_staging.SOURCE, prebuilt_staging.os.geteuid,
          prebuilt_staging.retirement["select"], prebuilt_staging._load_module) = original
+        os.environ.clear(); os.environ.update(saved_environment)
 
 
 def opt_mode_tests():

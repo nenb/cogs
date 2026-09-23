@@ -18,9 +18,9 @@ CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
 Q_BINDING_ADAPTER = "scripts/stage2-prebuilt-local-qualification-guard.py"
 G_RETIREMENT_CONSUMERS = {
     ".github/workflows/stage2-prebuilt-local-kata-qualification.yml":
-        "e8060741fbd3bf70ffc95ae786db5bb953adf031a0bce5e025db1a1c4f3aff42",
+        "6441254f8376b1612f10570328e29a49cab0ba2acca0bdeeee6aebf7ee9afeff",
     "scripts/stage2-revision-retirement.py":
-        "da1789c2c59f4647676beed83357afdc936f2a2fb9c2dd2778bfa63fe54cb963",
+        "5782bb2db4747d18aa0be1f4dd324f12a7d566a60583e72778853113c5cbd39f",
 }
 REQUIRED_CONSUMERS = frozenset({
     ".github/workflows/stage2-prebuilt-local-kata-qualification.yml",
@@ -48,7 +48,7 @@ REVIEWED_IMPLEMENTATION_HEAD = "2076c2bd781a663d2b27fa478792fc133fa9fd42"
 REVIEWED_CONTROL_HEAD = "1956ea8da439de2ae137e6ccbc5650ca149fe815"
 REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "f4f4fee0eea79315a7079240a1df0a90e7da52adf3189e33d0326cf5339dbc2a"
 REVIEWED_CONTROL_SHA256 = "b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a"
-REVIEWED_WORKFLOW_SHA256 = "e8060741fbd3bf70ffc95ae786db5bb953adf031a0bce5e025db1a1c4f3aff42"
+REVIEWED_WORKFLOW_SHA256 = "6441254f8376b1612f10570328e29a49cab0ba2acca0bdeeee6aebf7ee9afeff"
 # Self-contained formal receipt v2 contract, not the ordinary local report schema.
 REVIEWED_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 # No dispatch value can supply the independently reviewed static custody.
@@ -73,7 +73,7 @@ MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
 # Bootstrap veto code must be authenticated before it executes, even when v6
 # does not exist yet. This is a source seal, not successor H/G/Q authority.
-RETIREMENT_SOURCE_SHA256 = "da1789c2c59f4647676beed83357afdc936f2a2fb9c2dd2778bfa63fe54cb963"
+RETIREMENT_SOURCE_SHA256 = "5782bb2db4747d18aa0be1f4dd324f12a7d566a60583e72778853113c5cbd39f"
 
 
 class GuardError(Exception):

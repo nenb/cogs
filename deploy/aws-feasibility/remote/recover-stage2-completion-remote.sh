@@ -15,9 +15,14 @@ if [ "${COGS_STAGE2_DIAGNOSTIC_CONTROL_VERSION+x}" = x ]; then
     cogs.stage2-current-source-prebuilt-diagnostic-control/v1 ] || exit 65
   profile=diagnostic
 fi
+set --
+if [ "${GITHUB_RUN_ID+x}${GITHUB_RUN_ATTEMPT+x}${FORMAL_CYCLE_ORDINAL+x}" != "" ]; then
+  [ "${GITHUB_RUN_ID+x}${GITHUB_RUN_ATTEMPT+x}${FORMAL_CYCLE_ORDINAL+x}" = xxx ] || exit 65; case "$GITHUB_RUN_ID" in ''|0*|*[!0-9]*) exit 65 ;; esac; [ "$GITHUB_RUN_ATTEMPT" = 1 ] || exit 65; case "$FORMAL_CYCLE_ORDINAL" in [0-7]) ;; *) exit 65 ;; esac
+  set -- "GITHUB_RUN_ID=$GITHUB_RUN_ID" "GITHUB_RUN_ATTEMPT=1" "FORMAL_CYCLE_ORDINAL=$FORMAL_CYCLE_ORDINAL"
+fi
 cd /var/lib/cogs/stage2-completion-v1/source
 exec /usr/bin/env -i HOME=/nonexistent LANG=C LC_ALL=C \
-  PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC \
+  PATH=/opt/kata/bin:/usr/sbin:/usr/bin:/sbin:/bin TZ=UTC "$@" \
   COGS_STAGE2_RECOVERY_PROFILE="$profile" \
   /usr/bin/python3 -I -B -c \
   'import os,sys; sys.path.insert(0,"/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/remote")

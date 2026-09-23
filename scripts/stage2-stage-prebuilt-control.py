@@ -26,6 +26,7 @@ CONTROL_MEMBER = "stage2-local-static-control-v2.json"
 DIAGNOSTIC_VERSION = "cogs.stage2-current-source-prebuilt-diagnostic-control/v1"
 DIAGNOSTIC_MEMBER = "stage2-current-source-prebuilt-diagnostic-control-v1.json"
 MAX_MEMBERS = 16
+HOST_CLOSURE = Path("/run/cogs-stage2-assigned-host-closure-v1.json"); HOST_CLOSURE_STAGE = Path("/run/cogs-stage2-assigned-host-closure-stage-v1"); HOST_CLOSURE_VERSION = "cogs.stage2-assigned-host-closure/v1"; HOST_ROLES = ("ip", "tc", "nft", "ssh", "ssh-keygen"); MAX_HOST_CLOSURE_BYTES = 96 * 1024
 
 
 class ControlStagingError(Exception):
@@ -332,57 +333,71 @@ def verify_staged(expected_descriptor, diagnostic=False):
         while held: os.close(held.pop()[0])
 
 
-def stage_provisional(diagnostic_version=None):
-    return _stage(PROVISIONAL_SOURCE, diagnostic_version)
+def stage_provisional(diagnostic_version=None): return _stage(PROVISIONAL_SOURCE, diagnostic_version)
 
 
-def verify_host_closures(expected_h, expected_g, expected_control):
-    """Compare held trusted host closures before any preparation mutation."""
-    _require(os.geteuid() != 0 and SOURCE.is_dir()
-             and re.fullmatch(r"[0-9a-f]{40}", expected_h) is not None
-             and re.fullmatch(r"[0-9a-f]{40}", expected_g) is not None
-             and re.fullmatch(r"[0-9a-f]{64}", expected_control) is not None)
-    codec = _load_module(CHECKOUT_PREPARATION, "completion_kata_preparation_host_check")
-    admission = _load_admission()
-    source = _open_source(SOURCE)
-    descriptors, retained = [], []
+def _runner_image(environ=os.environ):
+    try: version = environ.get("ImageVersion", ""); release_id = int(environ.get("COGS_RUNNER_IMAGE_RELEASE_ID", "0"))
+    except ValueError as error: raise ControlStagingError("runner image release ID differs") from error
+    value = {"version": "cogs.github-hosted-runner-image/v1", "image_label": "ubuntu-24.04", "image_os": environ.get("ImageOS", ""), "image_version": version, "release_tag": environ.get("COGS_RUNNER_IMAGE_RELEASE_TAG", ""), "release_id": release_id, "release_commit": environ.get("COGS_RUNNER_IMAGE_RELEASE_COMMIT", "")}; _require(value["image_os"] == "ubuntu24" and re.fullmatch(r"[0-9]{8}\.[0-9]+\.[0-9]+", version) is not None and value["release_tag"] == "ubuntu24/" + version.rsplit(".", 1)[0] and 0 < release_id <= 9_007_199_254_740_991 and re.fullmatch(r"[0-9a-f]{40}", value["release_commit"]) is not None, "runner image identity differs"); return value
+def _observed_host_closures(expected_h, expected_g, expected_control):
+    _require(SOURCE.is_dir() and re.fullmatch(r"[0-9a-f]{40}", expected_h) and re.fullmatch(r"[0-9a-f]{40}", expected_g) and re.fullmatch(r"[0-9a-f]{64}", expected_control)); codec = _load_module(CHECKOUT_PREPARATION, "completion_kata_preparation_host_check"); remote = str(CHECKOUT_ADMISSION.parent); sys.path.insert(0, remote); admission = _load_admission(); held = []; source = _open_source(SOURCE); held.append(source)
     try:
-        source_identity = os.fstat(source)
-        control_raw = _read_regular(source, CONTROL_MEMBER, codec.MAX_CONTROL_BYTES)
-        control = codec.load_control(control_raw)
-        members = {row["name"]: _read_regular(
-            source, row["name"], _member_maximum(codec, row, False))
-                   for row in control.value["members"]}
-        envelope, runtime, contracts = codec.validate_control_members(control, members)
-        implementation, control_revision, _ = _select_prebuilt_custody(control, envelope)
-        _require(hashlib.sha256(control_raw).hexdigest() == expected_control
-                 and implementation == expected_h and control_revision == expected_g,
-                 "reviewed host closure binding differs")
-        rows = [row for row in runtime.value["executables"] if row["source_class"] == "host-path"]
-        _require([row["role"] for row in rows] == ["ip", "tc", "nft", "ssh", "ssh-keygen"])
-        for row in rows:
-            retained.extend(admission._retain_contract_objects(
-                contracts[row["role"]].value, descriptors, row["role"]))
-        for item in retained:
-            seen = os.fstat(item.descriptor)
-            _require((seen.st_dev, seen.st_ino, stat.S_IMODE(seen.st_mode), seen.st_uid,
-                      seen.st_gid, seen.st_nlink, seen.st_size) ==
-                     (item.device, item.inode, item.mode, item.uid, item.gid, item.nlink, item.size)
-                     and admission._read_held(item.descriptor, seen, item.size) == item.sha256,
-                     "ambient executable generation differs")
-        _require(os.fstat(source) == source_identity, "control package directory changed")
-    finally:
-        for descriptor in reversed(descriptors):
-            try: os.close(descriptor)
-            except OSError: pass
-        os.close(source)
+        source_identity = os.fstat(source); control_raw = _read_regular(source, CONTROL_MEMBER, codec.MAX_CONTROL_BYTES); control = codec.load_control(control_raw); members = {row["name"]: _read_regular(source, row["name"], _member_maximum(codec, row, False)) for row in control.value["members"]}
+        envelope, runtime, static_contracts = codec.validate_control_members(control, members); static_image = envelope.value.get("runner_image"); _require(type(static_image) is dict, "static runner image differs"); implementation, control_revision, _ = _select_prebuilt_custody(control, envelope); _require(hashlib.sha256(control_raw).hexdigest() == expected_control and implementation == expected_h and control_revision == expected_g, "reviewed host closure binding differs")
+        rows = [row for row in runtime.value["executables"] if row["source_class"] == "host-path"]; _require([row["role"] for row in rows] == list(HOST_ROLES)); contracts = {row["role"]: codec.collect_executable_contract(row["role"], row["path"], row["path"], Path) for row in rows}; retained = tuple(item for row in rows for item in admission._retain_contract_objects(contracts[row["role"]], held, row["role"])); image = _runner_image()
+        if image == static_image: _require(all(codec.canonical_bytes(contracts[role]) == static_contracts[role].raw for role in HOST_ROLES), "same-image host closure differs")
+        context = {"run_id": os.environ.get("GITHUB_RUN_ID", ""), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""), "cycle_ordinal": os.environ.get("FORMAL_CYCLE_ORDINAL", "0")}; _require(re.fullmatch(r"[1-9][0-9]*", context["run_id"]) and context["run_attempt"] == "1" and re.fullmatch(r"[0-7]", context["cycle_ordinal"]))
+        contract_raw = codec.canonical_bytes(contracts); package = {"version": HOST_CLOSURE_VERSION, "implementation_revision": expected_h, "control_revision": expected_g, "static_control_sha256": expected_control, "context": {"run_id": int(context["run_id"]), "run_attempt": 1, "cycle_ordinal": int(context["cycle_ordinal"])}, "runner_image": image, "static_runner_image": static_image, "host_closure_sha256": hashlib.sha256(contract_raw).hexdigest(), "contracts": contracts}; raw = codec.canonical_bytes(package); _require(len(raw) <= MAX_HOST_CLOSURE_BYTES and os.fstat(source) == source_identity and all((seen := os.fstat(item.descriptor)) and (seen.st_dev, seen.st_ino, stat.S_IMODE(seen.st_mode), seen.st_uid, seen.st_gid, seen.st_nlink, seen.st_size) == (item.device, item.inode, item.mode, item.uid, item.gid, item.nlink, item.size) and admission._read_held(item.descriptor, seen, item.size) == item.sha256 for item in retained), "host closure package or retained executable generation differs"); return raw
+    finally: sys.path.remove(remote); admission._close_all(held)
+def verify_host_closures(expected_h, expected_g, expected_control):
+    _require(os.geteuid() != 0 and not HOST_CLOSURE.exists()); return hashlib.sha256(_observed_host_closures(expected_h, expected_g, expected_control)).hexdigest()
+def _host_parent():
+    descriptor = os.open(HOST_CLOSURE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        seen = os.fstat(descriptor); _require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0 and not stat.S_IMODE(seen.st_mode) & 0o022, "host closure parent differs"); return descriptor
+    except BaseException: os.close(descriptor); raise
+def _publish_host_closure(parent, raw):
+    staging_name = HOST_CLOSURE_STAGE.name + "-" + hashlib.sha256(raw).hexdigest(); _require(not any(name.startswith(HOST_CLOSURE_STAGE.name + "-") for name in os.listdir(parent)), "foreign host closure staging intent remains"); os.mkdir(staging_name, 0o700, dir_fd=parent); staging = os.open(staging_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent); descriptor = None
+    try:
+        seen = os.fstat(staging); _require(seen.st_uid == seen.st_gid == 0 and stat.S_IMODE(seen.st_mode) == 0o700 and not os.listdir(staging)); descriptor = os.open(HOST_CLOSURE.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o400, dir_fd=staging); view = memoryview(raw)
+        while view: written = os.write(descriptor, view); _require(type(written) is int and written > 0); view = view[written:]
+        os.fchown(descriptor, 0, 0); os.fchmod(descriptor, 0o400); os.fsync(descriptor); staged = os.fstat(descriptor); _require(stat.S_ISREG(staged.st_mode) and staged.st_uid == staged.st_gid == 0 and stat.S_IMODE(staged.st_mode) == 0o400 and staged.st_nlink == 1 and staged.st_size == len(raw)); os.link(HOST_CLOSURE.name, HOST_CLOSURE.name, src_dir_fd=staging, dst_dir_fd=parent, follow_symlinks=False); os.unlink(HOST_CLOSURE.name, dir_fd=staging); os.fsync(staging); os.rmdir(staging_name, dir_fd=parent); os.fsync(parent); final = os.stat(HOST_CLOSURE.name, dir_fd=parent, follow_symlinks=False); _require((final.st_dev, final.st_ino, final.st_nlink) == (staged.st_dev, staged.st_ino, 1), "host closure publication differs")
+    finally: os.close(descriptor) if descriptor is not None else None; os.close(staging)
+def stage_host_closures(expected_h, expected_g, expected_control, expected_sha256):
+    _require(os.geteuid() == 0 and not HOST_CLOSURE.exists() and re.fullmatch(r"[0-9a-f]{64}", expected_sha256)); raw = _observed_host_closures(expected_h, expected_g, expected_control); _require(hashlib.sha256(raw).hexdigest() == expected_sha256 and not HOST_CLOSURE_STAGE.with_name(HOST_CLOSURE_STAGE.name + "-" + expected_sha256).exists(), "host closure changed after pre-mutation comparison"); parent = _host_parent()
+    try: _publish_host_closure(parent, raw)
+    finally: os.close(parent)
+    return expected_sha256
+def cleanup_host_closures(expected_sha256):
+    _require(os.geteuid() == 0 and re.fullmatch(r"[0-9a-f]{64}", expected_sha256)); parent = _host_parent(); staging = temporary = descriptor = None; staging_name = HOST_CLOSURE_STAGE.name + "-" + expected_sha256
+    try:
+        try: staging = os.open(staging_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        except FileNotFoundError: pass
+        if staging is not None:
+            seen = os.fstat(staging); names = set(os.listdir(staging)); _require(seen.st_uid == seen.st_gid == 0 and stat.S_IMODE(seen.st_mode) == 0o700 and names <= {HOST_CLOSURE.name}, "host closure staging intent differs")
+            if names:
+                temporary = os.open(HOST_CLOSURE.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=staging); held = os.fstat(temporary); _require(stat.S_ISREG(held.st_mode) and held.st_uid == held.st_gid == 0 and stat.S_IMODE(held.st_mode) == 0o400 and held.st_nlink in {1, 2} and held.st_size <= MAX_HOST_CLOSURE_BYTES); named = None
+                try: named = os.stat(HOST_CLOSURE.name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError: _require(held.st_nlink == 1)
+                if named is not None: _require((named.st_dev, named.st_ino, named.st_nlink) == (held.st_dev, held.st_ino, 2), "host closure staging link differs"); raw = _read_complete(temporary, held.st_size); _require(held.st_size > 0 and hashlib.sha256(raw).hexdigest() == expected_sha256 and _identity(held) == _identity(os.fstat(temporary)) == _identity(named), "host closure staging bytes differ"); os.unlink(HOST_CLOSURE.name, dir_fd=parent)
+                os.unlink(HOST_CLOSURE.name, dir_fd=staging); os.fsync(staging); os.rmdir(staging_name, dir_fd=parent); os.fsync(parent); _require(os.fstat(temporary).st_nlink == 0 and not any(name.startswith(HOST_CLOSURE_STAGE.name + "-") for name in os.listdir(parent)), "foreign host closure staging intent remains"); return
+            os.rmdir(staging_name, dir_fd=parent); os.fsync(parent)
+        try: descriptor = os.open(HOST_CLOSURE.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        except FileNotFoundError: _require(not any(name.startswith(HOST_CLOSURE_STAGE.name + "-") for name in os.listdir(parent)), "foreign host closure staging intent remains"); return
+        before = os.fstat(descriptor); _require(stat.S_ISREG(before.st_mode) and before.st_uid == before.st_gid == 0 and stat.S_IMODE(before.st_mode) == 0o400 and before.st_nlink == 1 and 0 < before.st_size <= MAX_HOST_CLOSURE_BYTES); raw = _read_complete(descriptor, before.st_size); named = os.stat(HOST_CLOSURE.name, dir_fd=parent, follow_symlinks=False); _require(hashlib.sha256(raw).hexdigest() == expected_sha256 and _identity(before) == _identity(os.fstat(descriptor)) == _identity(named), "host closure cleanup identity differs"); os.unlink(HOST_CLOSURE.name, dir_fd=parent); os.fsync(parent); after = os.fstat(descriptor); _require((after.st_dev, after.st_ino, after.st_nlink) == (before.st_dev, before.st_ino, 0), "host closure unlink differs")
+        _require(not os.path.lexists(HOST_CLOSURE) and not any(name.startswith(HOST_CLOSURE_STAGE.name + "-") for name in os.listdir(parent)), "host closure path or foreign staging intent remains")
+    finally: [os.close(current) for current in (temporary, descriptor, staging, parent) if current is not None]
 
 
 def main():
-    _require(len(sys.argv) in {1, 2, 3, 5})
+    _require(len(sys.argv) in {1, 2, 3, 5, 6})
     if len(sys.argv) == 5 and sys.argv[1] == "verify-host":
-        verify_host_closures(*sys.argv[2:])
-        raw = b"host_closure_verified=true\n"
+        observed = verify_host_closures(*sys.argv[2:]); raw = f"host_closure_verified=true\nhost_closure_sha256={observed}\n".encode("ascii")
+    elif len(sys.argv) == 6 and sys.argv[1] == "stage-host":
+        observed = stage_host_closures(*sys.argv[2:]); raw = f"host_closure_staged_sha256={observed}\n".encode("ascii")
+    elif len(sys.argv) == 3 and sys.argv[1] == "cleanup-host":
+        cleanup_host_closures(sys.argv[2]); raw = b"host_closure_absent=true\n"
     elif len(sys.argv) == 3 and sys.argv[1] in {"verify", "verify-diagnostic"}:
         observed = verify_staged(sys.argv[2], sys.argv[1].endswith("-diagnostic"))
         raw = f"rootfs_descriptor_sha256={observed}\n".encode("ascii")
