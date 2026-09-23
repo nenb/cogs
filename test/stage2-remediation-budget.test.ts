@@ -8,7 +8,7 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0360 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0362 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
@@ -18,14 +18,14 @@ assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','r
 assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8400,1300000),(5050,2200000),(6300,3300000),(400,9500000),(3800,5200000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (23950,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (41950,29500000)
-assert len(tasks[-1]['paths']) == 65
+assert len(tasks[-1]['paths']) == 69
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
-for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','config/stage2-retired-revisions-v5.json','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','docs/adr/0360-retire-runner-image-rejected-generation.md','schemas/stage2-formal-local-cycle-status-v3.json','schemas/stage2-local-execution-envelope-v4.json','schemas/stage2-pre-aws-qualification-package-v6.json','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/aws-stage2-completion-kata-static-control.py','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts','test/stage2-local-workflow-scripts.py','test/stage2-prebuilt-rehearsal-grant.py']:
+for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','config/stage2-retired-revisions-v5.json','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_kata_process.py','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','docs/adr/0360-retire-runner-image-rejected-generation.md','docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md','docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','schemas/stage2-formal-local-cycle-status-v3.json','schemas/stage2-local-execution-envelope-v4.json','schemas/stage2-pre-aws-qualification-package-v6.json','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','test/aws-stage2-completion-kata-process.py','test/aws-stage2-completion-kata-static-control.py','test/fixtures/stage2-completion/production-v4-test-only.json','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts','test/stage2-local-workflow-scripts.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 13
-assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json','docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage5-destructive-harness-report.canonical-json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','scripts/stage4-runtime-artifact-closure.ts','test/ci-infrastructure-boundary.test.ts']
+assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json','docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json','docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage5-destructive-harness-report.canonical-json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','scripts/stage4-runtime-artifact-closure.ts','test/ci-infrastructure-boundary.test.ts']
 assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
 assert 'docs/adr/0340-row4-second-minimal-correction-batch.md' in tasks[0]['paths']
 assert 'docs/adr/0341-row4-third-minimal-correction-batch.md' in tasks[0]['paths']
@@ -49,6 +49,8 @@ assert 'docs/adr/0357-retire-failed-qualification-and-scope-host-local-observati
 assert 'docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md' in integration
 assert 'docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md' in integration
 assert 'docs/adr/0360-retire-runner-image-rejected-generation.md' in integration
+assert 'docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md' in integration
+assert 'docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md' in integration
 assert 'config/stage2-retired-revisions-v4.json' in integration
 assert 'config/stage2-retired-revisions-v5.json' in integration
 local=tasks[2]['paths']
@@ -100,7 +102,7 @@ for position,key,excess in [(0,'final-HGQ',608),(1,'final-HGQ',1700001),(2,'fina
  else: raise AssertionError((position,excess))
 b,_,_,_,_=m['_remediation_budget']()
 _,_,observed_pre_lines,observed_pre_bytes,observed_post_lines,observed_post_bytes=m['_product_test_consumption_segments'](b)
-assert (observed_pre_lines['final-HGQ'],observed_pre_bytes['final-HGQ']) == (576,241849)
+assert (observed_pre_lines['final-HGQ'],observed_pre_bytes['final-HGQ']) == (604,1037008)
 assert 0 < observed_post_lines['final-HGQ'] <= 3150
 assert observed_post_bytes['final-HGQ'] <= 3500000
 `);
@@ -185,6 +187,16 @@ test("ADR0360 retires the image-rejected generation and authenticates assigned i
   assert.ok(
     readFileSync("docs/adr/README.md", "utf8").includes("[0360](0360-retire-runner-image-rejected-generation.md)"),
   );
+});
+
+test("ADR0361 freezes authenticated-runner H and authorizes only direct-child G controls", () => {
+  const path = "docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md";
+  const adr = readFileSync(path, "utf8").replace(/\s+/gu, " ");
+  // biome-ignore format: one compact literal keeps the fixed governance budget intact.
+  const required = `2076c2bd781a663d2b27fa478792fc133fa9fd42|sole parent is terminal G \`21848f84f01d42f28ce2f6f2a177bfe62af8fc58\`|de2319f96d56b0b4e7eb67dbd98d4d2fa13d2aa4|4877fc5a001d730473e0706a52189b2b3f9d1c9f|35785038570|35785038569|35790461281|35790461280|35795093115|10724846408|sha256:0a9c5afdc12f4ccdda6e631d99bfdc6ee75c0092a46711b980baf9179928552c|4,353 entries and two byte-identical builds|one commit whose sole parent is exact H|Reclassify only \`test/fixtures/stage2-completion/production-v4-test-only.json\` from \`governance\`|from \`readiness-ci\` to \`final-HGQ\`|8,367 lines / 650,683 bytes, 258 lines / 8,486,000 bytes, and 3,402 lines / 2,040,878 bytes|changes no retained source byte, fixture byte, validation meaning, task high, or global sum|exactly one first-created attempt-one trusted publisher|exactly one first-created attempt-one no-KVM static observation|authenticate its assigned official runner image before source effects|preserve the accepted thirteen-member package byte-for-byte|docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md|retires this generation`.split("|");
+  for (const text of required) assert.ok(adr.includes(text), text);
+  assert.ok(readFileSync("docs/adr/README.md", "utf8").includes(`[0361](${path.slice(9)})`));
+  assert.equal(existsSync("docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md"), false);
 });
 
 test("ADR0351 expressly authorizes every R3 task reallocation before merge", () => {
