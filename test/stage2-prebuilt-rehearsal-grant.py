@@ -52,10 +52,13 @@ def load(name):
 with tempfile.TemporaryDirectory() as directory:
     path = Path(directory) / "policy.json"
     good = retirement["POLICY"].read_bytes()
-    bad = [b"", b"{", b"[]", b"null", b"{}", b"x" * 8193, b'{"version":NaN}',
+    bad = [b"", b"{", b"[]", b"null", b"{}", b"x" * 16385, b'{"version":NaN}',
            b'{"version":1,"version":2}', b'[' * 1100 + b']' * 1100, b'\xff']
     policy = json.loads(good)
-    assert policy["version"] == "cogs.stage2-retired-revisions/v6" and policy["predecessor"] == {"version": "cogs.stage2-retired-revisions/v5", "sha256": "a2b2ca60e424d16a28f33d2d0a48b5f5b268fc26cedbe89d535d119af99033a7"} and policy["revisions"]["4ffdeb435cc8cd053d47ab173b942ec0f99cd3b4"] == policy["runs"]["35822851712"] == "ADR0363"
+    assert policy["version"] == "cogs.stage2-retired-revisions/v7" and policy["predecessor"] == {"version": "cogs.stage2-retired-revisions/v6", "sha256": "5faf66f56ed02ff8e3be63892f421ae5b0465e66387b05b2a1a8cb8b66f90f37"} and policy["revisions"]["4ffdeb435cc8cd053d47ab173b942ec0f99cd3b4"] == policy["runs"]["35822851712"] == "ADR0363"
+    assert all(policy["revisions"][value] == "ADR0364" for value in ("8e9328c66a1ab930583e22f07ba6f17f23bc7d2e", "f82c9e77acbd8cf1f963a46d73a9e70afb6f41d6", "6d2eff8ffa8fe525b5566a0ddded7d79e868ba16", "c075458cf2d853200df57584c1b16cf38bd6e38c", "f75d3f09990de4635cc3890efe0f5f6e783312bd"))
+    assert all(policy["runs"][value] == "ADR0364" for value in ("35928408355", "35938320143", "35938533499", "35946454149"))
+    assert all(policy["artifacts"][value] == "ADR0364" for value in ("10780807449", "10783357865", "10784336353"))
     assert policy["revisions"]["9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e"] == "ADR0348"
     assert policy["runs"]["34831612221"] == "ADR0348"
     assert policy["revisions"]["5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c"] == "ADR0353"
@@ -82,6 +85,8 @@ with tempfile.TemporaryDirectory() as directory:
     assert retirement["POLICY_V2"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v2.json").read_bytes()
     assert retirement["POLICY_V3"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v3.json").read_bytes()
     assert retirement["POLICY_V4"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v4.json").read_bytes()
+    assert retirement["POLICY_V5"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v5.json").read_bytes()
+    assert retirement["POLICY_V6"].read_bytes() == (ROOT / "config/stage2-retired-revisions-v6.json").read_bytes()
     changed = copy.deepcopy(policy); changed["predecessor"]["sha256"] = "0" * 64
     bad.append(json.dumps(changed).encode())
     for group in ("revisions", "runs", "artifacts"):
@@ -114,7 +119,7 @@ mirror_suffix = ("9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e|34831612221|"
                  "35684568600|35685410662|10658466954|10670334621|10670965964|10678755703|"
                  "10677962970|10678201915|10678118928|10677629335|10678169602|10677874983|"
                  "306727e28ed8b0257d84b7c6fdfd6ba1fde5a22c|21848f84f01d42f28ce2f6f2a177bfe62af8fc58|"
-                 "35716917245|35732877526|35733919360|10690851656|10696531175|2076c2bd781a663d2b27fa478792fc133fa9fd42|1956ea8da439de2ae137e6ccbc5650ca149fe815|4ffdeb435cc8cd053d47ab173b942ec0f99cd3b4|35795093115|35810787971|35811001315|35822851712|10724846408|10729183411|10729578379)")
+                 "35716917245|35732877526|35733919360|10690851656|10696531175|2076c2bd781a663d2b27fa478792fc133fa9fd42|1956ea8da439de2ae137e6ccbc5650ca149fe815|4ffdeb435cc8cd053d47ab173b942ec0f99cd3b4|35795093115|35810787971|35811001315|35822851712|10724846408|10729183411|10729578379|8e9328c66a1ab930583e22f07ba6f17f23bc7d2e|f82c9e77acbd8cf1f963a46d73a9e70afb6f41d6|6d2eff8ffa8fe525b5566a0ddded7d79e868ba16|c075458cf2d853200df57584c1b16cf38bd6e38c|f75d3f09990de4635cc3890efe0f5f6e783312bd|35928408355|35938320143|35938533499|35946454149|10780807449|10783357865|10784336353)")
 mirrors = [path for path in (ROOT / ".github/workflows").glob("*.yml")
            if mirror_suffix in path.read_text()]
 assert len(mirrors) == 12

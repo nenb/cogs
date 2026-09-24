@@ -150,7 +150,10 @@ test("mixed host-check wrapper preserves exact status and output in its sanitize
   try {
     const pass = run('print("host_closure_verified=true\\nhost_closure_sha256=" + "a" * 64)\n');
     assert.equal(pass.status, 0);
-    assert.equal(pass.stdout, `host_closure_verified=true\nhost_closure_sha256=${"a".repeat(64)}\n`);
+    assert.equal(
+      pass.stdout,
+      `host_closure_verified=true\nhost_closure_sha256=${"a".repeat(64)}\nstatic_control_sha256=b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a\n`,
+    );
     assert.equal(pass.stderr, "");
     for (const body of ["raise SystemExit(2)\n", 'print("host_closure_verified=true")\nraise SystemExit(2)\n']) {
       const rejected = run(body);
@@ -245,6 +248,20 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(preflight, /G=1956ea8da439de2ae137e6ccbc5650ca149fe815/u);
   assert.match(preflight, /MANIFEST=f4f4fee0eea79315a7079240a1df0a90e7da52adf3189e33d0326cf5339dbc2a/u);
   assert.match(preflight, /CONTROL=b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a/u);
+  assert.match(preflight, /static_control_sha256=%s/u);
+  assert.match(
+    preflightWorkflow,
+    /EXPECTED_STATIC_CONTROL: \$\{\{ steps\.host_closure\.outputs\.static_control_sha256 \}\}/u,
+  );
+  assert.match(
+    preflightWorkflow,
+    /stage-host "\$EXACT_IMPLEMENTATION_HEAD" "\$EXACT_CONTROL_HEAD" "\$EXPECTED_STATIC_CONTROL" "\$EXPECTED_HOST_CLOSURE"/u,
+  );
+  assert.match(preflightWorkflow, /if: always\(\) && steps\.host_closure\.outcome == 'success'/u);
+  assert.doesNotMatch(
+    preflightWorkflow,
+    /stage-host[^\n]*b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a/u,
+  );
   assert.match(preflight, /DESCRIPTOR=0ac75bf044aa20fc1b1047a5c0579b6489c1ec19502c0044061a5e1fd1597c2c/u);
   assert.match(guard, /control\["producer"\]\["control_revision"\] == REVIEWED_CONTROL_HEAD/u);
   assert.match(guard, /_authenticate_control\(\)/u);
