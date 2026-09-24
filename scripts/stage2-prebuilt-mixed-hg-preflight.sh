@@ -91,7 +91,7 @@ host_check() {
   test "$(/usr/bin/printf '%s\n' "$observed" | /usr/bin/head -n1)" = host_closure_verified=true || return
   [[ "$(/usr/bin/printf '%s\n' "$observed" | /usr/bin/tail -n1)" =~ ^host_closure_sha256=[0-9a-f]{64}$ ]] || return
   test "$(/usr/bin/printf '%s\n' "$observed" | /usr/bin/wc -l)" -eq 2 || return
-  /usr/bin/printf '%s\n' "$observed"
+  /usr/bin/printf '%s\nstatic_control_sha256=%s\n' "$observed" "$CONTROL"
 }
 
 prepare() {

@@ -9,7 +9,7 @@
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1564,
+    "tracked_files": 1568,
     "source_inventory_bytes": 34000000,
     "serialized_source_inventory_bytes": 262144
   },
@@ -24,15 +24,15 @@
       "gross_lines": 48000,
       "gross_bytes": 11000000
     },
-    "global_gross_line_forecast": 41950,
+    "global_gross_line_forecast": 42782,
     "global_gross_byte_forecast": 29500000,
     "remaining_tranche": {
-      "gross_lines": 23950,
+      "gross_lines": 24782,
       "gross_bytes": 21500000,
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 8430,
+          "gross_lines": 8550,
           "gross_bytes": 1300000,
           "paths": [
             ".pi/outcome-two/adr0091-plan-ab.md",
@@ -92,7 +92,7 @@
         },
         {
           "name": "product",
-          "gross_lines": 5049,
+          "gross_lines": 5060,
           "gross_bytes": 2200000,
           "paths": [
             ".github/workflows/insecure-container.yml",
@@ -154,7 +154,7 @@
         },
         {
           "name": "local-tofu-ssm",
-          "gross_lines": 6195,
+          "gross_lines": 6200,
           "gross_bytes": 3300000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
@@ -183,8 +183,8 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 267,
-          "gross_bytes": 9500000,
+          "gross_lines": 278,
+          "gross_bytes": 10000000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -201,8 +201,8 @@
         },
         {
           "name": "final-HGQ",
-          "gross_lines": 4009,
-          "gross_bytes": 5200000,
+          "gross_lines": 4694,
+          "gross_bytes": 4700000,
           "paths": [
             ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml",
             ".github/workflows/stage2-prebuilt-kvm-integration-diagnostic.yml",
@@ -219,6 +219,7 @@
             "config/stage2-retired-revisions-v4.json",
             "config/stage2-retired-revisions-v5.json",
             "config/stage2-retired-revisions-v6.json",
+            "config/stage2-retired-revisions-v7.json",
             "deploy/aws-feasibility/remote/completion_kata_admission.py",
             "deploy/aws-feasibility/remote/completion_kata_preparation.py",
             "deploy/aws-feasibility/remote/completion_kata_process.py",
@@ -251,6 +252,9 @@
             "docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md",
             "docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md",
             "docs/adr/0363-retire-cross-rollout-preflight-and-bind-assigned-host-closures.md",
+            "docs/adr/0364-retire-stale-Q-bindings-and-require-complete-static-handoff.md",
+            "docs/adr/0365-freeze-static-handoff-corrected-H-and-authorize-control.md",
+            "docs/adr/0366-establish-static-handoff-corrected-Q-and-authorize-qualification.md",
             "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
             "schemas/stage2-formal-local-cycle-status-v3.json",
             "schemas/stage2-local-execution-envelope-v4.json",
@@ -285,8 +289,8 @@
             "gross_bytes": 1700000
           },
           "post_h_reserve": {
-            "gross_lines": 3405,
-            "gross_bytes": 3500000
+            "gross_lines": 4090,
+            "gross_bytes": 3000000
           }
         }
       ]
@@ -573,6 +577,7 @@
         "config/stage2-retired-revisions-v4.json",
         "config/stage2-retired-revisions-v5.json",
         "config/stage2-retired-revisions-v6.json",
+        "config/stage2-retired-revisions-v7.json",
         "deploy/aws-feasibility/.terraform.lock.hcl",
         "deploy/aws-feasibility/apply.sh",
         "deploy/aws-feasibility/check-plan.py",
@@ -753,6 +758,9 @@
         "docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md",
         "docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md",
         "docs/adr/0363-retire-cross-rollout-preflight-and-bind-assigned-host-closures.md",
+        "docs/adr/0364-retire-stale-Q-bindings-and-require-complete-static-handoff.md",
+        "docs/adr/0365-freeze-static-handoff-corrected-H-and-authorize-control.md",
+        "docs/adr/0366-establish-static-handoff-corrected-Q-and-authorize-qualification.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",
