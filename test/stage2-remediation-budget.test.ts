@@ -90,7 +90,7 @@ assert m['PRODUCT_TEST_FINAL_H_PARENT'] == 'ede3c228eea1efb4cd3a435b969f59aeb7f7
 assert m['PRODUCT_TEST_FINAL_H_TREE'] == 'b8734d91e693a01a29d49a9a4d5f9eb3843ad374'
 assert m['PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP'] == (604,1700000)
 assert m['PRODUCT_TEST_FINAL_HGQ_POST_H_CAP'] == (4090,3000000)
-assert m['PRODUCT_TEST_PENDING_READINESS_REGENERATIONS'] == 2
+assert m['PRODUCT_TEST_PENDING_READINESS_REGENERATIONS'] == 1
 assert m['PRODUCT_TEST_PENDING_REGENERATION_LINE_COSTS'] == {'governance':3,'product':1,'readiness-ci':3}
 names=m['PRODUCT_TEST_TASK_MAXIMA']
 def empty(): return {name:0 for name in names}
