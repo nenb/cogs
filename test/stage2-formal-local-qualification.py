@@ -81,11 +81,14 @@ control_fixture = tempfile.TemporaryDirectory()
 historical = ROOT / "deploy/aws-feasibility/remote/stage2-completion-local-control-v5"
 assert formal.CONTROL_PACKAGE == guard.CONTROL_PACKAGE
 assert formal.CONTROL_PACKAGE.name == "stage2-completion-local-control-v7"
+reviewed_control = json.loads((formal.CONTROL_PACKAGE / formal.CONTROL_MEMBER).read_bytes())
+q_adapter_row = next(row for row in reviewed_control["implementation"]["selected_sources"] if row["path"] == guard.Q_BINDING_ADAPTER)
 control = json.loads((historical / formal.CONTROL_MEMBER).read_bytes())
 historical_envelope_member = next(row["name"] for row in control["members"] if row["kind"] == "envelope")
 envelope = json.loads((historical / historical_envelope_member).read_bytes())
 runtime_raw = (historical / formal.RUNTIME_MEMBER).read_bytes()
-selected = [{"path": path, "size": len((ROOT / path).read_bytes()),
+selected = [copy.deepcopy(q_adapter_row) if path == guard.Q_BINDING_ADAPTER else
+            {"path": path, "size": len((ROOT / path).read_bytes()),
              "sha256": hashlib.sha256((ROOT / path).read_bytes()).hexdigest()}
             for path in sorted(admission.preparation.MANDATORY_SECURITY_SOURCES)]
 assert guard.REQUIRED_CONSUMERS <= admission.preparation.MANDATORY_SECURITY_SOURCES
@@ -689,7 +692,7 @@ for ordinal in (1, 2):
     assert lifecycle.static_custody.close_attempts == 0 and not registry
 
 # Guard verifies actual self-contained schema bytes, not a stale constant or an
-# environment-supplied replacement. Synthetic H/G avoids reviving retired pins.
+# environment-supplied replacement. Synthetic lineage uses mocked retirement selection.
 assert guard.REVIEWED_RESULT_SCHEMA_SHA256 == expected["EXPECTED_RESULT_SCHEMA_SHA256"]
 assert "$ref\": \"https://" not in guard.RESULT_SCHEMA.read_text()
 guard_environment = {
@@ -714,7 +717,7 @@ with tempfile.TemporaryDirectory() as source_root:
     for row in selected:
         path = source_root / row["path"]; path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes((ROOT / row["path"]).read_bytes())
-    with patch.multiple(guard, ROOT=source_root, CONTROL=formal.CONTROL_PACKAGE / formal.CONTROL_MEMBER,
+    with patch.dict(guard.retirement, {"select": lambda *_args, **_kwargs: None}), patch.multiple(guard, ROOT=source_root, CONTROL=formal.CONTROL_PACKAGE / formal.CONTROL_MEMBER,
             WORKFLOW=source_root / guard.WORKFLOW.relative_to(ROOT),
             RESULT_SCHEMA=source_root / guard.RESULT_SCHEMA.relative_to(ROOT),
             REVIEWED_IMPLEMENTATION_HEAD=expected["EXPECTED_IMPLEMENTATION_HEAD"],
@@ -722,6 +725,8 @@ with tempfile.TemporaryDirectory() as source_root:
             REVIEWED_IMPLEMENTATION_MANIFEST_SHA256=expected["EXPECTED_SOURCE_MANIFEST_SHA256"],
             REVIEWED_CONTROL_SHA256=expected["EXPECTED_CONTROL_SHA256"],
             REVIEWED_ROOTFS_DESCRIPTOR_SHA256=expected["EXPECTED_ROOTFS_DESCRIPTOR_SHA256"],
+            REVIEWED_PRODUCER=(envelope["rootfs"]["custody"]["publication_receipt"]["producer_run_id"], envelope["rootfs"]["custody"]["publication_receipt"]["producer_artifact_id"], "sha256:" + d("producer-archive")),
+            REVIEWED_PUBLISHER=(envelope["rootfs"]["custody"]["publication_receipt"]["publisher_run_id"], 67, "sha256:" + d("publisher-archive")),
             REVIEWED_WORKFLOW_SHA256=hashlib.sha256(guard.WORKFLOW.read_bytes()).hexdigest(),
             G_RETIREMENT_CONSUMERS={name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
                                     for name in guard.G_RETIREMENT_CONSUMERS},
