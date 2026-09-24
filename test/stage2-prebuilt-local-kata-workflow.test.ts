@@ -152,7 +152,7 @@ test("mixed host-check wrapper preserves exact status and output in its sanitize
     assert.equal(pass.status, 0);
     assert.equal(
       pass.stdout,
-      `host_closure_verified=true\nhost_closure_sha256=${"a".repeat(64)}\nstatic_control_sha256=b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a\n`,
+      `host_closure_verified=true\nhost_closure_sha256=${"a".repeat(64)}\nstatic_control_sha256=28ea28ef436623f202f056638ad712ed885ed1d121ecf1eb314f7c41b1a76555\n`,
     );
     assert.equal(pass.stderr, "");
     for (const body of ["raise SystemExit(2)\n", 'print("host_closure_verified=true")\nraise SystemExit(2)\n']) {
@@ -215,13 +215,13 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(staging, /def verify_staged\(expected_descriptor, diagnostic=False\)/u);
   assert.match(staging, /except Exception:\n {8}raise SystemExit\(2\) from None/u);
   assert.match(guard, /Reviewed directional binding/u);
-  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "2076c2bd781a663d2b27fa478792fc133fa9fd42"/u);
-  assert.match(guard, /REVIEWED_CONTROL_HEAD = "1956ea8da439de2ae137e6ccbc5650ca149fe815"/u);
+  assert.match(guard, /REVIEWED_IMPLEMENTATION_HEAD = "ba085947eaee321dfb724d94169d42bc36d397b0"/u);
+  assert.match(guard, /REVIEWED_CONTROL_HEAD = "c37baf5c1fbb8f1e335945ad7ac93452d4537c9d"/u);
   assert.match(
     guard,
-    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "f4f4fee0eea79315a7079240a1df0a90e7da52adf3189e33d0326cf5339dbc2a"/u,
+    /REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "cf15e437888f7c1c2808e113576d3592bef40e39c9a88db199f0ca6a38986bb9"/u,
   );
-  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a"/u);
+  assert.match(guard, /REVIEWED_CONTROL_SHA256 = "28ea28ef436623f202f056638ad712ed885ed1d121ecf1eb314f7c41b1a76555"/u);
   assert.equal(
     /REVIEWED_WORKFLOW_SHA256 = "([0-9a-f]{64})"/u.exec(guard)?.[1],
     createHash("sha256").update(workflow).digest("hex"),
@@ -236,18 +236,20 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   );
   assert.match(
     guard,
-    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "0ac75bf044aa20fc1b1047a5c0579b6489c1ec19502c0044061a5e1fd1597c2c"/u,
+    /REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "88b33740b2782240c894a8b1abf0988f5e65e0343cfda3cb1811affe1e8ca615"/u,
   );
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 35811001315/u);
-  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10729578379/u);
+  assert.match(guard, /REVIEWED_PRODUCER = \(35990583990, 10804234912, "sha256:384d3e5f/u);
+  assert.match(guard, /REVIEWED_PUBLISHER = \(36006546962, 10810159633, "sha256:6d82101f/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_RUN_ID = 36008194540/u);
+  assert.match(guard, /REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10811168115/u);
   assert.match(
     guard,
-    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:4e77986b58e0a5abf262e71a456b8aafbbe2d69ab3e3f20bb30d3f8f15b43ccd"/u,
+    /REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:e2ac2d812d9695eaa79fa99e58271573188e58900db46697716a5efea24973f3"/u,
   );
-  assert.match(preflight, /H=2076c2bd781a663d2b27fa478792fc133fa9fd42/u);
-  assert.match(preflight, /G=1956ea8da439de2ae137e6ccbc5650ca149fe815/u);
-  assert.match(preflight, /MANIFEST=f4f4fee0eea79315a7079240a1df0a90e7da52adf3189e33d0326cf5339dbc2a/u);
-  assert.match(preflight, /CONTROL=b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a/u);
+  assert.match(preflight, /H=ba085947eaee321dfb724d94169d42bc36d397b0/u);
+  assert.match(preflight, /G=c37baf5c1fbb8f1e335945ad7ac93452d4537c9d/u);
+  assert.match(preflight, /MANIFEST=cf15e437888f7c1c2808e113576d3592bef40e39c9a88db199f0ca6a38986bb9/u);
+  assert.match(preflight, /CONTROL=28ea28ef436623f202f056638ad712ed885ed1d121ecf1eb314f7c41b1a76555/u);
   assert.match(preflight, /static_control_sha256=%s/u);
   assert.match(
     preflightWorkflow,
@@ -260,9 +262,9 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(preflightWorkflow, /if: always\(\) && steps\.host_closure\.outcome == 'success'/u);
   assert.doesNotMatch(
     preflightWorkflow,
-    /stage-host[^\n]*b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a/u,
+    /stage-host[^\n]*28ea28ef436623f202f056638ad712ed885ed1d121ecf1eb314f7c41b1a76555/u,
   );
-  assert.match(preflight, /DESCRIPTOR=0ac75bf044aa20fc1b1047a5c0579b6489c1ec19502c0044061a5e1fd1597c2c/u);
+  assert.match(preflight, /DESCRIPTOR=88b33740b2782240c894a8b1abf0988f5e65e0343cfda3cb1811affe1e8ca615/u);
   assert.match(guard, /control\["producer"\]\["control_revision"\] == REVIEWED_CONTROL_HEAD/u);
   assert.match(guard, /_authenticate_control\(\)/u);
   assert.ok(
@@ -272,7 +274,7 @@ test("formal qualification is additive, exact H/G/Q, first-created, and seven fr
   assert.match(guard, /"qualification_head": qualification/u);
 });
 
-test("checked-in v7 remains byte-valid but the terminal authenticated-runner H/G package is retired", () => {
+test("checked-in v7 is the byte-valid accepted replacement H/G package", () => {
   const result = spawnSync(
     "python3",
     [
@@ -290,21 +292,19 @@ def sha(raw): return hashlib.sha256(raw).hexdigest()
 paths=sorted(path for path in package.rglob('*') if path.is_file())
 require(len(paths)==13 and all(not path.is_symlink() for path in package.rglob('*')), 'unsafe v7 package')
 guard=runpy.run_path(str(current/'scripts/stage2-prebuilt-local-qualification-guard.py'))
-try: guard['_reviewed_constants']()
-except guard['retirement']['RetirementError']: pass
-else: raise AssertionError('terminal H/G constants were accepted')
+guard['_reviewed_constants']()
 sys.path.insert(0,str(current/'deploy/aws-feasibility/remote'))
 import completion_kata_preparation as codec
 control=codec.load_control((package/'stage2-local-static-control-v2.json').read_bytes())
 members={row['name']:(package/row['name']).read_bytes() for row in control.value['members']}
 envelope,runtime,contracts=codec.validate_control_members(control,members)
-require(envelope.value['implementation']['revision']=='2076c2bd781a663d2b27fa478792fc133fa9fd42', 'historical H differs')
-require(envelope.value['control_revision']=='1956ea8da439de2ae137e6ccbc5650ca149fe815', 'historical G differs')
-require(envelope.value['rootfs']['prebuilt_descriptor_sha256']=='0ac75bf044aa20fc1b1047a5c0579b6489c1ec19502c0044061a5e1fd1597c2c', 'descriptor differs')
+require(envelope.value['implementation']['revision']=='ba085947eaee321dfb724d94169d42bc36d397b0', 'replacement H differs')
+require(envelope.value['control_revision']=='c37baf5c1fbb8f1e335945ad7ac93452d4537c9d', 'replacement G differs')
+require(envelope.value['rootfs']['prebuilt_descriptor_sha256']=='88b33740b2782240c894a8b1abf0988f5e65e0343cfda3cb1811affe1e8ca615', 'descriptor differs')
 require(len(contracts)==10 and len(runtime.value['executables'])==10, 'control codec differs')
-require(sha((package/'stage2-local-static-control-v2.json').read_bytes())=='b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a', 'control differs')
-require(sha((package/'stage2-local-execution-envelope-v4.json').read_bytes())=='db5219543713b3a9733306d0444a611aad9b9c3a8ba40a6059e037dc0feb95b9', 'envelope differs')
-require(sha((package/'stage2-local-runtime-manifest-v3.json').read_bytes())=='9a6bca06dd35a60e41b4bc1a1e4edc1227d65110bce4b149ba3958cd4c4d2e19', 'runtime differs')
+require(sha((package/'stage2-local-static-control-v2.json').read_bytes())=='28ea28ef436623f202f056638ad712ed885ed1d121ecf1eb314f7c41b1a76555', 'control differs')
+require(sha((package/'stage2-local-execution-envelope-v4.json').read_bytes())=='57d3f080669614d4eb83e17577bed801087808c9b6af606adb8f3b5117ba01d6', 'envelope differs')
+require(sha((package/'stage2-local-runtime-manifest-v3.json').read_bytes())=='e8d83c913c924fef5e45d4292fa0b53c1dd25f1917fbe403e000bc819e71682d', 'runtime differs')
 `,
     ],
     { encoding: "utf8", timeout: 30_000 },

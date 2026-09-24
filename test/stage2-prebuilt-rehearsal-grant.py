@@ -68,7 +68,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert "[0365](0365-retire-premature-producer-and-require-replacement-H.md)" in (ROOT / "docs/adr/README.md").read_text()
     g_path = ROOT / "docs/adr/0366-freeze-replacement-H-and-authorize-control.md"; g_adr = " ".join(g_path.read_text().split())
     assert all(value in g_adr for value in ("ba085947eaee321dfb724d94169d42bc36d397b0", "35984488769", "35984488928", "Only afterwards", "35990583990", "10804234912", "sha256:384d3e5ff819fa706bd6e793e29d2b7ab71b33f339ccec89c57248db7bf2b88c", "one commit whose sole parent is exact H", "exactly one first-created attempt-one trusted publisher", "exactly one first-created attempt-one no-KVM static observation", "docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md", "reducing `PRODUCT_TEST_PENDING_READINESS_REGENERATIONS` from 2 to 1", "grants no mixed preflight, qualification, IAM, AWS credentials"))
-    assert "[0366](0366-freeze-replacement-H-and-authorize-control.md)" in (ROOT / "docs/adr/README.md").read_text() and not (ROOT / "docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md").exists()
+    assert "[0366](0366-freeze-replacement-H-and-authorize-control.md)" in (ROOT / "docs/adr/README.md").read_text()
+    q_adr = " ".join((ROOT / "docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md").read_text().split())
+    assert all(value in q_adr for value in ("sole parent is H", "36006546962", "10810159633", "36008194540", "10811168115", "thirteen accepted static members byte-for-byte", "sole parent is exact G", "from 1 to 0", "exactly one first-created attempt-one mixed H/G/Q no-KVM preflight", "exactly one first-created attempt-one seven-runner qualification", "grants no IAM, AWS credential")) and "[0367](0367-establish-replacement-Q-and-authorize-qualification.md)" in (ROOT / "docs/adr/README.md").read_text()
     assert policy["revisions"]["9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e"] == "ADR0348"
     assert policy["runs"]["34831612221"] == "ADR0348"
     assert policy["revisions"]["5ea2064daa3e62ddbd68fc0f0bb20db1eb0c3f3c"] == "ADR0353"

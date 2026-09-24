@@ -44,18 +44,20 @@ REPOSITORY = "nenb/cogs"
 WORKFLOW_NAME = "stage2-prebuilt-local-kata-qualification.yml"
 # Reviewed directional binding: this data revision G describes the earlier H;
 # environment or dispatch values are never defaults.
-REVIEWED_IMPLEMENTATION_HEAD = "2076c2bd781a663d2b27fa478792fc133fa9fd42"
-REVIEWED_CONTROL_HEAD = "1956ea8da439de2ae137e6ccbc5650ca149fe815"
-REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "f4f4fee0eea79315a7079240a1df0a90e7da52adf3189e33d0326cf5339dbc2a"
-REVIEWED_CONTROL_SHA256 = "b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a"
+REVIEWED_IMPLEMENTATION_HEAD = "ba085947eaee321dfb724d94169d42bc36d397b0"
+REVIEWED_CONTROL_HEAD = "c37baf5c1fbb8f1e335945ad7ac93452d4537c9d"
+REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "cf15e437888f7c1c2808e113576d3592bef40e39c9a88db199f0ca6a38986bb9"
+REVIEWED_CONTROL_SHA256 = "28ea28ef436623f202f056638ad712ed885ed1d121ecf1eb314f7c41b1a76555"
 REVIEWED_WORKFLOW_SHA256 = "072a3fae20654df37aa532c42933bca18ecaa5e1fbe62ca68fe16bde0bb75cfa"
 # Self-contained formal receipt v2 contract, not the ordinary local report schema.
 REVIEWED_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 # No dispatch value can supply the independently reviewed static custody.
-REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "0ac75bf044aa20fc1b1047a5c0579b6489c1ec19502c0044061a5e1fd1597c2c"
-REVIEWED_STATIC_CONTROL_RUN_ID = 35811001315
-REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10729578379
-REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:4e77986b58e0a5abf262e71a456b8aafbbe2d69ab3e3f20bb30d3f8f15b43ccd"
+REVIEWED_ROOTFS_DESCRIPTOR_SHA256 = "88b33740b2782240c894a8b1abf0988f5e65e0343cfda3cb1811affe1e8ca615"
+REVIEWED_PRODUCER = (35990583990, 10804234912, "sha256:384d3e5ff819fa706bd6e793e29d2b7ab71b33f339ccec89c57248db7bf2b88c")
+REVIEWED_PUBLISHER = (36006546962, 10810159633, "sha256:6d82101f82eb6689110e29851ac34af4bdb3b4576b59986b75e500ca4e9129ca")
+REVIEWED_STATIC_CONTROL_RUN_ID = 36008194540
+REVIEWED_STATIC_CONTROL_ARTIFACT_ID = 10811168115
+REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST = "sha256:e2ac2d812d9695eaa79fa99e58271573188e58900db46697716a5efea24973f3"
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 POSITIVE = re.compile(r"[1-9][0-9]*")
@@ -190,6 +192,10 @@ def _authenticate_control():
              and envelope["runtime"]["executable_set_sha256"] == _sha(_canonical(runtime["executables"]))
              and envelope["rootfs"]["prebuilt_descriptor_sha256"] == REVIEWED_ROOTFS_DESCRIPTOR_SHA256,
              "control envelope/runtime binding differs")
+    publication = envelope["rootfs"]["custody"]["publication_receipt"]
+    _require((publication["producer_run_id"], publication["producer_artifact_id"],
+              publication["publisher_run_id"]) == (REVIEWED_PRODUCER[0], REVIEWED_PRODUCER[1],
+              REVIEWED_PUBLISHER[0]), "producer/publisher handoff differs")
     rows = implementation["selected_sources"]
     _require(type(rows) is list and 1 <= len(rows) <= 128
              and implementation["selected_sources_sha256"] == _sha(_canonical(rows)))
@@ -240,15 +246,14 @@ def _reviewed_constants():
     )
     _require(all(type(value) is str and pattern.fullmatch(value) is not None
                  for value, pattern in values), "review constants remain blocked")
-    _require(type(REVIEWED_STATIC_CONTROL_RUN_ID) is int
-             and type(REVIEWED_STATIC_CONTROL_ARTIFACT_ID) is int
-             and REVIEWED_STATIC_CONTROL_RUN_ID > 0 and REVIEWED_STATIC_CONTROL_ARTIFACT_ID > 0
-             and type(REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST) is str
-             and re.fullmatch(r"sha256:[0-9a-f]{64}",
-                              REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST) is not None,
-             "static observation custody remains blocked")
+    custody = (REVIEWED_PRODUCER, REVIEWED_PUBLISHER,
+               (REVIEWED_STATIC_CONTROL_RUN_ID, REVIEWED_STATIC_CONTROL_ARTIFACT_ID,
+                REVIEWED_STATIC_CONTROL_ARTIFACT_DIGEST))
+    _require(all(type(run) is int and run > 0 and type(artifact) is int and artifact > 0
+                 and type(digest) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+                 for run, artifact, digest in custody), "static observation custody remains blocked")
     retirement["select"]((REVIEWED_IMPLEMENTATION_HEAD, REVIEWED_CONTROL_HEAD),
-        runs=(str(REVIEWED_STATIC_CONTROL_RUN_ID),), artifacts=(str(REVIEWED_STATIC_CONTROL_ARTIFACT_ID),))
+        runs=tuple(str(row[0]) for row in custody), artifacts=tuple(str(row[1]) for row in custody))
 
 
 def guard(environ=os.environ, event=None, first_created=None):
