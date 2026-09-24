@@ -18,9 +18,9 @@ CONTROL = CONTROL_PACKAGE / "stage2-local-static-control-v2.json"
 Q_BINDING_ADAPTER = "scripts/stage2-prebuilt-local-qualification-guard.py"
 G_RETIREMENT_CONSUMERS = {
     ".github/workflows/stage2-prebuilt-local-kata-qualification.yml":
-        "5fddc9a83ac6077ec08e91b3f2d794f1104d0eb323ac0a04ea2b3a34c6183de6",
+        "072a3fae20654df37aa532c42933bca18ecaa5e1fbe62ca68fe16bde0bb75cfa",
     "scripts/stage2-revision-retirement.py":
-        "9b6248b1b1581a1b5a876bcf97d682ff259467629766998d6887ccd1d47507f5",
+        "bdc86b075ea78ce33ae07edb9030afbc6677bc87a3d2b3e04224517ddd3636e0",
 }
 REQUIRED_CONSUMERS = frozenset({
     ".github/workflows/stage2-prebuilt-local-kata-qualification.yml",
@@ -48,7 +48,7 @@ REVIEWED_IMPLEMENTATION_HEAD = "2076c2bd781a663d2b27fa478792fc133fa9fd42"
 REVIEWED_CONTROL_HEAD = "1956ea8da439de2ae137e6ccbc5650ca149fe815"
 REVIEWED_IMPLEMENTATION_MANIFEST_SHA256 = "f4f4fee0eea79315a7079240a1df0a90e7da52adf3189e33d0326cf5339dbc2a"
 REVIEWED_CONTROL_SHA256 = "b2a4475e9277640dea97dc1d9fcc69eeb9af44175ae9f83faf05ed482e5fa01a"
-REVIEWED_WORKFLOW_SHA256 = "5fddc9a83ac6077ec08e91b3f2d794f1104d0eb323ac0a04ea2b3a34c6183de6"
+REVIEWED_WORKFLOW_SHA256 = "072a3fae20654df37aa532c42933bca18ecaa5e1fbe62ca68fe16bde0bb75cfa"
 # Self-contained formal receipt v2 contract, not the ordinary local report schema.
 REVIEWED_RESULT_SCHEMA_SHA256 = "20d11acd19655cd1fc424aea710d98334d2deeff98db1942e0f4fe53807a4e1f"
 # No dispatch value can supply the independently reviewed static custody.
@@ -71,9 +71,9 @@ DENIED_ENVIRONMENT = frozenset((
 ))
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
-# Bootstrap veto code must be authenticated before it executes, even when v7
-# does not exist yet. This is a source seal, not successor H/G/Q authority.
-RETIREMENT_SOURCE_SHA256 = "9b6248b1b1581a1b5a876bcf97d682ff259467629766998d6887ccd1d47507f5"
+# Bootstrap veto code must be authenticated before it executes, even when the
+# current policy does not exist yet. This seal grants no successor authority.
+RETIREMENT_SOURCE_SHA256 = "bdc86b075ea78ce33ae07edb9030afbc6677bc87a3d2b3e04224517ddd3636e0"
 
 
 class GuardError(Exception):

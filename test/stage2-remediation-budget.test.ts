@@ -8,19 +8,19 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0366 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0367 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8550,1300000),(5060,2200000),(6200,3300000),(278,10000000),(4694,4700000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8550,1300000),(5056,1950000),(6200,3300000),(282,10250000),(4694,4700000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (24782,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (42782,29500000)
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
-for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','config/stage2-retired-revisions-v5.json','config/stage2-retired-revisions-v6.json','config/stage2-retired-revisions-v7.json','deploy/aws-feasibility/remote/completion_kata_admission.py','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_kata_process.py','deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','docs/adr/0360-retire-runner-image-rejected-generation.md','docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md','docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md','docs/adr/0363-retire-cross-rollout-preflight-and-bind-assigned-host-closures.md','docs/adr/0364-retire-stale-Q-bindings-and-require-complete-static-handoff.md','docs/adr/0365-freeze-static-handoff-corrected-H-and-authorize-control.md','docs/adr/0366-establish-static-handoff-corrected-Q-and-authorize-qualification.md','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','schemas/stage2-formal-local-cycle-status-v3.json','schemas/stage2-local-execution-envelope-v4.json','schemas/stage2-pre-aws-qualification-package-v6.json','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','scripts/stage2-stage-prebuilt-control.py','test/aws-stage2-completion-kata-process.py','test/aws-stage2-completion-kata-static-control.py','test/fixtures/stage2-completion/production-v4-test-only.json','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts','test/stage2-local-workflow-scripts.py','test/stage2-prebuilt-rehearsal-grant.py']:
+for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','config/stage2-retired-revisions-v5.json','config/stage2-retired-revisions-v6.json','config/stage2-retired-revisions-v7.json','config/stage2-retired-revisions-v8.json','deploy/aws-feasibility/remote/completion_kata_admission.py','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_kata_process.py','deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','docs/adr/0360-retire-runner-image-rejected-generation.md','docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md','docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md','docs/adr/0363-retire-cross-rollout-preflight-and-bind-assigned-host-closures.md','docs/adr/0364-retire-stale-Q-bindings-and-require-complete-static-handoff.md','docs/adr/0365-retire-premature-producer-and-require-replacement-H.md','docs/adr/0366-freeze-replacement-H-and-authorize-control.md','docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','schemas/stage2-formal-local-cycle-status-v3.json','schemas/stage2-local-execution-envelope-v4.json','schemas/stage2-pre-aws-qualification-package-v6.json','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','scripts/stage2-stage-prebuilt-control.py','test/aws-stage2-completion-kata-process.py','test/aws-stage2-completion-kata-static-control.py','test/fixtures/stage2-completion/production-v4-test-only.json','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts','test/stage2-local-workflow-scripts.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 14
@@ -53,9 +53,11 @@ assert 'docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualificati
 assert 'config/stage2-retired-revisions-v4.json' in integration
 assert 'config/stage2-retired-revisions-v6.json' in integration
 assert 'config/stage2-retired-revisions-v7.json' in integration
+assert 'config/stage2-retired-revisions-v8.json' in integration
 assert 'docs/adr/0364-retire-stale-Q-bindings-and-require-complete-static-handoff.md' in integration
-assert 'docs/adr/0365-freeze-static-handoff-corrected-H-and-authorize-control.md' in integration
-assert 'docs/adr/0366-establish-static-handoff-corrected-Q-and-authorize-qualification.md' in integration
+assert 'docs/adr/0365-retire-premature-producer-and-require-replacement-H.md' in integration
+assert 'docs/adr/0366-freeze-replacement-H-and-authorize-control.md' in integration
+assert 'docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md' in integration
 local=tasks[2]['paths']
 assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
 assert '.github/workflows/stage2-r-diagnostic-campaign.yml' in local
@@ -88,6 +90,8 @@ assert m['PRODUCT_TEST_FINAL_H_PARENT'] == 'ede3c228eea1efb4cd3a435b969f59aeb7f7
 assert m['PRODUCT_TEST_FINAL_H_TREE'] == 'b8734d91e693a01a29d49a9a4d5f9eb3843ad374'
 assert m['PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP'] == (604,1700000)
 assert m['PRODUCT_TEST_FINAL_HGQ_POST_H_CAP'] == (4090,3000000)
+assert m['PRODUCT_TEST_PENDING_READINESS_REGENERATIONS'] == 2
+assert m['PRODUCT_TEST_PENDING_REGENERATION_LINE_COSTS'] == {'governance':3,'product':1,'readiness-ci':3}
 names=m['PRODUCT_TEST_TASK_MAXIMA']
 def empty(): return {name:0 for name in names}
 pre_lines=empty(); pre_bytes=empty(); post_lines=empty(); post_bytes=empty()
