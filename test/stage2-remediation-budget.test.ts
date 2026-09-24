@@ -15,7 +15,7 @@ m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8550,1300000),(5060,2200000),(6200,3300000),(275,10000000),(4697,4700000)]
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8550,1300000),(5060,2200000),(6200,3300000),(278,10000000),(4694,4700000)]
 assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (24782,21500000)
 assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (42782,29500000)
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
@@ -65,7 +65,7 @@ assert 'scripts/stage2-stage-production-approval.py' in local
 assert 'test/stage2-production-approval.test.ts' in tasks[0]['paths']
 assert 'schemas/aws-stage2-completion-production-approval-v6.json' in tasks[0]['paths']
 assert 'test/stage2-production-workflows.test.ts' in tasks[0]['paths']
-assert tasks[-1]['post_h_reserve'] == {'gross_lines':4093,'gross_bytes':3000000}
+assert tasks[-1]['post_h_reserve'] == {'gross_lines':4090,'gross_bytes':3000000}
 assert b['source_limits'] == {'tracked_files':1568,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
@@ -87,13 +87,13 @@ assert m['PRODUCT_TEST_FINAL_H_REVISION'] == '5ea2064daa3e62ddbd68fc0f0bb20db1eb
 assert m['PRODUCT_TEST_FINAL_H_PARENT'] == 'ede3c228eea1efb4cd3a435b969f59aeb7f71c10'
 assert m['PRODUCT_TEST_FINAL_H_TREE'] == 'b8734d91e693a01a29d49a9a4d5f9eb3843ad374'
 assert m['PRODUCT_TEST_FINAL_HGQ_PRE_H_CAP'] == (604,1700000)
-assert m['PRODUCT_TEST_FINAL_HGQ_POST_H_CAP'] == (4093,3000000)
+assert m['PRODUCT_TEST_FINAL_HGQ_POST_H_CAP'] == (4090,3000000)
 names=m['PRODUCT_TEST_TASK_MAXIMA']
 def empty(): return {name:0 for name in names}
 pre_lines=empty(); pre_bytes=empty(); post_lines=empty(); post_bytes=empty()
 pre_lines['final-HGQ']=604; pre_bytes['final-HGQ']=1700000
-post_lines['final-HGQ']=4093; post_bytes['final-HGQ']=3000000
-for position,key,excess in [(0,'final-HGQ',605),(1,'final-HGQ',1700001),(2,'final-HGQ',4094),(3,'final-HGQ',3000001)]:
+post_lines['final-HGQ']=4090; post_bytes['final-HGQ']=3000000
+for position,key,excess in [(0,'final-HGQ',605),(1,'final-HGQ',1700001),(2,'final-HGQ',4091),(3,'final-HGQ',3000001)]:
  values=[empty(),empty(),empty(),empty()]; values[position][key]=excess
  try: m['_enforce_product_test_consumption'](*values)
  except m['LineBudgetError']: pass
@@ -101,7 +101,7 @@ for position,key,excess in [(0,'final-HGQ',605),(1,'final-HGQ',1700001),(2,'fina
 b,_,_,_,_=m['_remediation_budget']()
 _,_,observed_pre_lines,observed_pre_bytes,observed_post_lines,observed_post_bytes=m['_product_test_consumption_segments'](b)
 assert (observed_pre_lines['final-HGQ'],observed_pre_bytes['final-HGQ']) == (604,1037008)
-assert 0 < observed_post_lines['final-HGQ'] <= 4093
+assert 0 < observed_post_lines['final-HGQ'] <= 4090
 assert observed_post_bytes['final-HGQ'] <= 3500000
 `);
 });
@@ -207,7 +207,7 @@ test("ADR0364 retires stale Q and requires complete static handoff", () => {
     "Package validation is the single source",
     "Separate non-mutating host comparison from root staging",
     "A mode-only Q is insufficient",
-    "4,093 lines / 3,000,000 bytes",
+    "4,090 lines / 3,000,000 bytes",
     "No source-inventory byte limit is raised",
     "AWS, IAM, approval, or production authority",
   ])

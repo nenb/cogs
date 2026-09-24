@@ -183,7 +183,7 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 275,
+          "gross_lines": 278,
           "gross_bytes": 10000000,
           "paths": [
             ".gitleaksignore",
@@ -201,7 +201,7 @@
         },
         {
           "name": "final-HGQ",
-          "gross_lines": 4697,
+          "gross_lines": 4694,
           "gross_bytes": 4700000,
           "paths": [
             ".github/workflows/stage2-local-static-control-prebuilt-candidate.yml",
@@ -289,7 +289,7 @@
             "gross_bytes": 1700000
           },
           "post_h_reserve": {
-            "gross_lines": 4093,
+            "gross_lines": 4090,
             "gross_bytes": 3000000
           }
         }

@@ -50,10 +50,10 @@ The historical five-task accounting remains gross and deletion-blind. This corre
 - governance: 8,550 lines / 1,300,000 bytes;
 - product: 5,060 lines / 2,200,000 bytes;
 - local-tofu-ssm: 6,200 lines / 3,300,000 bytes;
-- readiness-ci: 275 lines / 10,000,000 bytes; and
-- final-HGQ: 4,697 lines / 4,700,000 bytes.
+- readiness-ci: 278 lines / 10,000,000 bytes; and
+- final-HGQ: 4,694 lines / 4,700,000 bytes.
 
-The remaining line tranche becomes 24,782 and the global line forecast becomes 42,782. The remaining byte tranche stays exactly 21,500,000 and the global byte forecast stays exactly 29,500,000 by moving 500,000 bytes from final-HGQ to readiness-ci for repeated deterministic source-inventory regeneration. The final-HGQ pre-H cap remains 604 lines / 1,700,000 bytes; its post-H reserve becomes 4,093 lines / 3,000,000 bytes. The readiness allocation retains four deletion-blind generated-line transitions for the later G and Q regenerations. Four planned new files raise the tracked-file limit from 1,564 to 1,568. No source-inventory byte limit is raised.
+The remaining line tranche becomes 24,782 and the global line forecast becomes 42,782. The remaining byte tranche stays exactly 21,500,000 and the global byte forecast stays exactly 29,500,000 by moving 500,000 bytes from final-HGQ to readiness-ci for repeated deterministic source-inventory regeneration. The final-HGQ pre-H cap remains 604 lines / 1,700,000 bytes; its post-H reserve becomes 4,090 lines / 3,000,000 bytes. The readiness allocation retains four deletion-blind generated-line transitions for the later G and Q regenerations. Four planned new files raise the tracked-file limit from 1,564 to 1,568. No source-inventory byte limit is raised.
 
 ## Consequences
 
