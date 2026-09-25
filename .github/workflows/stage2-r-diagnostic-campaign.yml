@@ -139,7 +139,8 @@ jobs:
         run: |
           set -euo pipefail
           root=/var/lib/cogs/stage2-completion-v1/source
-          for path in deploy/aws-feasibility/completion_campaign_aws_adapter.py \
+          for path in deploy/aws-feasibility/check-plan.py \
+              deploy/aws-feasibility/completion_campaign_aws_adapter.py \
               deploy/aws-feasibility/completion_campaign_aws_entry.py \
               deploy/aws-feasibility/completion_campaign_aws_provider.py \
               deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py \
@@ -492,7 +493,8 @@ jobs:
         run: |
           set -euo pipefail
           root=/var/lib/cogs/stage2-completion-v1/source
-          for path in deploy/aws-feasibility/completion_campaign_aws_adapter.py \
+          for path in deploy/aws-feasibility/check-plan.py \
+              deploy/aws-feasibility/completion_campaign_aws_adapter.py \
               deploy/aws-feasibility/completion_campaign_aws_entry.py \
               deploy/aws-feasibility/completion_campaign_aws_provider.py \
               deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py \

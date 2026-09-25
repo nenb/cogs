@@ -1542,6 +1542,7 @@ def recover_fixed_campaign():
         _set_failure_phase("recovery-consumed")
         custodian = AwsCampaignCustodian(
             _ADAPTER_SEAL, approval, authentication_sha256)
+        _set_failure_phase("recovery-journal")
         if CONTINUATION.exists() or CONTINUATION_BUNDLE.exists() or \
                 CONTINUATION_ADMISSION.exists() or CONTINUATION_ANCHOR.exists():
             _require(CONTINUATION.exists() and CONTINUATION_BUNDLE.exists()
@@ -1639,6 +1640,7 @@ def recover_fixed_campaign():
             _retire_credentials()
             return NoActiveCleanupReceipt(
                 "cogs.stage2-cleanup-complete/v1", reconciliation, True)
+        _set_failure_phase("recovery-active-custody")
         active = _decode(_read_fixed(ACTIVE, 64 * 1024, (0o600,)))
         _require(active.get("version") == "cogs.stage2-cleanup-active/v1"
                  and active.get("batch_commitment") == approval.batch_commitment
@@ -1668,10 +1670,13 @@ def recover_fixed_campaign():
             return NoActiveCleanupReceipt(
                 "cogs.stage2-cleanup-complete/v1",
                 complete["reconciliation_commitment"], True)
+        _set_failure_phase("recovery-provider")
         receipt = custodian.recover(grant, active["state_commitment"], None,
                                     production.ProductionUncertainty())
+        _set_failure_phase("recovery-validation")
         _validated_recovery_receipt(
             receipt, grant, active["state_commitment"], approval)
+        _set_failure_phase("recovery-settlement")
         custodian.journal("cleanup", "settled", grant.ordinal, grant.mode,
                           receipt.reconciliation_commitment)
         _retire_credentials()

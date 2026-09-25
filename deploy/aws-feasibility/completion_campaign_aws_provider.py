@@ -1034,6 +1034,7 @@ class FixedProvider:
 
     def recover(self, ordinal: int, mode: str, grant_commitment: str,
                 state_commitment: str) -> bytes:
+        _set_failure_phase("recovery-custody")
         directory, grant = self._cycle(ordinal, mode, grant_commitment)
         production._digest(state_commitment)
         # Recovery never calls ``effect`` and never reissues a claimed normal destroy.
@@ -1067,7 +1068,9 @@ class FixedProvider:
             _write_once(cleanup_claim, cleanup_raw)
         cleanup_settled = directory / "cleanup-destroy.settlement.json"
         if not cleanup_settled.exists():
+            _set_failure_phase("recovery-local-backend")
             data, state, _plan = self._local_backend(directory, grant)
+            _set_failure_phase("recovery-destroy")
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "destroy", "-state=" + str(state), "-auto-approve", "-input=false",
                        "-lock-timeout=30s", "-var-file=" +
@@ -1077,6 +1080,7 @@ class FixedProvider:
                 "version": "cogs.stage2-cleanup-destroy-settlement/v1",
                 "grant_commitment": grant.grant_commitment, "certain": True}))
         try:
+            _set_failure_phase("recovery-inventory")
             recovery_root = directory / "cleanup-inventory"
             recovery_root.mkdir(mode=0o700, exist_ok=True)
             attempts = sorted(path for path in recovery_root.iterdir() if path.is_dir())
@@ -1093,6 +1097,7 @@ class FixedProvider:
             certain = True
         except BaseException:
             certain = False
+        _set_failure_phase("recovery-receipt")
         fields = {
             "grant_commitment": grant.grant_commitment,
             "state_commitment": state_commitment,
