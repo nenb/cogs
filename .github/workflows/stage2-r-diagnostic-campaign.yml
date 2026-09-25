@@ -141,6 +141,7 @@ jobs:
           root=/var/lib/cogs/stage2-completion-v1/source
           for path in deploy/aws-feasibility/completion_campaign_aws_adapter.py \
               deploy/aws-feasibility/completion_campaign_aws_entry.py \
+              scripts/stage2-production-approval.py \
               scripts/stage2-stage-production-approval.py; do
             sudo -n install -m 0444 "$path" "$root/$path"
           done
@@ -156,7 +157,8 @@ jobs:
           expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
           remaining=$(( expiry_s - $(date +%s) - 900 )); cap=18000; minimum=16200; duration="$cap"
           test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+          sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV,COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC,COGS_STAGE2_DIAGNOSTIC_REF \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
             assume-github-role executor "$ROLE_ARN" "cogs-stage2-campaign-s1-$GITHUB_RUN_ID" \
             "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json
 
@@ -182,7 +184,8 @@ jobs:
           expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
           remaining=$(( expiry_s - $(date +%s) - 900 )); cap=18000; minimum=16200; duration="$cap"
           test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+          sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV,COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC,COGS_STAGE2_DIAGNOSTIC_REF \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
             assume-github-role observer "$ROLE_ARN" "cogs-stage2-observer-s1-$GITHUB_RUN_ID" \
             "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json
 
@@ -255,7 +258,7 @@ jobs:
           set -euo pipefail
           recovery=/var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/recover-production-campaign-entry.sh
           root=/var/lib/cogs/stage2-aws-production-v2
-          if sudo -n test -x "$recovery"; then
+          if sudo -n test -e "$root"; then
             if sudo -n test -e "$root/aws-credentials" || \
                { ! sudo -n test -e "$root/cleanup-complete.json" && \
                  ! sudo -n test -e "$root/segment-one-zero-complete.json"; }; then
@@ -267,7 +270,7 @@ jobs:
               sudo -n test -e "$root/segment-one-zero-complete.json"
             fi
           else
-            sudo -n test ! -e "$root"; sudo -n test ! -e "$root.staging"
+            sudo -n test ! -e "$root.staging"
           fi
           sudo -n test ! -e "$root/aws-credentials"
 
@@ -487,6 +490,7 @@ jobs:
           root=/var/lib/cogs/stage2-completion-v1/source
           for path in deploy/aws-feasibility/completion_campaign_aws_adapter.py \
               deploy/aws-feasibility/completion_campaign_aws_entry.py \
+              scripts/stage2-production-approval.py \
               scripts/stage2-stage-production-approval.py; do
             sudo -n install -m 0444 "$path" "$root/$path"
           done
@@ -505,7 +509,8 @@ jobs:
           remaining="$approval_remaining"; if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
           cap=19800; minimum=18000; duration="$cap"
           test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+          sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV,COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC,COGS_STAGE2_DIAGNOSTIC_REF \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
             assume-github-role executor "$ROLE_ARN" "cogs-stage2-campaign-s2-$GITHUB_RUN_ID" \
             "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json \
             /var/lib/cogs/stage2-aws-issuance-v1/aws-stage2-production-continuation-v1.json
@@ -533,7 +538,8 @@ jobs:
           remaining="$approval_remaining"; if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
           cap=19800; minimum=18000; duration="$cap"
           test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+          sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV,COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC,COGS_STAGE2_DIAGNOSTIC_REF \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
             assume-github-role observer "$ROLE_ARN" "cogs-stage2-observer-s2-$GITHUB_RUN_ID" \
             "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json \
             /var/lib/cogs/stage2-aws-issuance-v1/aws-stage2-production-continuation-v1.json

@@ -346,6 +346,17 @@ def _validated_role_authority(selector, role_arn, approval_path):
     return approval, hashlib.sha256(authentication_raw).hexdigest(), account_id, role_name
 
 
+def _expected_github_subject():
+    diagnostic = os.environ.get("COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC")
+    require(diagnostic in {None, "1"})
+    if diagnostic == "1":
+        ref = os.environ.get("COGS_STAGE2_DIAGNOSTIC_REF", "")
+        require(re.fullmatch(r"refs/heads/[A-Za-z0-9._/-]+", ref) is not None
+                and ".." not in ref and not ref.endswith("/"))
+        return f"repo:nenb/cogs:ref:{ref}"
+    return "repo:nenb/cogs:ref:refs/heads/main"
+
+
 def assume_github_role(
     selector, role_arn, session_name, duration_raw, minimum_raw, approval_path, runway_path=None
 ):
@@ -407,7 +418,7 @@ def assume_github_role(
             and audience == ["sts.amazonaws.com"]
         )
         and claims.get("iss") == "https://token.actions.githubusercontent.com"
-        and claims.get("sub") == "repo:nenb/cogs:ref:refs/heads/main"
+        and claims.get("sub") == _expected_github_subject()
         and type(claims.get("exp")) is int
         and claims["exp"] >= oidc_now + 60
     )

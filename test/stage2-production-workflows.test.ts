@@ -370,12 +370,13 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(firstJob.slice(oidcRetirementAt), /ACTIONS_ID_TOKEN_REQUEST_TOKEN=\\nACTIONS_ID_TOKEN_REQUEST_URL=\\n/u);
 
   assert.match(campaign, /stage2-stage-production-approval\.py/u);
+  assert.equal((campaign.match(/sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN/gu) ?? []).length, 4);
+  assert.match(issuer, /def _expected_github_subject\(\):/u);
   assert.match(campaign, /run-production-campaign\.sh/u);
   assert.match(campaign, /recover-production-campaign-entry\.sh/u);
-  assert.match(
-    firstJob,
-    /test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials \|\|[\s\S]*segment-one-zero-complete\.json/u,
-  );
+  assert.match(firstJob, /if sudo -n test -e "\$root"; then/u);
+  assert.match(firstJob, /test -e "\$root\/aws-credentials" \|\|[\s\S]*segment-one-zero-complete\.json/u);
+  assert.match(firstJob, /sudo -n test ! -e "\$root\.staging"/u);
   assert.match(
     secondJob,
     /test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials \|\|[\s\S]*! sudo -n test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/cleanup-complete\.json/u,
