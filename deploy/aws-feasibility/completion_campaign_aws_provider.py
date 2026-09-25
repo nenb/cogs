@@ -936,6 +936,7 @@ class FixedProvider:
 
     def inventory(self, sequence: int, grant_commitment: str,
                   destroyed_state_commitment: str, recovery_directory=None) -> bytes:
+        _set_failure_phase("inventory-custody")
         _require(type(sequence) is int and 1 <= sequence <= 8)
         production._digest(destroyed_state_commitment)
         ordinal = sequence if sequence <= 7 else 7
@@ -962,6 +963,7 @@ class FixedProvider:
         else:
             _write_once(claim_path, claim_raw)
         started = time.time_ns()
+        _set_failure_phase("inventory-observer-identity")
         caller = self._run((str(AWS), "--profile", "observer", "--region",
                             self.approval.region, "sts", "get-caller-identity",
                             "--output", "json", "--no-cli-pager"), 60, True)
@@ -976,6 +978,8 @@ class FixedProvider:
         related_ids = {value for key, value in graph.items()
                        if key.endswith("_id") and type(value) is str}
         for category, service, operation, scope in INVENTORY_QUERIES:
+            phase_category = category.replace("ec2", "ec-two").replace("_", "-")
+            _set_failure_phase("inventory-" + phase_category)
             for page_ordinal, (requested, returned, response) in enumerate(
                     self._api_pages(service, operation, account_id), 1):
                 response_raw = canonical(response)
@@ -1007,6 +1011,7 @@ class FixedProvider:
                 except production.ProductionCampaignError as error:
                     raise ProviderBoundaryError(f"invalid {category} inventory page") from error
                 response_commitments.append(response_commitment)
+        _set_failure_phase("inventory-receipt")
         ended = time.time_ns(); _require(ended > started)
         fields = {
             "batch_commitment": self.approval.batch_commitment,
