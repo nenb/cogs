@@ -9,7 +9,7 @@
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1569,
+    "tracked_files": 1570,
     "source_inventory_bytes": 34000000,
     "serialized_source_inventory_bytes": 262144
   },
@@ -24,15 +24,15 @@
       "gross_lines": 48000,
       "gross_bytes": 11000000
     },
-    "global_gross_line_forecast": 43062,
+    "global_gross_line_forecast": 43216,
     "global_gross_byte_forecast": 29500000,
     "remaining_tranche": {
-      "gross_lines": 25062,
+      "gross_lines": 25216,
       "gross_bytes": 21500000,
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 8800,
+          "gross_lines": 8950,
           "gross_bytes": 1300000,
           "paths": [
             ".github/workflows/stage2-production-plan.yml",
@@ -66,6 +66,7 @@
             "docs/adr/0351-correct-aws-host-boundaries-before-new-h.md",
             "docs/adr/0368-correct-post-qualification-planning-control.md",
             "docs/adr/0369-retire-failed-planning-and-align-expiry.md",
+            "docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md",
             "docs/adr/README.md",
             "docs/security-evidence/plans/stage2-prebuilt-completion-prerequisite-map.md",
             "schemas/aws-stage2-completion-evidence-v3.json",
@@ -95,7 +96,7 @@
         },
         {
           "name": "product",
-          "gross_lines": 5059,
+          "gross_lines": 5061,
           "gross_bytes": 1950000,
           "paths": [
             ".github/workflows/insecure-container.yml",
@@ -158,7 +159,7 @@
         {
           "name": "local-tofu-ssm",
           "gross_lines": 6220,
-          "gross_bytes": 2800000,
+          "gross_bytes": 2550000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
             ".github/workflows/stage2-production-approval.yml",
@@ -188,8 +189,8 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 289,
-          "gross_bytes": 10750000,
+          "gross_lines": 291,
+          "gross_bytes": 11000000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -771,6 +772,7 @@
         "docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md",
         "docs/adr/0368-correct-post-qualification-planning-control.md",
         "docs/adr/0369-retire-failed-planning-and-align-expiry.md",
+        "docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",
