@@ -24,17 +24,18 @@
       "gross_lines": 48000,
       "gross_bytes": 11000000
     },
-    "global_gross_line_forecast": 42782,
+    "global_gross_line_forecast": 42918,
     "global_gross_byte_forecast": 29500000,
     "remaining_tranche": {
-      "gross_lines": 24782,
+      "gross_lines": 24918,
       "gross_bytes": 21500000,
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 8550,
+          "gross_lines": 8680,
           "gross_bytes": 1300000,
           "paths": [
+            ".github/workflows/stage2-production-plan.yml",
             ".pi/outcome-two/adr0091-plan-ab.md",
             ".pi/outcome-two/adr0091-plan-cd.md",
             ".pi/outcome-two/adr0091-plan-common.md",
@@ -63,6 +64,7 @@
             "docs/adr/0347-add-direct-kvm-diagnostic-lane.md",
             "docs/adr/0348-retire-transient-H-producer.md",
             "docs/adr/0351-correct-aws-host-boundaries-before-new-h.md",
+            "docs/adr/0368-correct-post-qualification-planning-control.md",
             "docs/adr/README.md",
             "docs/security-evidence/plans/stage2-prebuilt-completion-prerequisite-map.md",
             "schemas/aws-stage2-completion-evidence-v3.json",
@@ -92,7 +94,7 @@
         },
         {
           "name": "product",
-          "gross_lines": 5056,
+          "gross_lines": 5058,
           "gross_bytes": 1950000,
           "paths": [
             ".github/workflows/insecure-container.yml",
@@ -155,7 +157,7 @@
         {
           "name": "local-tofu-ssm",
           "gross_lines": 6200,
-          "gross_bytes": 3300000,
+          "gross_bytes": 3050000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
             ".github/workflows/stage2-production-approval.yml",
@@ -183,8 +185,8 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 282,
-          "gross_bytes": 10250000,
+          "gross_lines": 286,
+          "gross_bytes": 10500000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -213,7 +215,6 @@
             ".github/workflows/stage2-prebuilt-rootfs-diagnostic-publisher.yml",
             ".github/workflows/stage2-prebuilt-rootfs-producer.yml",
             ".github/workflows/stage2-prebuilt-rootfs-publisher.yml",
-            ".github/workflows/stage2-production-plan.yml",
             "config/stage2-retired-revisions-v2.json",
             "config/stage2-retired-revisions-v3.json",
             "config/stage2-retired-revisions-v4.json",
@@ -765,6 +766,7 @@
         "docs/adr/0365-retire-premature-producer-and-require-replacement-H.md",
         "docs/adr/0366-freeze-replacement-H-and-authorize-control.md",
         "docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md",
+        "docs/adr/0368-correct-post-qualification-planning-control.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",

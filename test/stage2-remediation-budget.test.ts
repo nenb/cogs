@@ -8,21 +8,24 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0367 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0368 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8550,1300000),(5056,1950000),(6200,3300000),(282,10250000),(4694,4700000)]
-assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (24782,21500000)
-assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (42782,29500000)
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8680,1300000),(5058,1950000),(6200,3050000),(286,10500000),(4694,4700000)]
+assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (24918,21500000)
+assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (42918,29500000)
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
 for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','config/stage2-retired-revisions-v5.json','config/stage2-retired-revisions-v6.json','config/stage2-retired-revisions-v7.json','config/stage2-retired-revisions-v8.json','deploy/aws-feasibility/remote/completion_kata_admission.py','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_kata_process.py','deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','docs/adr/0360-retire-runner-image-rejected-generation.md','docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md','docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md','docs/adr/0363-retire-cross-rollout-preflight-and-bind-assigned-host-closures.md','docs/adr/0364-retire-stale-Q-bindings-and-require-complete-static-handoff.md','docs/adr/0365-retire-premature-producer-and-require-replacement-H.md','docs/adr/0366-freeze-replacement-H-and-authorize-control.md','docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','schemas/stage2-formal-local-cycle-status-v3.json','schemas/stage2-local-execution-envelope-v4.json','schemas/stage2-pre-aws-qualification-package-v6.json','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','scripts/stage2-stage-prebuilt-control.py','test/aws-stage2-completion-kata-process.py','test/aws-stage2-completion-kata-static-control.py','test/fixtures/stage2-completion/production-v4-test-only.json','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts','test/stage2-local-workflow-scripts.py','test/stage2-prebuilt-rehearsal-grant.py']:
  assert path in tasks[-1]['paths']
-assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 10
+assert len([p for p in tasks[-1]['paths'] if p.startswith('.github/workflows/')]) == 9
+assert '.github/workflows/stage2-production-plan.yml' in tasks[0]['paths']
+assert '.github/workflows/stage2-production-plan.yml' not in tasks[-1]['paths']
+assert 'docs/adr/0368-correct-post-qualification-planning-control.md' in tasks[0]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 14
 assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json','docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json','docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage5-destructive-harness-report.canonical-json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','scripts/stage4-runtime-artifact-closure.ts','test/ci-infrastructure-boundary.test.ts']
 assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
@@ -58,6 +61,7 @@ assert 'docs/adr/0364-retire-stale-Q-bindings-and-require-complete-static-handof
 assert 'docs/adr/0365-retire-premature-producer-and-require-replacement-H.md' in integration
 assert 'docs/adr/0366-freeze-replacement-H-and-authorize-control.md' in integration
 assert 'docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md' in integration
+assert 'docs/adr/0368-correct-post-qualification-planning-control.md' in integration
 local=tasks[2]['paths']
 assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
 assert '.github/workflows/stage2-r-diagnostic-campaign.yml' in local
@@ -79,6 +83,34 @@ try: m['_product_test_budget'](bad,{})
 except m['LineBudgetError']: pass
 else: raise AssertionError('path mutation accepted')
 `);
+});
+
+test("ADR0368 accepts qualification and gates the corrected planning control", () => {
+  const adr = readFileSync("docs/adr/0368-correct-post-qualification-planning-control.md", "utf8").replace(
+    /\s+/gu,
+    " ",
+  );
+  for (const text of [
+    "2d4b61a63cdb08a92d5fbde9095532fad2383e90",
+    "36036544983",
+    "10829051963",
+    "sha256:372c0a9ba454d1789eb2299495a58426190127548f4437c0be9f4746321a4fc2",
+    "stage2-local-execution-envelope-v3.json",
+    "additive V4 envelope",
+    "from 8,550 to 8,680 lines",
+    "from 5,056 to 5,058",
+    "from 282 to 286",
+    "250,000 prospective bytes",
+    "24,918 lines and 21,500,000 bytes",
+    "42,918 lines and 29,500,000 bytes",
+    "post-H reserve at 4,090",
+    "authorize-seven-stage2-production-cycles",
+    "Stage 4 remains separate and non-authorized",
+  ])
+    assert.ok(adr.includes(text), text);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes("[0368](0368-correct-post-qualification-planning-control.md)"),
+  );
 });
 
 test("final-HGQ enforcement freezes exact H and separately consumes the post-H reserve", () => {
@@ -104,7 +136,7 @@ for position,key,excess in [(0,'final-HGQ',605),(1,'final-HGQ',1700001),(2,'fina
  else: raise AssertionError((position,excess))
 b,_,_,_,_=m['_remediation_budget']()
 _,_,observed_pre_lines,observed_pre_bytes,observed_post_lines,observed_post_bytes=m['_product_test_consumption_segments'](b)
-assert (observed_pre_lines['final-HGQ'],observed_pre_bytes['final-HGQ']) == (604,1037008)
+assert (observed_pre_lines['final-HGQ'],observed_pre_bytes['final-HGQ']) == (603,1035165)
 assert 0 < observed_post_lines['final-HGQ'] <= 4090
 assert observed_post_bytes['final-HGQ'] <= 3500000
 `);
