@@ -96,6 +96,19 @@ class AwsAdapterError(production.ProductionCampaignError):
     pass
 
 
+_FAILURE_PHASE = "owner"
+
+
+def _set_failure_phase(phase):
+    global _FAILURE_PHASE
+    _require(type(phase) is str and re.fullmatch(r"[a-z-]{1,48}", phase) is not None)
+    _FAILURE_PHASE = phase
+
+
+def failure_phase():
+    return _FAILURE_PHASE
+
+
 @dataclass(frozen=True)
 class NoActiveCleanupReceipt:
     version: str
@@ -922,6 +935,9 @@ class AwsCampaignCustodian:
                 signal.signal(number, handler)
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         if failure is not None:
+            if re.fullmatch(rb"stage2-production-provider: [a-z-]{1,40}\.failed\n", stderr):
+                try: os.write(2, stderr)
+                except BaseException: pass
             raise failure
         return stdout
 
@@ -1251,6 +1267,7 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
                             approval_artifact_run_id, approval_artifact_id,
                             approval_artifact_digest, approval_artifact_name):
     """Consume one approval, execute exactly cycles 1--3, and retire credentials."""
+    _set_failure_phase("root-admission")
     _admit_root()
     production._sha1(workflow_revision)
     _require(all(type(item) is int and item > 0 for item in (
@@ -1259,17 +1276,21 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
              and type(approval_artifact_digest) is str
              and re.fullmatch(r"sha256:[0-9a-f]{64}", approval_artifact_digest)
              and type(approval_artifact_name) is str)
+    _set_failure_phase("root-lock")
     lock = _root_lock()
     try:
         _require(not any(path.exists() for path in (
             CONSUMED, JOURNAL, ACTIVE, CLEANUP_COMPLETE, SEGMENT_COMPLETE,
             CONTINUATION, CONTINUATION_BUNDLE, CONTINUATION_ADMISSION,
             CONTINUATION_ANCHOR, CONTINUATION_PUBLICATION)))
+        _set_failure_phase("approval-custody")
         approval, authentication_sha256 = _approval()
         custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval, authentication_sha256)
+        _set_failure_phase("controller-phase-one")
         phase = production.ProductionCampaignController(
             custodian.ports(_ADAPTER_SEAL)).run_phase_one()
         _require(not ACTIVE.exists())
+        _set_failure_phase("continuation-construction")
         continuation = production.continuation_for_phase_one(
             phase, approval, "authenticated-aws-adapter", workflow_revision,
             run_id, producer_job_id, approval_artifact_run_id,
@@ -1278,6 +1299,7 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
         # Publish the certain-zero terminal state durably before credentials are
         # considered retired. Recovery also admits the legacy crash boundary in
         # which unlink+fsync completed immediately before this publication.
+        _set_failure_phase("continuation-publication")
         _write_once(SEGMENT_COMPLETE, _canonical({
             "version": "cogs.stage2-segment-one-zero-complete/v1",
             "zero_commitment": continuation.inventories[-1].zero_commitment,
@@ -1293,6 +1315,8 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
             "cogs.stage2-continuation-publication/v1",
             hashlib.sha256(raw).hexdigest(), continuation.continuation_commitment, 3)
     except BaseException:
+        failed_phase = _FAILURE_PHASE
+        _set_failure_phase("inactive-retirement")
         if not ACTIVE.exists():
             if not CLEANUP_COMPLETE.exists() and not SEGMENT_COMPLETE.exists():
                 _write_once(CLEANUP_COMPLETE, _canonical({
@@ -1301,6 +1325,7 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
                         b"cogs.stage2-inactive-root-retirement/v1", {"root": str(ROOT)}),
                     "certain_zero": True}))
             if AWS_CREDENTIALS.exists(): _retire_credentials()
+        _set_failure_phase(failed_phase)
         raise
     finally:
         os.close(lock)

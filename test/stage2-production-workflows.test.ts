@@ -458,7 +458,8 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(providerEntry, /AWS_MAX_ATTEMPTS": "1"/u);
   assert.doesNotMatch(providerEntry, /subprocess\.run/u);
   for (const source of [campaignEntry, recoveryEntry, providerEntry, fullEntry, readinessEntry]) {
-    assert.match(source, /owner\.failed/u);
+    assert.match(source, /owner/u);
+    assert.match(source, /\.failed/u);
     assert.match(source, /except BaseException/u);
     assert.match(source, /raise SystemExit\(2\) from None/u);
   }

@@ -6,12 +6,14 @@ import os
 from pathlib import Path
 import sys
 
-_DIAGNOSTIC = b"stage2-production-campaign: owner.failed\n"
 _MODULE_ROOT = Path(__file__).resolve().parent
+_ADAPTER = None
 
 
 def _fail():
-    try: os.write(2, _DIAGNOSTIC)
+    phase = "owner" if _ADAPTER is None else _ADAPTER.failure_phase()
+    diagnostic = f"stage2-production-campaign: {phase}.failed\n".encode("ascii")
+    try: os.write(2, diagnostic)
     except BaseException: pass
     raise SystemExit(2) from None
 
@@ -29,10 +31,12 @@ def _write(value):
 
 
 def main():
+    global _ADAPTER
     if sys.argv != [sys.argv[0]]: raise SystemExit(64)
     if not _MODULE_ROOT.is_dir(): raise ImportError("fixed campaign module root unavailable")
     sys.path.insert(0, str(_MODULE_ROOT))
     import completion_campaign_aws_adapter as adapter
+    _ADAPTER = adapter
     diagnostic = os.environ.get("COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC") == "1"
     split_convergence = os.environ.get("COGS_STAGE2_SPLIT_CONVERGENCE") == "1"
     if diagnostic and not split_convergence:

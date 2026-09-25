@@ -24,12 +24,19 @@ import sys
 import time
 from typing import Callable
 
-_DIAGNOSTIC = b"stage2-production-provider: owner.failed\n"
+_FAILURE_PHASE = "owner"
 _MODULE_ROOT = Path(__file__).resolve().parent
 
 
+def _set_failure_phase(phase: str) -> None:
+    global _FAILURE_PHASE
+    if re.fullmatch(r"[a-z-]{1,40}", phase) is None: raise RuntimeError()
+    _FAILURE_PHASE = phase
+
+
 def _fail() -> None:
-    try: os.write(2, _DIAGNOSTIC)
+    diagnostic = f"stage2-production-provider: {_FAILURE_PHASE}.failed\n".encode("ascii")
+    try: os.write(2, diagnostic)
     except BaseException: pass
     raise SystemExit(2) from None
 
@@ -589,16 +596,19 @@ class FixedProvider:
 
     def effect(self, kind: str, ordinal: int, mode: str,
                grant_commitment: str, intent: str) -> bytes:
+        _set_failure_phase("effect-custody")
         _require(kind in production.EFFECT_KINDS)
         directory, grant = self._cycle(ordinal, mode, grant_commitment)
         receipt_path = directory / f"{kind}.receipt.json"
         _require(not receipt_path.exists(), "effect receipt replay")
         self._tfvars(directory, grant)
+        _set_failure_phase("executor-identity")
         caller = self._run((str(AWS), "--region", self.approval.region, "sts",
                             "get-caller-identity", "--output", "json", "--no-cli-pager"),
                            60, True)
         self._principal(caller, self.approval.executor_principal_commitment, "executor")
         self._claim(directory, kind, intent)
+        _set_failure_phase("local-backend")
         data, state, plan = self._local_backend(directory, grant)
         environment = {**ENV, "TF_DATA_DIR": str(data)}
         if kind in {"running", "destroy"}:
@@ -611,16 +621,20 @@ class FixedProvider:
         started = time.time_ns()
         resources = ()
         if kind == "plan":
+            _set_failure_phase("plan-custody")
             _require(plan.is_file() and plan_json.is_file()
                      and _sha256_file(plan) == grant.plan_sha256,
                      "approved plan bytes missing or changed")
+            _set_failure_phase("plan-render")
             rendered = self._run((str(TOFU),
                 f"-chdir={SOURCE / 'deploy/aws-feasibility'}", "show", "-json", str(plan)),
                 60, True, environment)
             _require(rendered == decode(_read(plan_json)),
                      "approved plan JSON is not derived from approved binary")
+            _set_failure_phase("plan-policy")
             self._run((str(PYTHON), str(SOURCE / "deploy/aws-feasibility/check-plan.py"),
                        str(plan_json)), 30)
+            _set_failure_phase("plan-bindings")
             self._validate_plan_bindings(plan_json, grant)
             identity = grant.plan_sha256
         elif kind == "apply":
@@ -1090,7 +1104,9 @@ def _usage() -> None:
 
 def main(argv: tuple[str, ...] | None = None) -> None:
     args = tuple(sys.argv[1:] if argv is None else argv)
+    _set_failure_phase("root-custody")
     _require(os.geteuid() == 0 and os.getegid() == 0, "root custody required")
+    _set_failure_phase("provider-custody")
     provider = FixedProvider()
     if len(args) == 6 and args[0] == "effect":
         raw = provider.effect(args[1], int(args[2]), args[3], args[4], args[5])

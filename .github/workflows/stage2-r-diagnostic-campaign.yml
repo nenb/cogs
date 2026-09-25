@@ -141,12 +141,15 @@ jobs:
           root=/var/lib/cogs/stage2-completion-v1/source
           for path in deploy/aws-feasibility/completion_campaign_aws_adapter.py \
               deploy/aws-feasibility/completion_campaign_aws_entry.py \
+              deploy/aws-feasibility/completion_campaign_aws_provider.py \
               scripts/stage2-production-approval.py \
               scripts/stage2-stage-production-approval.py; do
             sudo -n install -m 0444 "$path" "$root/$path"
           done
-          sudo -n install -m 0555 deploy/aws-feasibility/run-production-campaign.sh \
-            "$root/deploy/aws-feasibility/run-production-campaign.sh"
+          for path in deploy/aws-feasibility/run-production-campaign.sh \
+              deploy/aws-feasibility/recover-production-campaign-entry.sh; do
+            sudo -n install -m 0555 "$path" "$root/$path"
+          done
 
       - name: Acquire fresh bounded segment-one executor credentials
         timeout-minutes: 10
@@ -490,12 +493,15 @@ jobs:
           root=/var/lib/cogs/stage2-completion-v1/source
           for path in deploy/aws-feasibility/completion_campaign_aws_adapter.py \
               deploy/aws-feasibility/completion_campaign_aws_entry.py \
+              deploy/aws-feasibility/completion_campaign_aws_provider.py \
               scripts/stage2-production-approval.py \
               scripts/stage2-stage-production-approval.py; do
             sudo -n install -m 0444 "$path" "$root/$path"
           done
-          sudo -n install -m 0555 deploy/aws-feasibility/run-production-campaign.sh \
-            "$root/deploy/aws-feasibility/run-production-campaign.sh"
+          for path in deploy/aws-feasibility/run-production-campaign.sh \
+              deploy/aws-feasibility/recover-production-campaign-entry.sh; do
+            sudo -n install -m 0555 "$path" "$root/$path"
+          done
 
       - name: Acquire fresh bounded segment-two executor credentials
         timeout-minutes: 10

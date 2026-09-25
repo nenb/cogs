@@ -185,7 +185,7 @@ test("adapter commands and custody paths are fixed with one closed diagnostic id
   ])
     assert.match(source, new RegExp(command.replace(".", "\\."), "u"));
   assert.doesNotMatch(source, /sys\.argv|argparse|getenv\(/u);
-  assert.equal(source.match(/os\.environ\.get/g)?.length, 2);
+  assert.equal(source.match(/os\.environ\.get/g)?.length, 4);
   assert.match(source, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC/u);
   assert.match(source, /diagnostic in \{None, "1"\}/u);
   const identityProbe = spawnSync(
