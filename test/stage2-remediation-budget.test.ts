@@ -8,16 +8,16 @@ const runPython = (program: string) => {
   assert.equal(result.status, 0, result.stderr);
 };
 
-test("ADR0338 through ADR0369 retain the five literal tasks and final reserve", () => {
+test("ADR0338 through ADR0370 retain the five literal tasks and final reserve", () => {
   runPython(`
 import copy,json,runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,paths,_,_=m['_remediation_budget']()
 p=b['product_test_correction']; tasks=p['remaining_tranche']['allocations']
 assert [t['name'] for t in tasks] == ['governance','product','local-tofu-ssm','readiness-ci','final-HGQ']
-assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8800,1300000),(5059,1950000),(6220,2800000),(289,10750000),(4694,4700000)]
-assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (25062,21500000)
-assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (43062,29500000)
+assert [(t['gross_lines'],t['gross_bytes']) for t in tasks] == [(8950,1300000),(5061,1950000),(6220,2550000),(291,11000000),(4694,4700000)]
+assert (p['remaining_tranche']['gross_lines'],p['remaining_tranche']['gross_bytes']) == (25216,21500000)
+assert (p['global_gross_line_forecast'],p['global_gross_byte_forecast']) == (43216,29500000)
 assert tasks[-1]['paths'] == sorted(tasks[-1]['paths'])
 assert 'BUGS-TO-FIX.md' in tasks[0]['paths']
 for path in ['config/stage2-retired-revisions-v2.json','config/stage2-retired-revisions-v3.json','config/stage2-retired-revisions-v4.json','config/stage2-retired-revisions-v5.json','config/stage2-retired-revisions-v6.json','config/stage2-retired-revisions-v7.json','config/stage2-retired-revisions-v8.json','deploy/aws-feasibility/remote/completion_kata_admission.py','deploy/aws-feasibility/remote/completion_kata_preparation.py','deploy/aws-feasibility/remote/completion_kata_process.py','deploy/aws-feasibility/remote/recover-stage2-completion-remote.sh','docs/adr/0349-freeze-replacement-H-and-authorize-control.md','docs/adr/0350-establish-replacement-Q-and-authorize-qualification.md','docs/adr/0352-freeze-fresh-H-and-authorize-G-control.md','docs/adr/0353-retire-failed-static-generation-and-correct-workflow-binding.md','docs/adr/0354-correct-protected-timeout-tests-before-control.md','docs/adr/0355-freeze-timeout-corrected-H-and-authorize-control.md','docs/adr/0356-establish-timeout-corrected-Q-and-authorize-qualification.md','docs/adr/0357-retire-failed-qualification-and-scope-host-local-observations.md','docs/adr/0358-freeze-host-scoped-H-and-authorize-control.md','docs/adr/0359-establish-host-scoped-Q-and-authorize-qualification.md','docs/adr/0360-retire-runner-image-rejected-generation.md','docs/adr/0361-freeze-authenticated-runner-H-and-authorize-control.md','docs/adr/0362-establish-authenticated-runner-Q-and-authorize-qualification.md','docs/adr/0363-retire-cross-rollout-preflight-and-bind-assigned-host-closures.md','docs/adr/0364-retire-stale-Q-bindings-and-require-complete-static-handoff.md','docs/adr/0365-retire-premature-producer-and-require-replacement-H.md','docs/adr/0366-freeze-replacement-H-and-authorize-control.md','docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md','docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json','schemas/stage2-formal-local-cycle-status-v3.json','schemas/stage2-local-execution-envelope-v4.json','schemas/stage2-pre-aws-qualification-package-v6.json','scripts/stage2-formal-local-qualification.py','scripts/stage2-prebuilt-local-qualification-guard.py','scripts/stage2-prebuilt-mixed-hg-preflight.sh','scripts/stage2-prebuilt-static-control-runtime-boundary.py','scripts/stage2-revision-retirement.py','scripts/stage2-stage-prebuilt-control.py','test/aws-stage2-completion-kata-process.py','test/aws-stage2-completion-kata-static-control.py','test/fixtures/stage2-completion/production-v4-test-only.json','test/stage2-formal-local-qualification.py','test/stage2-formal-local-qualification.test.ts','test/stage2-local-workflow-scripts.py','test/stage2-prebuilt-rehearsal-grant.py']:
@@ -27,6 +27,7 @@ assert '.github/workflows/stage2-production-plan.yml' in tasks[0]['paths']
 assert '.github/workflows/stage2-production-plan.yml' not in tasks[-1]['paths']
 assert 'docs/adr/0368-correct-post-qualification-planning-control.md' in tasks[0]['paths']
 assert 'docs/adr/0369-retire-failed-planning-and-align-expiry.md' in tasks[0]['paths']
+assert 'docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md' in tasks[0]['paths']
 assert len([p for p in tasks[-1]['paths'] if p.startswith('deploy/aws-feasibility/remote/stage2-completion-local-control-v7/')]) == 14
 assert tasks[3]['paths'] == ['.gitleaksignore','.github/workflows/ci.yml','docs/security-evidence/stage4-offline-readiness-artifacts/authenticated-runtime-artifacts.json','docs/security-evidence/stage4-offline-readiness-artifacts/image-lock.json','docs/security-evidence/stage4-offline-readiness-artifacts/schema-inventory.json','docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json','docs/security-evidence/stage5-destructive-harness-report.canonical-json','scripts/stage4-offline-readiness.ts','scripts/stage4-offline-source-inventory.ts','scripts/stage4-runtime-artifact-closure.ts','test/ci-infrastructure-boundary.test.ts']
 assert 'docs/adr/0339-row4-first-attempt-corrections.md' in tasks[0]['paths']
@@ -64,6 +65,7 @@ assert 'docs/adr/0366-freeze-replacement-H-and-authorize-control.md' in integrat
 assert 'docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md' in integration
 assert 'docs/adr/0368-correct-post-qualification-planning-control.md' in integration
 assert 'docs/adr/0369-retire-failed-planning-and-align-expiry.md' in integration
+assert 'docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md' in integration
 local=tasks[2]['paths']
 assert '.github/workflows/stage2-production-approval-signing-diagnostic.yml' in local
 assert '.github/workflows/stage2-r-diagnostic-campaign.yml' in local
@@ -76,7 +78,7 @@ assert 'test/stage2-production-approval.test.ts' in tasks[0]['paths']
 assert 'schemas/aws-stage2-completion-production-approval-v6.json' in tasks[0]['paths']
 assert 'test/stage2-production-workflows.test.ts' in tasks[0]['paths']
 assert tasks[-1]['post_h_reserve'] == {'gross_lines':4090,'gross_bytes':3000000}
-assert b['source_limits'] == {'tracked_files':1569,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
+assert b['source_limits'] == {'tracked_files':1570,'source_inventory_bytes':34000000,'serialized_source_inventory_bytes':262144}
 for index in range(len(tasks)):
  bad=copy.deepcopy(b); bad['product_test_correction']['remaining_tranche']['allocations'][index]['name']='other'
  try: m['_product_test_budget'](bad,{})
@@ -135,6 +137,37 @@ test("ADR0369 retires failed R planning and preserves separate authority", () =>
     assert.ok(adr.includes(text), text);
   assert.ok(
     readFileSync("docs/adr/README.md", "utf8").includes("[0369](0369-retire-failed-planning-and-align-expiry.md)"),
+  );
+});
+
+test("ADR0370 retires elapsed S authority and requires a supervised fresh generation", () => {
+  const adr = readFileSync("docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md", "utf8").replace(
+    /\s+/gu,
+    " ",
+  );
+  for (const text of [
+    "2e17d61696fe8d4b3029227aab8baf54dc3ec4bc",
+    "36119445628",
+    "10856638176",
+    "36123681852",
+    "10859216624",
+    "2026-09-25T10:37:00Z",
+    "2026-09-25T10:53:00.873866Z",
+    "cannot be retried, reused, stitched, resumed, salvaged, or reinterpreted",
+    "authorize-seven-stage2-production-cycles",
+    "from 1,569 to 1,570",
+    "from 8,800 to 8,950, product from 5,059 to 5,061, and readiness-ci from 289 to 291",
+    "250,000 prospective bytes from local-tofu-ssm (2,800,000 to 2,550,000) to readiness-ci (10,750,000 to 11,000,000)",
+    "25,216 lines and 21,500,000 bytes",
+    "43,216 lines and 29,500,000 bytes",
+    "PRODUCT_TEST_PENDING_READINESS_REGENERATIONS=0",
+    "The successor grants no IAM, OIDC, planning, approval, apply, campaign, production, closure, promotion, publication, or Stage 4 authority",
+  ])
+    assert.ok(adr.includes(text), text);
+  assert.ok(
+    readFileSync("docs/adr/README.md", "utf8").includes(
+      "[0370](0370-retire-ineligible-approval-and-require-supervised-window.md)",
+    ),
   );
 });
 
