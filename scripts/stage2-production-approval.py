@@ -23,11 +23,18 @@ from urllib.request import (HTTPRedirectHandler, HTTPSHandler, ProxyHandler,
                             Request, build_opener)
 from xml.etree import ElementTree
 
-_DIAGNOSTIC = b"stage2-production-approval: owner.failed\n"
+_FAILURE_PHASE = "owner"
+
+
+def _set_failure_phase(phase):
+    global _FAILURE_PHASE
+    require(re.fullmatch(r"[a-z-]{1,32}", phase) is not None)
+    _FAILURE_PHASE = phase
 
 
 def _fail():
-    try: os.write(2, _DIAGNOSTIC)
+    diagnostic = f"stage2-production-approval: {_FAILURE_PHASE}.failed\n".encode("ascii")
+    try: os.write(2, diagnostic)
     except BaseException: pass
     raise SystemExit(2) from None
 
@@ -361,6 +368,7 @@ def assume_github_role(
     selector, role_arn, session_name, duration_raw, minimum_raw, approval_path, runway_path=None
 ):
     """One-shot direct GitHub OIDC/regional STS exchange for an approved role."""
+    _set_failure_phase("role-authority")
     approval, authentication_sha256, account_id, role_name = _validated_role_authority(
         selector, role_arn, approval_path
     )
@@ -397,10 +405,13 @@ def assume_github_role(
         runway_deadline = min(runway_deadline, continuation.cleanup_deadline_unix_ns)
     require(duration <= runway_deadline // 1_000_000_000 - now - 900)
     # The private opener disables proxies and redirects before either token is read.
+    _set_failure_phase("https-custody")
     opener = _direct_https_opener()
+    _set_failure_phase("oidc-environment")
     request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
     oidc_url = _approved_oidc_url(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", ""))
     require("\r" not in request_token and "\n" not in request_token and len(request_token) >= 32)
+    _set_failure_phase("oidc-request")
     with opener.open(
         Request(oidc_url, headers={"Authorization": f"Bearer {request_token}"}), timeout=30
     ) as response:
@@ -409,6 +420,7 @@ def assume_github_role(
     oidc_now = int(time.time())
     require(type(oidc) is dict and set(oidc) == {"value"})
     web_identity = oidc["value"]
+    _set_failure_phase("oidc-claims")
     claims = _jwt_claims(web_identity)
     audience = claims.get("aud")
     require(
@@ -422,6 +434,7 @@ def assume_github_role(
         and type(claims.get("exp")) is int
         and claims["exp"] >= oidc_now + 60
     )
+    _set_failure_phase("sts-request")
     body = urlencode(
         {
             "Action": "AssumeRoleWithWebIdentity",
@@ -438,6 +451,7 @@ def assume_github_role(
     ) as response:
         require(getattr(response, "status", 200) == 200 and response.geturl() == STS_URL)
         sts_raw = _bounded_response(response, 64 * 1024)
+    _set_failure_phase("sts-response")
     try:
         xml = ElementTree.fromstring(sts_raw)
     except ElementTree.ParseError as error:
@@ -488,6 +502,7 @@ def assume_github_role(
     for value in (access, secret, token):
         command = f"::add-mask::{value}\n".encode("ascii")
         require(os.write(1, command) == len(command))
+    _set_failure_phase("github-environment")
     descriptor = os.open(
         Path(os.environ.get("GITHUB_ENV", "")),
         os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC,
