@@ -265,16 +265,15 @@ def _approved_oidc_url(request_url):
         rf"/[A-Za-z0-9]{{1,128}}/{guid}/_apis/distributedtask/"
         rf"hubs/[A-Za-z0-9._-]{{1,64}}/plans/{guid}/jobs/{guid}/idtoken"
     )
-    require(
-        parsed.scheme == "https"
-        and parsed.hostname is not None
-        and re.fullmatch(host, parsed.hostname) is not None
-        and parsed.port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.fragment
-        and re.fullmatch(token_path, parsed.path) is not None
-    )
+    _set_failure_phase("oidc-url-scheme")
+    require(parsed.scheme == "https")
+    _set_failure_phase("oidc-url-host")
+    require(parsed.hostname is not None and re.fullmatch(host, parsed.hostname) is not None)
+    _set_failure_phase("oidc-url-authority")
+    require(parsed.port in {None, 443} and parsed.username is None and parsed.password is None)
+    _set_failure_phase("oidc-url-path")
+    require(not parsed.fragment and re.fullmatch(token_path, parsed.path) is not None)
+    _set_failure_phase("oidc-url-query")
     query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
     require(query == [("api-version", "2.0")])
     return urlunsplit(
@@ -407,9 +406,10 @@ def assume_github_role(
     # The private opener disables proxies and redirects before either token is read.
     _set_failure_phase("https-custody")
     opener = _direct_https_opener()
-    _set_failure_phase("oidc-environment")
+    _set_failure_phase("oidc-url")
     request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
     oidc_url = _approved_oidc_url(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", ""))
+    _set_failure_phase("oidc-token")
     require("\r" not in request_token and "\n" not in request_token and len(request_token) >= 32)
     _set_failure_phase("oidc-request")
     with opener.open(
