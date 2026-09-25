@@ -38,6 +38,7 @@ DIAGNOSTIC_APPROVAL_IDENTITY = (
     "https://github.com/nenb/cogs/.github/workflows/"
     "stage2-r-diagnostic-preparation.yml@refs/heads/main")
 DIAGNOSTIC_ENVIRONMENT = "COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC"
+DIAGNOSTIC_REF_ENVIRONMENT = "COGS_STAGE2_DIAGNOSTIC_REF"
 AWS_CONFIG = ROOT / "aws-config"
 AWS_CREDENTIALS = ROOT / "aws-credentials"
 TOFU = ROOT / "tofu"
@@ -63,9 +64,10 @@ CONTINUATION_BUNDLE = ROOT / CONTINUATION_BUNDLE_NAME
 CONTINUATION_ADMISSION = ROOT / CONTINUATION_ADMISSION_NAME
 CONTINUATION_ANCHOR = ROOT / "continuation-journal-anchor.json"
 CONTINUATION_PUBLICATION = ROOT / "continuation-publication"
-CAMPAIGN_IDENTITY = (
+PRODUCTION_CAMPAIGN_IDENTITY = (
     "https://github.com/nenb/cogs/.github/workflows/"
     "stage2-production-campaign.yml@refs/heads/main")
+CAMPAIGN_IDENTITY = PRODUCTION_CAMPAIGN_IDENTITY
 STATE_ROOT = ROOT / "provider-state"
 SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 EFFECT_COMMAND = SOURCE / "deploy/aws-feasibility/run-production-effect.sh"
@@ -318,17 +320,36 @@ def _replace_durable(path, raw):
             temporary.unlink()
 
 
+def _diagnostic_ref():
+    value = os.environ.get(DIAGNOSTIC_REF_ENVIRONMENT, "refs/heads/main")
+    _require(re.fullmatch(r"refs/heads/[A-Za-z0-9._/-]+", value) is not None
+             and ".." not in value and not value.endswith("/"))
+    return value
+
+
 def approval_identity():
     """Select only the production identity or an explicit diagnostic identity."""
     diagnostic = os.environ.get(DIAGNOSTIC_ENVIRONMENT)
     _require(diagnostic in {None, "1"})
-    return (DIAGNOSTIC_APPROVAL_IDENTITY if diagnostic == "1"
-            else PRODUCTION_APPROVAL_IDENTITY)
+    if diagnostic == "1":
+        return ("https://github.com/nenb/cogs/.github/workflows/"
+                f"stage2-r-diagnostic-preparation.yml@{_diagnostic_ref()}")
+    return PRODUCTION_APPROVAL_IDENTITY
+
+
+def campaign_identity():
+    """Select the actual signer for production or the convergence workflow."""
+    diagnostic = os.environ.get(DIAGNOSTIC_ENVIRONMENT)
+    _require(diagnostic in {None, "1"})
+    if diagnostic == "1":
+        return ("https://github.com/nenb/cogs/.github/workflows/"
+                f"stage2-r-diagnostic-campaign.yml@{_diagnostic_ref()}")
+    return PRODUCTION_CAMPAIGN_IDENTITY
 
 
 def _verify_blob(payload, bundle, identity):
-    _require(identity in {PRODUCTION_APPROVAL_IDENTITY, DIAGNOSTIC_APPROVAL_IDENTITY,
-                          CAMPAIGN_IDENTITY})
+    _require(identity in {PRODUCTION_APPROVAL_IDENTITY, approval_identity(),
+                          PRODUCTION_CAMPAIGN_IDENTITY, campaign_identity()})
     verification = subprocess.run(
         ("/usr/bin/unshare", "--net", "--", str(COSIGN), "verify-blob",
          "--trusted-root", str(TRUSTED_ROOT), "--bundle", str(bundle),
@@ -1158,7 +1179,7 @@ def _continuation(approval, authentication_sha256):
     raw = _read_fixed(CONTINUATION, 4 * 1024 * 1024)
     bundle_raw = _read_fixed(CONTINUATION_BUNDLE, 1024 * 1024)
     admission_raw = _read_fixed(CONTINUATION_ADMISSION, 64 * 1024)
-    _verify_blob(CONTINUATION, CONTINUATION_BUNDLE, CAMPAIGN_IDENTITY)
+    _verify_blob(CONTINUATION, CONTINUATION_BUNDLE, campaign_identity())
     preliminary = _decode(admission_raw, 64 * 1024)
     run_id = preliminary.get("run_id"); run_attempt = preliminary.get("run_attempt")
     value = production.continuation_from_bytes(

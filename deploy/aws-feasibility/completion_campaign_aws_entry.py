@@ -33,7 +33,9 @@ def main():
     if not _MODULE_ROOT.is_dir(): raise ImportError("fixed campaign module root unavailable")
     sys.path.insert(0, str(_MODULE_ROOT))
     import completion_campaign_aws_adapter as adapter
-    if os.environ.get("COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC") == "1":
+    diagnostic = os.environ.get("COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC") == "1"
+    split_convergence = os.environ.get("COGS_STAGE2_SPLIT_CONVERGENCE") == "1"
+    if diagnostic and not split_convergence:
         receipt = adapter.run_fixed_diagnostic_campaign()
     elif adapter.CONTINUATION_ADMISSION.exists():
         # Phase two is selected only by the root-staged authenticated capability.

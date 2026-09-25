@@ -36,7 +36,7 @@ on:
         }
       package_artifact_id:
         {
-          description: Exact V5 qualification package artifact ID,
+          description: Exact V6 qualification package artifact ID,
           required: true,
           type: string,
         }
@@ -76,8 +76,8 @@ jobs:
           set -euo pipefail
           test "$AUTHORIZATION_PHRASE" = start-stage2-r-diagnostic-window
           test "$GITHUB_REPOSITORY" = nenb/cogs
-          test "$GITHUB_REF" = refs/heads/main
-          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_REF" = refs/heads/fix/issue42-r-convergence
+          test "$GITHUB_REF_PROTECTED" = false
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_ACTOR" = nenb
           test "$GITHUB_TRIGGERING_ACTOR" = nenb
@@ -141,7 +141,7 @@ jobs:
             "$RUNNER_TEMP/qualification/pre-aws-package-v6.json" \
             "$IMPLEMENTATION_HEAD" "$CONTROL_HEAD" "$QUALIFICATION_HEAD"
           package=deploy/aws-feasibility/remote/stage2-completion-local-control-v7
-          python3 -I -B - "$package/stage2-local-execution-envelope-v3.json" \
+          python3 -I -B - "$package/stage2-local-execution-envelope-v4.json" \
             "$RUNNER_TEMP/descriptor.json" <<'PY'
           import json,sys
           value=json.load(open(sys.argv[1],encoding="ascii"))["rootfs"]["prebuilt_descriptor"]
@@ -243,7 +243,7 @@ jobs:
       - name: Keyless sign diagnostic authentication with distinct identity
         run: |
           set -euo pipefail
-          identity="https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/main"
+          identity="https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@$GITHUB_REF"
           scripts/stage2-cosign-keyless-sign.sh "$RUNNER_TEMP/approval" "$identity"
           python3 -I -B - <<'PY' >"$RUNNER_TEMP/approval/DIAGNOSTIC-NON-AUTHORITATIVE.json"
           import json,os
@@ -267,7 +267,7 @@ jobs:
         id: approval_upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: NON-AUTHORITATIVE-stage2-r-diagnostic-approval-${{ github.sha }}-${{ github.run_id }}
+          name: stage2-production-approval-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/approval
           if-no-files-found: error
           retention-days: 3

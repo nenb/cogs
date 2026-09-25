@@ -9,14 +9,27 @@ done
 
 clean=(HOME=/root LANG=C LC_ALL=C PATH=/usr/local/bin:/usr/bin:/bin TZ=UTC)
 admission=/var/lib/cogs/stage2-aws-production-v2/aws-stage2-production-continuation-admission-v1.json
-if [ "${COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC:-}" = 1 ]; then
-  [ ! -e "$admission" ] || exit 64
+diagnostic=${COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC:-}
+split=${COGS_STAGE2_SPLIT_CONVERGENCE:-}
+if [ "$diagnostic" = 1 ]; then
   clean+=(COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1)
+  if [ "$split" = 1 ]; then
+    [[ "${COGS_STAGE2_DIAGNOSTIC_REF:-}" =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]] || exit 64
+    clean+=(COGS_STAGE2_SPLIT_CONVERGENCE=1
+      "COGS_STAGE2_DIAGNOSTIC_REF=$COGS_STAGE2_DIAGNOSTIC_REF")
+  else
+    [ -z "$split" ] && [ ! -e "$admission" ] || exit 64
+  fi
+else
+  [ -z "$diagnostic" ] && [ -z "$split" ] &&
+    [ -z "${COGS_STAGE2_DIAGNOSTIC_REF:-}" ] || exit 64
+fi
+if [ "$diagnostic" = 1 ] && [ -z "$split" ]; then
+  :
 elif [ -e "$admission" ]; then
   # Phase two receives no ambient run selectors; all provenance is in admission.
-  [ -z "${COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC:-}" ] || exit 64
+  :
 else
-  [ -z "${COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC:-}" ] || exit 64
   [[ "${COGS_STAGE2_WORKFLOW_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] || exit 64
   for name in COGS_STAGE2_GITHUB_RUN_ID COGS_STAGE2_PRODUCER_JOB_ID \
       COGS_STAGE2_APPROVAL_ARTIFACT_RUN_ID COGS_STAGE2_APPROVAL_ARTIFACT_ID; do

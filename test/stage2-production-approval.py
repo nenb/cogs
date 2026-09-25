@@ -888,6 +888,14 @@ def main():
         issuance_snapshot = Path(temporary) / "issuance-snapshot"
         with (
             patch.object(stager, "ISSUANCE_ROOT", issuance_snapshot),
+            patch.object(
+                stager,
+                "_create_issuance_root",
+                side_effect=lambda: (
+                    issuance_snapshot.mkdir(mode=0o755),
+                    stager.os.chown(issuance_snapshot, 0, 0),
+                ),
+            ),
             patch.object(stager, "eligible"),
             patch.object(stager.adapter, "COSIGN_SHA256", hashlib.sha256(b"cosign\n").hexdigest()),
             patch.object(
