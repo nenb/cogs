@@ -20,9 +20,11 @@ readonly issuer='https://token.actions.githubusercontent.com'
 case "$identity" in
   'https://github.com/nenb/cogs/.github/workflows/stage2-production-approval.yml@refs/heads/main' | \
     'https://github.com/nenb/cogs/.github/workflows/stage2-production-approval-signing-diagnostic.yml@refs/heads/main' | \
-    'https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/main')
+    'https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/main' | \
+    'https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-preparation.yml@refs/heads/fix/issue42-r-convergence')
       [ "$payload_base" = approval-authentication ] || fail ;;
-  'https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main')
+  'https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main' | \
+    'https://github.com/nenb/cogs/.github/workflows/stage2-r-diagnostic-campaign.yml@refs/heads/fix/issue42-r-convergence')
       [ "$payload_base" = aws-stage2-production-continuation-v1 ] || fail ;;
   *) fail ;;
 esac

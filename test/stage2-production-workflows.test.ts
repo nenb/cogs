@@ -115,6 +115,8 @@ test("shared signer closes pinned Cosign identity, filesystem, TUF, network, and
   assert.match(signer, /stage2-production-approval\.yml@refs\/heads\/main/u);
   assert.match(signer, /stage2-production-approval-signing-diagnostic\.yml@refs\/heads\/main/u);
   assert.match(signer, /stage2-r-diagnostic-preparation\.yml@refs\/heads\/main/u);
+  assert.match(signer, /stage2-r-diagnostic-preparation\.yml@refs\/heads\/fix\/issue42-r-convergence/u);
+  assert.match(signer, /stage2-r-diagnostic-campaign\.yml@refs\/heads\/fix\/issue42-r-convergence/u);
   assert.match(signer, /directory:\$runner_uid:\$runner_gid:700/u);
   assert.match(signer, /regular file:\$runner_uid:\$runner_gid:1/u);
   assert.match(signer, /--user "\$runner_uid:\$runner_gid"/u);
