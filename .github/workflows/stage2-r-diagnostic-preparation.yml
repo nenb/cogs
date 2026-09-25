@@ -247,8 +247,7 @@ jobs:
           scripts/stage2-cosign-keyless-sign.sh "$RUNNER_TEMP/approval" "$identity"
           sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL \
             /usr/bin/python3 -I -B - "$GITHUB_WORKSPACE/scripts/stage2-production-approval.py" <<'PY'
-          import json,os,runpy,sys
-          from urllib.parse import parse_qsl,urlsplit
+          import os,runpy,sys
           issuer=runpy.run_path(sys.argv[1])
           try:
               issuer["_set_failure_phase"]("oidc-url")
@@ -257,11 +256,7 @@ jobs:
               issuer["require"](len(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")) >= 32)
           except BaseException:
               phase=issuer["_approved_oidc_url"].__globals__["_FAILURE_PHASE"]
-              parsed=urlsplit(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", ""))
-              shape={"scheme":parsed.scheme,"hostname":parsed.hostname,
-                "port":parsed.port,"path_segment_lengths":[len(item) for item in parsed.path.split("/")[1:]],
-                "query_fields":[[key,len(value)] for key,value in parse_qsl(parsed.query,keep_blank_values=True)]}
-              os.write(2,f"stage2-production-approval: {phase}.failed shape={json.dumps(shape,separators=(',',':'))}\n".encode("ascii"))
+              os.write(2,f"stage2-production-approval: {phase}.failed\n".encode("ascii"))
               raise SystemExit(2) from None
           PY
           python3 -I -B - <<'PY' >"$RUNNER_TEMP/approval/DIAGNOSTIC-NON-AUTHORITATIVE.json"

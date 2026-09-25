@@ -260,19 +260,29 @@ def _approved_oidc_url(request_url):
     parsed = urlsplit(request_url)
     guid = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
     shard = r"(?:[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?)?"
-    host = rf"pipelines{shard}\.actions\.githubusercontent\.com"
-    token_path = (
+    legacy_host = rf"pipelines{shard}\.actions\.githubusercontent\.com"
+    legacy_path = (
         rf"/[A-Za-z0-9]{{1,128}}/{guid}/_apis/distributedtask/"
         rf"hubs/[A-Za-z0-9._-]{{1,64}}/plans/{guid}/jobs/{guid}/idtoken"
     )
+    hosted_host = (
+        r"run-actions-[1-9][0-9]{0,2}-azure-"
+        r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\.actions\.githubusercontent\.com"
+    )
+    hosted_path = rf"/[1-9][0-9]{{0,18}}//idtoken/{guid}/{guid}"
     _set_failure_phase("oidc-url-scheme")
     require(parsed.scheme == "https")
     _set_failure_phase("oidc-url-host")
-    require(parsed.hostname is not None and re.fullmatch(host, parsed.hostname) is not None)
+    legacy = parsed.hostname is not None and re.fullmatch(legacy_host, parsed.hostname) is not None
+    hosted = parsed.hostname is not None and re.fullmatch(hosted_host, parsed.hostname) is not None
+    require(legacy or hosted)
     _set_failure_phase("oidc-url-authority")
     require(parsed.port in {None, 443} and parsed.username is None and parsed.password is None)
     _set_failure_phase("oidc-url-path")
-    require(not parsed.fragment and re.fullmatch(token_path, parsed.path) is not None)
+    require(not parsed.fragment and (
+        legacy and re.fullmatch(legacy_path, parsed.path) is not None
+        or hosted and re.fullmatch(hosted_path, parsed.path) is not None
+    ))
     _set_failure_phase("oidc-url-query")
     query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
     require(query == [("api-version", "2.0")])

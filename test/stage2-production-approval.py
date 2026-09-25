@@ -773,10 +773,16 @@ def main():
                 )
             assert len(requests) == expected_requests
         assert github_environment.read_bytes() == b""
+        hosted_oidc_url = (
+            "https://run-actions-2-azure-eastus.actions.githubusercontent.com/178//idtoken/"
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb?api-version=2.0"
+        )
         for approved_url in (
             role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"],
             f"https://pipelines.actions.githubusercontent.com{oidc_path}?api-version=2.0",
             f"https://pipelinesghubeus11.actions.githubusercontent.com:443{oidc_path}?api-version=2.0",
+            hosted_oidc_url,
         ):
             assert issuer._approved_oidc_url(approved_url).endswith(
                 "api-version=2.0&audience=sts.amazonaws.com"
@@ -793,6 +799,15 @@ def main():
             approved_url.replace("/_apis/", "/wrong/_apis/"),
             approved_url.replace("12345678-1234-1234-1234-123456789abc", "not-a-guid"),
             approved_url.replace(".com/", ".com:444/"),
+        ):
+            rejected(lambda hostile_url=hostile_url: issuer._approved_oidc_url(hostile_url))
+        for hostile_url in (
+            hosted_oidc_url.replace("/178//", "/0//"),
+            hosted_oidc_url.replace("/178//", "/178/"),
+            hosted_oidc_url.replace("run-actions-2", "run-actions-0"),
+            hosted_oidc_url.replace("azure-eastus", "aws-us-east-1"),
+            hosted_oidc_url.replace(".com/", ".com.evil/"),
+            f"https://run-actions-2-azure-eastus.actions.githubusercontent.com{oidc_path}?api-version=2.0",
         ):
             rejected(lambda hostile_url=hostile_url: issuer._approved_oidc_url(hostile_url))
         with authority_stack(opener=None) as _stack:
