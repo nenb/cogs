@@ -161,6 +161,7 @@ test("R convergence lane runs the split production graph without granting author
 
   assert.match(diagnosticCampaign, /start-stage2-r-split-convergence/u);
   assert.match(diagnosticCampaign, /stage2-r-diagnostic-campaign\.yml\/runs/u);
+  assert.match(diagnosticCampaign, /\.path == "\.github\/workflows\/stage2-r-diagnostic-campaign\.yml"/u);
   assert.match(diagnosticCampaign, /stage2-r-diagnostic-preparation\.yml/u);
   assert.match(diagnosticCampaign, /COGS_STAGE2_SPLIT_CONVERGENCE/u);
   assert.match(diagnosticCampaign, /jobs:\n  cycles_1_3:/u);

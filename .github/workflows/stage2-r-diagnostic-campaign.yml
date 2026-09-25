@@ -67,7 +67,7 @@ jobs:
             esac
           done
           gh api --paginate --slurp "repos/nenb/cogs/actions/workflows/stage2-r-diagnostic-campaign.yml/runs?event=workflow_dispatch&per_page=100&head_sha=$GITHUB_SHA" >"$RUNNER_TEMP/campaign-runs.json"
-          jq -e --arg r "$GITHUB_SHA" --argjson current "$GITHUB_RUN_ID" '([.[].total_count] | unique) == [1] and ([.[].workflow_runs[] | select(.head_sha == $r and .path == ".github/workflows/stage2-production-campaign.yml")] | map(.id) == [$current])' "$RUNNER_TEMP/campaign-runs.json" >/dev/null
+          jq -e --arg r "$GITHUB_SHA" --argjson current "$GITHUB_RUN_ID" '([.[].total_count] | unique) == [1] and ([.[].workflow_runs[] | select(.head_sha == $r and .path == ".github/workflows/stage2-r-diagnostic-campaign.yml")] | map(.id) == [$current])' "$RUNNER_TEMP/campaign-runs.json" >/dev/null
           gh api "repos/nenb/cogs/actions/runs/$GITHUB_RUN_ID/attempts/1/jobs?per_page=100" >"$RUNNER_TEMP/campaign-jobs.json"
           producer=$(jq -er '[.jobs[] | select(.name == "cycles_1_3" and .status == "in_progress")] | select(length == 1) | .[0].id' "$RUNNER_TEMP/campaign-jobs.json")
           [[ "$producer" =~ ^[1-9][0-9]*$ ]]
