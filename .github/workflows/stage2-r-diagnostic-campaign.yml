@@ -142,6 +142,7 @@ jobs:
           for path in deploy/aws-feasibility/completion_campaign_aws_adapter.py \
               deploy/aws-feasibility/completion_campaign_aws_entry.py \
               deploy/aws-feasibility/completion_campaign_aws_provider.py \
+              deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py \
               scripts/stage2-production-approval.py \
               scripts/stage2-stage-production-approval.py; do
             sudo -n install -m 0444 "$path" "$root/$path"
@@ -494,6 +495,7 @@ jobs:
           for path in deploy/aws-feasibility/completion_campaign_aws_adapter.py \
               deploy/aws-feasibility/completion_campaign_aws_entry.py \
               deploy/aws-feasibility/completion_campaign_aws_provider.py \
+              deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py \
               scripts/stage2-production-approval.py \
               scripts/stage2-stage-production-approval.py; do
             sudo -n install -m 0444 "$path" "$root/$path"

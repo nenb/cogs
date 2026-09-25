@@ -462,6 +462,14 @@ class FixedProvider:
             absent = (allow_initial_absence and argv[0] == str(AWS)
                       and "get-command-invocation" in argv and not result.stdout
                       and b"InvocationDoesNotExist" in result.stderr)
+            plan_diagnostic = (
+                argv[:2] == (str(PYTHON), str(SOURCE / "deploy/aws-feasibility/check-plan.py"))
+                and re.fullmatch(rb"unsafe feasibility plan: [ -~]{1,1024}\n", result.stderr)
+                is not None
+            )
+            if plan_diagnostic:
+                try: os.write(2, result.stderr)
+                except BaseException: pass
             _require(absent, "fixed provider command failed")
             return None
         if json_output:

@@ -935,7 +935,10 @@ class AwsCampaignCustodian:
                 signal.signal(number, handler)
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         if failure is not None:
-            if re.fullmatch(rb"stage2-production-provider: [a-z-]{1,40}\.failed\n", stderr):
+            if re.fullmatch(
+                rb"(?:unsafe feasibility plan: [ -~]{1,1024}\n)?"
+                rb"stage2-production-provider: [a-z-]{1,40}\.failed\n", stderr
+            ):
                 try: os.write(2, stderr)
                 except BaseException: pass
             raise failure
@@ -1509,16 +1512,21 @@ def _no_active_cleanup_raw(approval, last):
 
 def recover_fixed_campaign():
     """Cleanup-only crash entry; it cannot resume cycles or mint a candidate."""
+    _set_failure_phase("recovery-root-admission")
     _admit_root()
+    _set_failure_phase("recovery-root-lock")
     lock = _root_lock()
     try:
         # Authenticate the approval without credentials before granting any
         # stale-scope kill authority. ACTIVE recovery then independently proves
         # that provider credentials remain in root custody.
+        _set_failure_phase("recovery-approval-custody")
         approval, authentication_sha256 = _approval(False)
+        _set_failure_phase("recovery-command-scope")
         _drain_stale_command_scope(approval)
         if ACTIVE.exists(): _read_fixed(AWS_CREDENTIALS, 16 * 1024)
         if not CONSUMED.exists():
+            _set_failure_phase("recovery-unconsumed")
             _require(not JOURNAL.exists() and not ACTIVE.exists()
                      and not any(STATE_ROOT.glob("cycle-*/[a-z]*.intent.json")))
             complete_raw = _canonical({
@@ -1531,6 +1539,7 @@ def recover_fixed_campaign():
             else:
                 _write_once(CLEANUP_COMPLETE, complete_raw)
             _retire_credentials(); return NoActiveCleanupReceipt(**_decode(complete_raw))
+        _set_failure_phase("recovery-consumed")
         custodian = AwsCampaignCustodian(
             _ADAPTER_SEAL, approval, authentication_sha256)
         if CONTINUATION.exists() or CONTINUATION_BUNDLE.exists() or \
