@@ -54,7 +54,9 @@ test("future planning authority is first-created, exact H/G/Q, and separately au
   }
   assert.match(planner, /subprocess\.Popen[\s\S]*selectors\.DefaultSelector/u);
   assert.doesNotMatch(planner, /subprocess\.run/u);
-  // Workflow migration is separately blocked: a v4 filename is not v5 authority.
+  assert.match(planning, /Exact V6 qualification package artifact ID/u);
+  assert.match(planning, /stage2-local-execution-envelope-v4\.json/u);
+  assert.doesNotMatch(planning, /Exact V5 qualification|stage2-local-execution-envelope-v3\.json/u);
   assert.match(issuer, /QUALIFICATION_PACKAGE_NAME/u);
   assert.match(stager, /validate_approval_package/u);
   assert.doesNotMatch(planner, /\bapply\b|\bdestroy\b|send-command/u);
