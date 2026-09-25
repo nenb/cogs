@@ -44,9 +44,9 @@ check "bounded_expiry" {
   assert {
     condition = (
       timecmp(var.expires_at, timeadd(timestamp(), "30m")) > 0 &&
-      timecmp(var.expires_at, timeadd(timestamp(), "8h")) < 0
+      timecmp(var.expires_at, timeadd(timestamp(), "10h")) < 0
     )
-    error_message = "Expiry must be more than 30 minutes and less than eight hours from plan/apply."
+    error_message = "Expiry must be more than 30 minutes and less than ten hours from plan/apply."
   }
 }
 

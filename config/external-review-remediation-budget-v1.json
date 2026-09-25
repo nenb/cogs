@@ -9,7 +9,7 @@
     "source_inventory_bytes": 18763891
   },
   "source_limits": {
-    "tracked_files": 1568,
+    "tracked_files": 1569,
     "source_inventory_bytes": 34000000,
     "serialized_source_inventory_bytes": 262144
   },
@@ -24,15 +24,15 @@
       "gross_lines": 48000,
       "gross_bytes": 11000000
     },
-    "global_gross_line_forecast": 42918,
+    "global_gross_line_forecast": 43062,
     "global_gross_byte_forecast": 29500000,
     "remaining_tranche": {
-      "gross_lines": 24918,
+      "gross_lines": 25062,
       "gross_bytes": 21500000,
       "allocations": [
         {
           "name": "governance",
-          "gross_lines": 8680,
+          "gross_lines": 8800,
           "gross_bytes": 1300000,
           "paths": [
             ".github/workflows/stage2-production-plan.yml",
@@ -65,6 +65,7 @@
             "docs/adr/0348-retire-transient-H-producer.md",
             "docs/adr/0351-correct-aws-host-boundaries-before-new-h.md",
             "docs/adr/0368-correct-post-qualification-planning-control.md",
+            "docs/adr/0369-retire-failed-planning-and-align-expiry.md",
             "docs/adr/README.md",
             "docs/security-evidence/plans/stage2-prebuilt-completion-prerequisite-map.md",
             "schemas/aws-stage2-completion-evidence-v3.json",
@@ -94,7 +95,7 @@
         },
         {
           "name": "product",
-          "gross_lines": 5058,
+          "gross_lines": 5059,
           "gross_bytes": 1950000,
           "paths": [
             ".github/workflows/insecure-container.yml",
@@ -156,8 +157,8 @@
         },
         {
           "name": "local-tofu-ssm",
-          "gross_lines": 6200,
-          "gross_bytes": 3050000,
+          "gross_lines": 6220,
+          "gross_bytes": 2800000,
           "paths": [
             ".github/workflows/stage2-production-approval-signing-diagnostic.yml",
             ".github/workflows/stage2-production-approval.yml",
@@ -165,6 +166,7 @@
             ".github/workflows/stage2-r-diagnostic-campaign.yml",
             ".github/workflows/stage2-r-diagnostic-preparation.yml",
             ".github/workflows/stage2-workload-linux-foundations.yml",
+            "deploy/aws-feasibility/check-plan.py",
             "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
             "deploy/aws-feasibility/completion_campaign_aws_entry.py",
             "deploy/aws-feasibility/completion_campaign_aws_provider.py",
@@ -172,6 +174,7 @@
             "deploy/aws-feasibility/completion_campaign_evidence_issuer.py",
             "deploy/aws-feasibility/completion_campaign_production.py",
             "deploy/aws-feasibility/destroy.sh",
+            "deploy/aws-feasibility/main.tf",
             "deploy/aws-feasibility/run-production-campaign.sh",
             "scripts/stage2-cosign-keyless-sign.sh",
             "scripts/stage2-stage-production-approval.py",
@@ -185,8 +188,8 @@
         },
         {
           "name": "readiness-ci",
-          "gross_lines": 286,
-          "gross_bytes": 10500000,
+          "gross_lines": 289,
+          "gross_bytes": 10750000,
           "paths": [
             ".gitleaksignore",
             ".github/workflows/ci.yml",
@@ -767,6 +770,7 @@
         "docs/adr/0366-freeze-replacement-H-and-authorize-control.md",
         "docs/adr/0367-establish-replacement-Q-and-authorize-qualification.md",
         "docs/adr/0368-correct-post-qualification-planning-control.md",
+        "docs/adr/0369-retire-failed-planning-and-align-expiry.md",
         "docs/adr/README.md",
         "docs/operations/production-runtime-foundation.md",
         "docs/operations/release-image-publication.md",
