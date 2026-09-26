@@ -427,6 +427,17 @@ def main():
     issuer = load("production_issuer_test", "scripts/stage2-production-approval.py")
     stager = load("production_stager_test", "scripts/stage2-stage-production-approval.py")
     planner = load("production_planner_test", "scripts/stage2-production-planner.py")
+    authentication_probe = b"authenticated-approval\n"
+    bundle_probe = b"authenticated-bundle\n"
+    assert stager._authentication_custody(authentication_probe, bundle_probe) == production._commit(
+        b"cogs.stage2-approval-authentication-custody/v1", {
+            "authentication_sha256": hashlib.sha256(authentication_probe).hexdigest(),
+            "bundle_sha256": hashlib.sha256(bundle_probe).hexdigest(),
+            "cosign_sha256": stager.adapter.COSIGN_SHA256,
+            "trusted_root_sha256": stager.adapter.TRUSTED_ROOT_SHA256,
+        })
+    assert stager._authentication_custody(authentication_probe, bundle_probe) != hashlib.sha256(
+        authentication_probe).hexdigest()
 
     def capture(action, *args):
         output = io.BytesIO()

@@ -405,6 +405,17 @@ def stage_issuance_approval(source):
     return hashlib.sha256(captured["approval.json"]).hexdigest()
 
 
+def _authentication_custody(authentication_raw, bundle_raw):
+    """Reproduce the adapter's authenticated approval-custody commitment."""
+    require(type(authentication_raw) is bytes and type(bundle_raw) is bytes)
+    return production._commit(b"cogs.stage2-approval-authentication-custody/v1", {
+        "authentication_sha256": hashlib.sha256(authentication_raw).hexdigest(),
+        "bundle_sha256": hashlib.sha256(bundle_raw).hexdigest(),
+        "cosign_sha256": adapter.COSIGN_SHA256,
+        "trusted_root_sha256": adapter.TRUSTED_ROOT_SHA256,
+    })
+
+
 def stage_issuance_continuation(
     source,
     workflow_revision,
@@ -479,9 +490,10 @@ def stage_issuance_continuation(
     approval_value["plan_sha256s"] = tuple(approval_value["plan_sha256s"])
     approval_value["phase_cycle_counts"] = tuple(approval_value["phase_cycle_counts"])
     approval = production.ProductionApproval(**approval_value)
-    authentication_sha256 = hashlib.sha256(
-        read(ISSUANCE_ROOT / "approval-authentication.json", 256 * 1024)
-    ).hexdigest()
+    authentication_custody = _authentication_custody(
+        read(ISSUANCE_ROOT / "approval-authentication.json", 256 * 1024),
+        read(ISSUANCE_ROOT / "approval-authentication.bundle.json", 1024 * 1024),
+    )
     parsed = production.continuation_from_bytes(
         captured[adapter.CONTINUATION_NAME],
         approval,
@@ -490,7 +502,7 @@ def stage_issuance_continuation(
         "authenticated-aws-adapter",
     )
     require(
-        parsed.consumption.authentication_receipt_sha256 == authentication_sha256
+        parsed.consumption.authentication_receipt_sha256 == authentication_custody
         and parsed.workflow_revision == workflow_revision
         and parsed.producer_job_id == int(producer_job_id_text)
         and parsed.approval_artifact_run_id == int(approval_run_id_text)
@@ -522,7 +534,7 @@ def stage_issuance_continuation(
         "artifact_digest": artifact_digest,
         "artifact_name": artifact_name,
         "approval_commitment": parsed.approval_commitment,
-        "authentication_receipt_sha256": authentication_sha256,
+        "authentication_receipt_sha256": authentication_custody,
         "batch_commitment": parsed.batch_commitment,
         "implementation_revision": parsed.implementation_revision,
         "control_revision": parsed.control_revision,
