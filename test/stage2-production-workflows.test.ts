@@ -173,6 +173,8 @@ test("R convergence lane runs the split production graph without granting author
   assert.match(diagnosticCampaign, /validate-aws-stage2-completion-evidence-v4/u);
   assert.match(diagnosticCampaign, /Cleanup after an uncertain segment-one outcome/u);
   assert.match(diagnosticCampaign, /Cleanup after an uncertain segment-two campaign outcome/u);
+  assert.match(diagnosticCampaign, /minimum_role_duration=18000/u);
+  assert.match(diagnosticCampaign, /credential_reserve=900/u);
   assert.match(diagnosticCampaign, /root\.staging/u);
   assert.match(stager, /def _create_issuance_root\(\):/u);
   assert.match(stager, /adapter\.campaign_identity\(\)/u);
@@ -317,7 +319,12 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /maximum_cost_micro_usd == 1100000/u);
   assert.match(campaign, /expires_unix_ns - \.not_before_unix_ns\) == 36000000000000/u);
   assert.match(campaign, /test "\$remaining" -ge 32400/u);
-  assert.match(campaign, /test "\$handoff_remaining" -ge 19800/u);
+  assert.match(campaign, /minimum_role_duration=18000/u);
+  assert.match(campaign, /credential_reserve=900/u);
+  assert.match(
+    campaign,
+    /test "\$handoff_remaining" -ge "\$\(\( minimum_role_duration \+ credential_reserve \)\)"/u,
+  );
   assert.doesNotMatch(campaign, /steps\.approval_verification\.outputs\.role_duration_seconds/u);
 
   const roleAssumptions = [

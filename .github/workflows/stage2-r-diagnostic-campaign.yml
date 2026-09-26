@@ -458,8 +458,10 @@ jobs:
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
           approval_remaining=$(( $(jq -er '.expires_unix_ns' "$out/approval.json") / 1000000000 - $(date +%s) - 60 ))
           handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - $(date +%s) - 60 ))
-          test "$approval_remaining" -ge 19800
-          test "$handoff_remaining" -ge 19800
+          minimum_role_duration=18000
+          credential_reserve=900
+          test "$approval_remaining" -ge "$(( minimum_role_duration + credential_reserve ))"
+          test "$handoff_remaining" -ge "$(( minimum_role_duration + credential_reserve ))"
 
       - name: Freeze authenticated segment-two issuance authority before OIDC
         run: |
