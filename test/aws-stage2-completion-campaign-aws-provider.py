@@ -129,16 +129,17 @@ class Fake:
                                                 "ResponseCode": 126 if remote_failure else 0,
                                                 "StandardErrorContent": "",
                                                 "StandardOutputContent": "untrusted-receipt\n" if remote_failure else "receipt\n"}))
-            # Force a real two-page chain for EIP coverage. Both pages contain
-            # unrelated account resources, which may not be relabelled campaign residue.
-            if "describe-instances" in argv:
+            # Force a real two-page chain on a pageable operation. Unrelated
+            # account resources may not be relabelled campaign residue.
+            if "describe-instances" in argv and "--starting-token" not in argv:
                 return provider.Completed(raw({"Reservations": [{"Instances": [{
-                    "InstanceId": f"i-{1:017x}", "State": {"Name": "terminated"}}]}]}))
-            if "describe-addresses" in argv and "--starting-token" not in argv:
-                return provider.Completed(raw({"Addresses": [{"AllocationId": "eipalloc-unrelated",
-                    "PublicIp": "192.0.2.1", "Tags": []}], "NextToken": "opaque"}))
+                    "InstanceId": f"i-{1:017x}", "State": {"Name": "terminated"}}]}],
+                    "NextToken": "opaque"}))
+            if "describe-instances" in argv:
+                return provider.Completed(raw({"Reservations": []}))
             if "describe-addresses" in argv:
-                return provider.Completed(raw({"Addresses": []}))
+                return provider.Completed(raw({"Addresses": [{"AllocationId": "eipalloc-unrelated",
+                    "PublicIp": "192.0.2.1", "Tags": []}]}))
             if "describe-network-interfaces" in argv:
                 return provider.Completed(raw({"NetworkInterfaces": [{
                     "NetworkInterfaceId": "eni-unrelated", "VpcId": "vpc-unrelated",
@@ -446,7 +447,8 @@ if test "$mode" != no-mask-link; then ln -sf /dev/null "$FAKE_SYSTEMD_RUNTIME/$4
                                                      receipt.state_commitment))
     pages = inventory_value["pages"]
     assert {row["category"] for row in pages} == set(production.INVENTORY_CATEGORIES)
-    assert len([row for row in pages if row["category"] == "elastic_ips"]) == 2
+    assert len([row for row in pages if row["category"] == "ec2_instances"]) == 2
+    assert len([row for row in pages if row["category"] == "elastic_ips"]) == 1
     for category in ("network_interfaces", "eni_public_associations", "elastic_ips"):
         assert all("account-region-wide" in row["query_scope"]
                    for row in pages if row["category"] == category)
@@ -457,6 +459,11 @@ if test "$mode" != no-mask-link; then ln -sf /dev/null "$FAKE_SYSTEMD_RUNTIME/$4
     inventory_aws_calls = [call for call, _, _ in fake.calls[inventory_call_start:]
                            if call[0] == str(provider.AWS)]
     assert inventory_aws_calls and all("observer" in call for call in inventory_aws_calls)
+    inventory_api_calls = [call for call in inventory_aws_calls
+                           if "get-caller-identity" not in call]
+    assert all(("--max-items" not in call) == any(
+        operation in call for operation in ("describe-addresses", "describe-key-pairs"))
+        for call in inventory_api_calls)
     calls_after_inventory = len(fake.calls)
     assert json.loads(boundary.inventory(1, grants[1].grant_commitment,
                                          receipt.state_commitment)) == inventory_value

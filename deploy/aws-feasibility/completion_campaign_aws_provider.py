@@ -313,6 +313,10 @@ INVENTORY_QUERIES = (
     ("ssm_managed_instances", "ssm", "describe-instance-information", "account-region-wide-related-instance"),
 )
 assert tuple(row[0] for row in INVENTORY_QUERIES) == production.INVENTORY_CATEGORIES
+NONPAGEABLE_INVENTORY_OPERATIONS = frozenset({
+    ("ec2", "describe-addresses"),
+    ("ec2", "describe-key-pairs"),
+})
 
 
 def _fwupd_quiescence_guard(systemctl_path: str = "/usr/bin/systemctl",
@@ -845,15 +849,18 @@ class FixedProvider:
     def _api_pages(self, service: str, operation: str, account_id: str):
         token = None
         seen = set()
+        pageable = (service, operation) not in NONPAGEABLE_INVENTORY_OPERATIONS
         while True:
             argv = [str(AWS), "--profile", "observer", "--region",
                     self.approval.region, service, operation,
-                    "--output", "json", "--no-cli-pager", "--max-items", "100"]
+                    "--output", "json", "--no-cli-pager"]
+            if pageable: argv.extend(("--max-items", "100"))
             if service == "budgets": argv.extend(("--account-id", account_id))
             if token is not None: argv.extend(("--starting-token", token))
             response = self._run(tuple(argv), 120, True)
             returned = response.get("NextToken")
-            _require(returned is None or (type(returned) is str and returned and returned not in seen))
+            _require(returned is None or (pageable and type(returned) is str
+                                          and returned and returned not in seen))
             yield token, returned, response
             if returned is None: break
             seen.add(returned); token = returned
