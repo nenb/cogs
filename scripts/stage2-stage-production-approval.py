@@ -215,6 +215,43 @@ def remove_partial(expected):
     require(not any(STAGING.iterdir())); STAGING.rmdir(); sync(STAGING.parent)
 
 
+def _create_issuance_root():
+    """Create the fixed issuance root from a pristine hosted runner."""
+    descriptors = []
+    parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptors.append(parent)
+    try:
+        for name, mode, create in (("var", 0o755, False), ("lib", 0o755, False),
+                                   ("cogs", 0o700, True)):
+            if create:
+                try:
+                    os.mkdir(name, mode, dir_fd=parent)
+                    os.fsync(parent)
+                except FileExistsError:
+                    pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                            os.O_CLOEXEC, dir_fd=parent)
+            descriptors.append(child)
+            seen = os.fstat(child)
+            require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                    and stat.S_IMODE(seen.st_mode) == mode)
+            parent = child
+        os.mkdir(ISSUANCE_ROOT.name, 0o755, dir_fd=parent)
+        issuance = os.open(ISSUANCE_ROOT.name, os.O_RDONLY | os.O_DIRECTORY |
+                           os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        try:
+            os.fchown(issuance, 0, 0); os.fchmod(issuance, 0o755)
+            seen = os.fstat(issuance)
+            require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                    and stat.S_IMODE(seen.st_mode) == 0o755)
+            os.fsync(issuance); os.fsync(parent)
+        finally:
+            os.close(issuance)
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def _capture_named_files(source, members):
     directory = os.open(Path(source), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     opened = {}
@@ -332,8 +369,7 @@ def stage_issuance_approval(source):
         and hashlib.sha256(captured["sigstore-trusted-root.json"]).hexdigest()
         == adapter.TRUSTED_ROOT_SHA256
     )
-    ISSUANCE_ROOT.mkdir(mode=0o755)
-    os.chown(ISSUANCE_ROOT, 0, 0)
+    _create_issuance_root()
     for name, raw in captured.items():
         write(ISSUANCE_ROOT / name, raw, 0o555 if name == "cosign" else 0o444)
     result = subprocess.run(
@@ -367,6 +403,17 @@ def stage_issuance_approval(source):
     sync(ISSUANCE_ROOT)
     sync(ISSUANCE_ROOT.parent)
     return hashlib.sha256(captured["approval.json"]).hexdigest()
+
+
+def _authentication_custody(authentication_raw, bundle_raw):
+    """Reproduce the adapter's authenticated approval-custody commitment."""
+    require(type(authentication_raw) is bytes and type(bundle_raw) is bytes)
+    return production._commit(b"cogs.stage2-approval-authentication-custody/v1", {
+        "authentication_sha256": hashlib.sha256(authentication_raw).hexdigest(),
+        "bundle_sha256": hashlib.sha256(bundle_raw).hexdigest(),
+        "cosign_sha256": adapter.COSIGN_SHA256,
+        "trusted_root_sha256": adapter.TRUSTED_ROOT_SHA256,
+    })
 
 
 def stage_issuance_continuation(
@@ -424,7 +471,7 @@ def stage_issuance_continuation(
             "--bundle",
             str(ISSUANCE_ROOT / adapter.CONTINUATION_BUNDLE_NAME),
             "--certificate-identity",
-            adapter.CAMPAIGN_IDENTITY,
+            adapter.campaign_identity(),
             "--certificate-oidc-issuer",
             "https://token.actions.githubusercontent.com",
             str(ISSUANCE_ROOT / adapter.CONTINUATION_NAME),
@@ -443,9 +490,10 @@ def stage_issuance_continuation(
     approval_value["plan_sha256s"] = tuple(approval_value["plan_sha256s"])
     approval_value["phase_cycle_counts"] = tuple(approval_value["phase_cycle_counts"])
     approval = production.ProductionApproval(**approval_value)
-    authentication_sha256 = hashlib.sha256(
-        read(ISSUANCE_ROOT / "approval-authentication.json", 256 * 1024)
-    ).hexdigest()
+    authentication_custody = _authentication_custody(
+        read(ISSUANCE_ROOT / "approval-authentication.json", 256 * 1024),
+        read(ISSUANCE_ROOT / "approval-authentication.bundle.json", 1024 * 1024),
+    )
     parsed = production.continuation_from_bytes(
         captured[adapter.CONTINUATION_NAME],
         approval,
@@ -454,7 +502,7 @@ def stage_issuance_continuation(
         "authenticated-aws-adapter",
     )
     require(
-        parsed.consumption.authentication_receipt_sha256 == authentication_sha256
+        parsed.consumption.authentication_receipt_sha256 == authentication_custody
         and parsed.workflow_revision == workflow_revision
         and parsed.producer_job_id == int(producer_job_id_text)
         and parsed.approval_artifact_run_id == int(approval_run_id_text)
@@ -481,12 +529,12 @@ def stage_issuance_continuation(
         "continuation_commitment": parsed.continuation_commitment,
         "bundle_sha256": hashlib.sha256(captured[adapter.CONTINUATION_BUNDLE_NAME]).hexdigest(),
         "trusted_root_sha256": adapter.TRUSTED_ROOT_SHA256,
-        "signer_identity": adapter.CAMPAIGN_IDENTITY,
+        "signer_identity": adapter.PRODUCTION_CAMPAIGN_IDENTITY,
         "artifact_id": int(artifact_id_text),
         "artifact_digest": artifact_digest,
         "artifact_name": artifact_name,
         "approval_commitment": parsed.approval_commitment,
-        "authentication_receipt_sha256": authentication_sha256,
+        "authentication_receipt_sha256": authentication_custody,
         "batch_commitment": parsed.batch_commitment,
         "implementation_revision": parsed.implementation_revision,
         "control_revision": parsed.control_revision,
@@ -559,7 +607,7 @@ def stage_continuation(source, workflow_revision, run_id_text, producer_job_id_t
         require(continuation == captured_continuation and bundle == captured_bundle)
         approval, authentication_sha256 = adapter._approval()
         adapter._verify_blob(
-            verified_continuation, verified_bundle, adapter.CAMPAIGN_IDENTITY)
+            verified_continuation, verified_bundle, adapter.campaign_identity())
         continuation = read(verified_continuation, 4 * 1024 * 1024)
         bundle = read(verified_bundle, 1024 * 1024)
         require(continuation == captured_continuation and bundle == captured_bundle)
@@ -599,7 +647,7 @@ def stage_continuation(source, workflow_revision, run_id_text, producer_job_id_t
         "continuation_commitment": parsed.continuation_commitment,
         "bundle_sha256": hashlib.sha256(bundle).hexdigest(),
         "trusted_root_sha256": adapter.TRUSTED_ROOT_SHA256,
-        "signer_identity": adapter.CAMPAIGN_IDENTITY,
+        "signer_identity": adapter.PRODUCTION_CAMPAIGN_IDENTITY,
         "artifact_id": int(artifact_id_text), "artifact_digest": artifact_digest,
         "artifact_name": artifact_name,
         "approval_commitment": parsed.approval_commitment,
@@ -980,7 +1028,7 @@ def verify_evidence_continuation_signature(label):
             "--bundle",
             str(package / adapter.CONTINUATION_BUNDLE_NAME),
             "--certificate-identity",
-            adapter.CAMPAIGN_IDENTITY,
+            adapter.campaign_identity(),
             "--certificate-oidc-issuer",
             "https://token.actions.githubusercontent.com",
             str(package / adapter.CONTINUATION_NAME),
@@ -1041,5 +1089,10 @@ if __name__ == "__main__":
             raw = f"approval_sha256={result}\n".encode("ascii")
             require(sys.stdout.buffer.write(raw) == len(raw))
     except (OSError, StagingError, KeyError, TypeError, ValueError,
-            subprocess.SubprocessError, production.ProductionCampaignError):
-        raise SystemExit(2)
+            subprocess.SubprocessError, production.ProductionCampaignError) as error:
+        errno_value = error.errno if isinstance(error, OSError) else None
+        diagnostic = (f"stage2-approval-staging: {type(error).__name__}"
+                      f" errno={errno_value if errno_value is not None else 'none'}\n")
+        try: os.write(2, diagnostic.encode("ascii"))
+        except OSError: pass
+        raise SystemExit(2) from None

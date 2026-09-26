@@ -23,11 +23,18 @@ from urllib.request import (HTTPRedirectHandler, HTTPSHandler, ProxyHandler,
                             Request, build_opener)
 from xml.etree import ElementTree
 
-_DIAGNOSTIC = b"stage2-production-approval: owner.failed\n"
+_FAILURE_PHASE = "owner"
+
+
+def _set_failure_phase(phase):
+    global _FAILURE_PHASE
+    require(re.fullmatch(r"[a-z-]{1,32}", phase) is not None)
+    _FAILURE_PHASE = phase
 
 
 def _fail():
-    try: os.write(2, _DIAGNOSTIC)
+    diagnostic = f"stage2-production-approval: {_FAILURE_PHASE}.failed\n".encode("ascii")
+    try: os.write(2, diagnostic)
     except BaseException: pass
     raise SystemExit(2) from None
 
@@ -52,7 +59,10 @@ TLS_CA_MAX_BYTES = 1024 * 1024
 ISSUANCE_ROOT = Path("/var/lib/cogs/stage2-aws-issuance-v1")
 ISSUANCE_APPROVAL = ISSUANCE_ROOT / "approval.json"
 ISSUANCE_AUTHENTICATION = ISSUANCE_ROOT / "approval-authentication.json"
+ISSUANCE_AUTHENTICATION_BUNDLE = ISSUANCE_ROOT / "approval-authentication.bundle.json"
 ISSUANCE_PACKAGE = ISSUANCE_ROOT / production.QUALIFICATION_PACKAGE_NAME
+COSIGN_SHA256 = "5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68"
+TRUSTED_ROOT_SHA256 = "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e"
 ISSUANCE_CONTINUATION = ISSUANCE_ROOT / "aws-stage2-production-continuation-v1.json"
 ISSUANCE_CONTINUATION_BUNDLE = ISSUANCE_ROOT / "aws-stage2-production-continuation-v1.bundle.json"
 ISSUANCE_ADMISSION = ISSUANCE_ROOT / "aws-stage2-production-continuation-admission-v1.json"
@@ -253,21 +263,30 @@ def _approved_oidc_url(request_url):
     parsed = urlsplit(request_url)
     guid = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
     shard = r"(?:[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?)?"
-    host = rf"pipelines{shard}\.actions\.githubusercontent\.com"
-    token_path = (
+    legacy_host = rf"pipelines{shard}\.actions\.githubusercontent\.com"
+    legacy_path = (
         rf"/[A-Za-z0-9]{{1,128}}/{guid}/_apis/distributedtask/"
         rf"hubs/[A-Za-z0-9._-]{{1,64}}/plans/{guid}/jobs/{guid}/idtoken"
     )
-    require(
-        parsed.scheme == "https"
-        and parsed.hostname is not None
-        and re.fullmatch(host, parsed.hostname) is not None
-        and parsed.port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.fragment
-        and re.fullmatch(token_path, parsed.path) is not None
+    hosted_host = (
+        r"run-actions-[1-9][0-9]{0,2}-azure-"
+        r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\.actions\.githubusercontent\.com"
     )
+    hosted_path = rf"/[1-9][0-9]{{0,18}}//idtoken/{guid}/{guid}"
+    _set_failure_phase("oidc-url-scheme")
+    require(parsed.scheme == "https")
+    _set_failure_phase("oidc-url-host")
+    legacy = parsed.hostname is not None and re.fullmatch(legacy_host, parsed.hostname) is not None
+    hosted = parsed.hostname is not None and re.fullmatch(hosted_host, parsed.hostname) is not None
+    require(legacy or hosted)
+    _set_failure_phase("oidc-url-authority")
+    require(parsed.port in {None, 443} and parsed.username is None and parsed.password is None)
+    _set_failure_phase("oidc-url-path")
+    require(not parsed.fragment and (
+        legacy and re.fullmatch(legacy_path, parsed.path) is not None
+        or hosted and re.fullmatch(hosted_path, parsed.path) is not None
+    ))
+    _set_failure_phase("oidc-url-query")
     query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
     require(query == [("api-version", "2.0")])
     return urlunsplit(
@@ -304,6 +323,7 @@ def _validated_role_authority(selector, role_arn, approval_path):
     partition, account_id, role_name = match.groups()
     approval_raw = _root_issuance_read(ISSUANCE_APPROVAL, MAX_BYTES)
     authentication_raw = _root_issuance_read(ISSUANCE_AUTHENTICATION, MAX_BYTES)
+    authentication_bundle_raw = _root_issuance_read(ISSUANCE_AUTHENTICATION_BUNDLE, 1024 * 1024)
     package_raw = _root_issuance_read(ISSUANCE_PACKAGE, MAX_BYTES)
     try:
         value, authentication, package = map(
@@ -343,13 +363,34 @@ def _validated_role_authority(selector, role_arn, approval_path):
         else approval.inventory_observer_principal_commitment
     )
     require(production.executor_principal_commitment(partition, account_id, role_name) == expected)
-    return approval, hashlib.sha256(authentication_raw).hexdigest(), account_id, role_name
+    authentication_custody = production._commit(
+        b"cogs.stage2-approval-authentication-custody/v1",
+        {
+            "authentication_sha256": hashlib.sha256(authentication_raw).hexdigest(),
+            "bundle_sha256": hashlib.sha256(authentication_bundle_raw).hexdigest(),
+            "cosign_sha256": COSIGN_SHA256,
+            "trusted_root_sha256": TRUSTED_ROOT_SHA256,
+        },
+    )
+    return approval, authentication_custody, account_id, role_name
+
+
+def _expected_github_subject():
+    diagnostic = os.environ.get("COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC")
+    require(diagnostic in {None, "1"})
+    if diagnostic == "1":
+        ref = os.environ.get("COGS_STAGE2_DIAGNOSTIC_REF", "")
+        require(re.fullmatch(r"refs/heads/[A-Za-z0-9._/-]+", ref) is not None
+                and ".." not in ref and not ref.endswith("/"))
+        return f"repo:nenb/cogs:ref:{ref}"
+    return "repo:nenb/cogs:ref:refs/heads/main"
 
 
 def assume_github_role(
     selector, role_arn, session_name, duration_raw, minimum_raw, approval_path, runway_path=None
 ):
     """One-shot direct GitHub OIDC/regional STS exchange for an approved role."""
+    _set_failure_phase("role-authority")
     approval, authentication_sha256, account_id, role_name = _validated_role_authority(
         selector, role_arn, approval_path
     )
@@ -386,10 +427,14 @@ def assume_github_role(
         runway_deadline = min(runway_deadline, continuation.cleanup_deadline_unix_ns)
     require(duration <= runway_deadline // 1_000_000_000 - now - 900)
     # The private opener disables proxies and redirects before either token is read.
+    _set_failure_phase("https-custody")
     opener = _direct_https_opener()
+    _set_failure_phase("oidc-url")
     request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
     oidc_url = _approved_oidc_url(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", ""))
+    _set_failure_phase("oidc-token")
     require("\r" not in request_token and "\n" not in request_token and len(request_token) >= 32)
+    _set_failure_phase("oidc-request")
     with opener.open(
         Request(oidc_url, headers={"Authorization": f"Bearer {request_token}"}), timeout=30
     ) as response:
@@ -398,6 +443,7 @@ def assume_github_role(
     oidc_now = int(time.time())
     require(type(oidc) is dict and set(oidc) == {"value"})
     web_identity = oidc["value"]
+    _set_failure_phase("oidc-claims")
     claims = _jwt_claims(web_identity)
     audience = claims.get("aud")
     require(
@@ -407,10 +453,11 @@ def assume_github_role(
             and audience == ["sts.amazonaws.com"]
         )
         and claims.get("iss") == "https://token.actions.githubusercontent.com"
-        and claims.get("sub") == "repo:nenb/cogs:ref:refs/heads/main"
+        and claims.get("sub") == _expected_github_subject()
         and type(claims.get("exp")) is int
         and claims["exp"] >= oidc_now + 60
     )
+    _set_failure_phase("sts-request")
     body = urlencode(
         {
             "Action": "AssumeRoleWithWebIdentity",
@@ -427,6 +474,7 @@ def assume_github_role(
     ) as response:
         require(getattr(response, "status", 200) == 200 and response.geturl() == STS_URL)
         sts_raw = _bounded_response(response, 64 * 1024)
+    _set_failure_phase("sts-response")
     try:
         xml = ElementTree.fromstring(sts_raw)
     except ElementTree.ParseError as error:
@@ -477,6 +525,7 @@ def assume_github_role(
     for value in (access, secret, token):
         command = f"::add-mask::{value}\n".encode("ascii")
         require(os.write(1, command) == len(command))
+    _set_failure_phase("github-environment")
     descriptor = os.open(
         Path(os.environ.get("GITHUB_ENV", "")),
         os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC,

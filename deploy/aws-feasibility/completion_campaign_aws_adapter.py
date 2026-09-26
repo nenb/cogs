@@ -38,6 +38,7 @@ DIAGNOSTIC_APPROVAL_IDENTITY = (
     "https://github.com/nenb/cogs/.github/workflows/"
     "stage2-r-diagnostic-preparation.yml@refs/heads/main")
 DIAGNOSTIC_ENVIRONMENT = "COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC"
+DIAGNOSTIC_REF_ENVIRONMENT = "COGS_STAGE2_DIAGNOSTIC_REF"
 AWS_CONFIG = ROOT / "aws-config"
 AWS_CREDENTIALS = ROOT / "aws-credentials"
 TOFU = ROOT / "tofu"
@@ -63,9 +64,10 @@ CONTINUATION_BUNDLE = ROOT / CONTINUATION_BUNDLE_NAME
 CONTINUATION_ADMISSION = ROOT / CONTINUATION_ADMISSION_NAME
 CONTINUATION_ANCHOR = ROOT / "continuation-journal-anchor.json"
 CONTINUATION_PUBLICATION = ROOT / "continuation-publication"
-CAMPAIGN_IDENTITY = (
+PRODUCTION_CAMPAIGN_IDENTITY = (
     "https://github.com/nenb/cogs/.github/workflows/"
     "stage2-production-campaign.yml@refs/heads/main")
+CAMPAIGN_IDENTITY = PRODUCTION_CAMPAIGN_IDENTITY
 STATE_ROOT = ROOT / "provider-state"
 SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
 EFFECT_COMMAND = SOURCE / "deploy/aws-feasibility/run-production-effect.sh"
@@ -92,6 +94,19 @@ FIXED_ENV = {
 
 class AwsAdapterError(production.ProductionCampaignError):
     pass
+
+
+_FAILURE_PHASE = "owner"
+
+
+def _set_failure_phase(phase):
+    global _FAILURE_PHASE
+    _require(type(phase) is str and re.fullmatch(r"[a-z-]{1,48}", phase) is not None)
+    _FAILURE_PHASE = phase
+
+
+def failure_phase():
+    return _FAILURE_PHASE
 
 
 @dataclass(frozen=True)
@@ -318,17 +333,36 @@ def _replace_durable(path, raw):
             temporary.unlink()
 
 
+def _diagnostic_ref():
+    value = os.environ.get(DIAGNOSTIC_REF_ENVIRONMENT, "refs/heads/main")
+    _require(re.fullmatch(r"refs/heads/[A-Za-z0-9._/-]+", value) is not None
+             and ".." not in value and not value.endswith("/"))
+    return value
+
+
 def approval_identity():
     """Select only the production identity or an explicit diagnostic identity."""
     diagnostic = os.environ.get(DIAGNOSTIC_ENVIRONMENT)
     _require(diagnostic in {None, "1"})
-    return (DIAGNOSTIC_APPROVAL_IDENTITY if diagnostic == "1"
-            else PRODUCTION_APPROVAL_IDENTITY)
+    if diagnostic == "1":
+        return ("https://github.com/nenb/cogs/.github/workflows/"
+                f"stage2-r-diagnostic-preparation.yml@{_diagnostic_ref()}")
+    return PRODUCTION_APPROVAL_IDENTITY
+
+
+def campaign_identity():
+    """Select the actual signer for production or the convergence workflow."""
+    diagnostic = os.environ.get(DIAGNOSTIC_ENVIRONMENT)
+    _require(diagnostic in {None, "1"})
+    if diagnostic == "1":
+        return ("https://github.com/nenb/cogs/.github/workflows/"
+                f"stage2-r-diagnostic-campaign.yml@{_diagnostic_ref()}")
+    return PRODUCTION_CAMPAIGN_IDENTITY
 
 
 def _verify_blob(payload, bundle, identity):
-    _require(identity in {PRODUCTION_APPROVAL_IDENTITY, DIAGNOSTIC_APPROVAL_IDENTITY,
-                          CAMPAIGN_IDENTITY})
+    _require(identity in {PRODUCTION_APPROVAL_IDENTITY, approval_identity(),
+                          PRODUCTION_CAMPAIGN_IDENTITY, campaign_identity()})
     verification = subprocess.run(
         ("/usr/bin/unshare", "--net", "--", str(COSIGN), "verify-blob",
          "--trusted-root", str(TRUSTED_ROOT), "--bundle", str(bundle),
@@ -901,6 +935,12 @@ class AwsCampaignCustodian:
                 signal.signal(number, handler)
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         if failure is not None:
+            if re.fullmatch(
+                rb"(?:unsafe feasibility plan: [ -~]{1,1024}\n)?"
+                rb"stage2-production-provider: [a-z-]{1,40}\.failed\n", stderr
+            ):
+                try: os.write(2, stderr)
+                except BaseException: pass
             raise failure
         return stdout
 
@@ -1158,7 +1198,7 @@ def _continuation(approval, authentication_sha256):
     raw = _read_fixed(CONTINUATION, 4 * 1024 * 1024)
     bundle_raw = _read_fixed(CONTINUATION_BUNDLE, 1024 * 1024)
     admission_raw = _read_fixed(CONTINUATION_ADMISSION, 64 * 1024)
-    _verify_blob(CONTINUATION, CONTINUATION_BUNDLE, CAMPAIGN_IDENTITY)
+    _verify_blob(CONTINUATION, CONTINUATION_BUNDLE, campaign_identity())
     preliminary = _decode(admission_raw, 64 * 1024)
     run_id = preliminary.get("run_id"); run_attempt = preliminary.get("run_attempt")
     value = production.continuation_from_bytes(
@@ -1230,6 +1270,7 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
                             approval_artifact_run_id, approval_artifact_id,
                             approval_artifact_digest, approval_artifact_name):
     """Consume one approval, execute exactly cycles 1--3, and retire credentials."""
+    _set_failure_phase("root-admission")
     _admit_root()
     production._sha1(workflow_revision)
     _require(all(type(item) is int and item > 0 for item in (
@@ -1238,17 +1279,21 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
              and type(approval_artifact_digest) is str
              and re.fullmatch(r"sha256:[0-9a-f]{64}", approval_artifact_digest)
              and type(approval_artifact_name) is str)
+    _set_failure_phase("root-lock")
     lock = _root_lock()
     try:
         _require(not any(path.exists() for path in (
             CONSUMED, JOURNAL, ACTIVE, CLEANUP_COMPLETE, SEGMENT_COMPLETE,
             CONTINUATION, CONTINUATION_BUNDLE, CONTINUATION_ADMISSION,
             CONTINUATION_ANCHOR, CONTINUATION_PUBLICATION)))
+        _set_failure_phase("approval-custody")
         approval, authentication_sha256 = _approval()
         custodian = AwsCampaignCustodian(_ADAPTER_SEAL, approval, authentication_sha256)
+        _set_failure_phase("controller-phase-one")
         phase = production.ProductionCampaignController(
             custodian.ports(_ADAPTER_SEAL)).run_phase_one()
         _require(not ACTIVE.exists())
+        _set_failure_phase("continuation-construction")
         continuation = production.continuation_for_phase_one(
             phase, approval, "authenticated-aws-adapter", workflow_revision,
             run_id, producer_job_id, approval_artifact_run_id,
@@ -1257,6 +1302,7 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
         # Publish the certain-zero terminal state durably before credentials are
         # considered retired. Recovery also admits the legacy crash boundary in
         # which unlink+fsync completed immediately before this publication.
+        _set_failure_phase("continuation-publication")
         _write_once(SEGMENT_COMPLETE, _canonical({
             "version": "cogs.stage2-segment-one-zero-complete/v1",
             "zero_commitment": continuation.inventories[-1].zero_commitment,
@@ -1272,6 +1318,8 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
             "cogs.stage2-continuation-publication/v1",
             hashlib.sha256(raw).hexdigest(), continuation.continuation_commitment, 3)
     except BaseException:
+        failed_phase = _FAILURE_PHASE
+        _set_failure_phase("inactive-retirement")
         if not ACTIVE.exists():
             if not CLEANUP_COMPLETE.exists() and not SEGMENT_COMPLETE.exists():
                 _write_once(CLEANUP_COMPLETE, _canonical({
@@ -1280,6 +1328,7 @@ def run_fixed_first_segment(workflow_revision, run_id, producer_job_id,
                         b"cogs.stage2-inactive-root-retirement/v1", {"root": str(ROOT)}),
                     "certain_zero": True}))
             if AWS_CREDENTIALS.exists(): _retire_credentials()
+        _set_failure_phase(failed_phase)
         raise
     finally:
         os.close(lock)
@@ -1463,16 +1512,21 @@ def _no_active_cleanup_raw(approval, last):
 
 def recover_fixed_campaign():
     """Cleanup-only crash entry; it cannot resume cycles or mint a candidate."""
+    _set_failure_phase("recovery-root-admission")
     _admit_root()
+    _set_failure_phase("recovery-root-lock")
     lock = _root_lock()
     try:
         # Authenticate the approval without credentials before granting any
         # stale-scope kill authority. ACTIVE recovery then independently proves
         # that provider credentials remain in root custody.
+        _set_failure_phase("recovery-approval-custody")
         approval, authentication_sha256 = _approval(False)
+        _set_failure_phase("recovery-command-scope")
         _drain_stale_command_scope(approval)
         if ACTIVE.exists(): _read_fixed(AWS_CREDENTIALS, 16 * 1024)
         if not CONSUMED.exists():
+            _set_failure_phase("recovery-unconsumed")
             _require(not JOURNAL.exists() and not ACTIVE.exists()
                      and not any(STATE_ROOT.glob("cycle-*/[a-z]*.intent.json")))
             complete_raw = _canonical({
@@ -1485,8 +1539,10 @@ def recover_fixed_campaign():
             else:
                 _write_once(CLEANUP_COMPLETE, complete_raw)
             _retire_credentials(); return NoActiveCleanupReceipt(**_decode(complete_raw))
+        _set_failure_phase("recovery-consumed")
         custodian = AwsCampaignCustodian(
             _ADAPTER_SEAL, approval, authentication_sha256)
+        _set_failure_phase("recovery-journal")
         if CONTINUATION.exists() or CONTINUATION_BUNDLE.exists() or \
                 CONTINUATION_ADMISSION.exists() or CONTINUATION_ANCHOR.exists():
             _require(CONTINUATION.exists() and CONTINUATION_BUNDLE.exists()
@@ -1584,6 +1640,7 @@ def recover_fixed_campaign():
             _retire_credentials()
             return NoActiveCleanupReceipt(
                 "cogs.stage2-cleanup-complete/v1", reconciliation, True)
+        _set_failure_phase("recovery-active-custody")
         active = _decode(_read_fixed(ACTIVE, 64 * 1024, (0o600,)))
         _require(active.get("version") == "cogs.stage2-cleanup-active/v1"
                  and active.get("batch_commitment") == approval.batch_commitment
@@ -1613,10 +1670,13 @@ def recover_fixed_campaign():
             return NoActiveCleanupReceipt(
                 "cogs.stage2-cleanup-complete/v1",
                 complete["reconciliation_commitment"], True)
+        _set_failure_phase("recovery-provider")
         receipt = custodian.recover(grant, active["state_commitment"], None,
                                     production.ProductionUncertainty())
+        _set_failure_phase("recovery-validation")
         _validated_recovery_receipt(
             receipt, grant, active["state_commitment"], approval)
+        _set_failure_phase("recovery-settlement")
         custodian.journal("cleanup", "settled", grant.ordinal, grant.mode,
                           receipt.reconciliation_commitment)
         _retire_credentials()

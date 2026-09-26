@@ -135,8 +135,8 @@ mirror_suffix = ("9ae1f21bf655081f03f4e2f3eb890ffa11de9b3e|34831612221|"
                  "35716917245|35732877526|35733919360|10690851656|10696531175|2076c2bd781a663d2b27fa478792fc133fa9fd42|1956ea8da439de2ae137e6ccbc5650ca149fe815|4ffdeb435cc8cd053d47ab173b942ec0f99cd3b4|35795093115|35810787971|35811001315|35822851712|10724846408|10729183411|10729578379|8e9328c66a1ab930583e22f07ba6f17f23bc7d2e|f82c9e77acbd8cf1f963a46d73a9e70afb6f41d6|6d2eff8ffa8fe525b5566a0ddded7d79e868ba16|c075458cf2d853200df57584c1b16cf38bd6e38c|f75d3f09990de4635cc3890efe0f5f6e783312bd|35928408355|35938320143|35938533499|35946454149|10780807449|10783357865|10784336353|56fdd694c1a0c6967bf09156d44260f18a28888d|35957236430|10791707159)")
 mirrors = [path for path in (ROOT / ".github/workflows").glob("*.yml")
            if mirror_suffix in path.read_text()]
-assert len(mirrors) == 12
-assert sum(path.read_text().count(mirror_suffix) for path in mirrors) == 19
+assert len(mirrors) == 13
+assert sum(path.read_text().count(mirror_suffix) for path in mirrors) == 20
 
 producer = load("stage2-prebuilt-rootfs-producer")
 publisher = load("stage2-prebuilt-rootfs-publisher")

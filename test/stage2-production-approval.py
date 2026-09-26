@@ -427,6 +427,17 @@ def main():
     issuer = load("production_issuer_test", "scripts/stage2-production-approval.py")
     stager = load("production_stager_test", "scripts/stage2-stage-production-approval.py")
     planner = load("production_planner_test", "scripts/stage2-production-planner.py")
+    authentication_probe = b"authenticated-approval\n"
+    bundle_probe = b"authenticated-bundle\n"
+    assert stager._authentication_custody(authentication_probe, bundle_probe) == production._commit(
+        b"cogs.stage2-approval-authentication-custody/v1", {
+            "authentication_sha256": hashlib.sha256(authentication_probe).hexdigest(),
+            "bundle_sha256": hashlib.sha256(bundle_probe).hexdigest(),
+            "cosign_sha256": stager.adapter.COSIGN_SHA256,
+            "trusted_root_sha256": stager.adapter.TRUSTED_ROOT_SHA256,
+        })
+    assert stager._authentication_custody(authentication_probe, bundle_probe) != hashlib.sha256(
+        authentication_probe).hexdigest()
 
     def capture(action, *args):
         output = io.BytesIO()
@@ -553,6 +564,7 @@ def main():
             str(role_approval.parent / "approval-authentication.json"): canonical(
                 role_authentication
             ),
+            str(role_approval.parent / "approval-authentication.bundle.json"): b"bundle\n",
             str(role_approval.parent / production.QUALIFICATION_PACKAGE_NAME): package_raw,
         }
         github_environment = Path(temporary) / "github-environment"
@@ -627,6 +639,10 @@ def main():
                 ("ISSUANCE_ROOT", role_approval.parent),
                 ("ISSUANCE_APPROVAL", role_approval),
                 ("ISSUANCE_AUTHENTICATION", role_approval.parent / "approval-authentication.json"),
+                (
+                    "ISSUANCE_AUTHENTICATION_BUNDLE",
+                    role_approval.parent / "approval-authentication.bundle.json",
+                ),
                 ("ISSUANCE_PACKAGE", role_approval.parent / production.QUALIFICATION_PACKAGE_NAME),
             ):
                 stack.enter_context(patch.object(issuer, attribute, replacement))
@@ -645,6 +661,21 @@ def main():
             )
             return stack
         role_arn = f"arn:aws:iam::{account}:role/{executor_role}"
+        with authority_stack():
+            _role_approval, authentication_custody, _account, _role = (
+                issuer._validated_role_authority("executor", role_arn, role_approval)
+            )
+        assert authentication_custody == production._commit(
+            b"cogs.stage2-approval-authentication-custody/v1",
+            {
+                "authentication_sha256": hashlib.sha256(
+                    authority_paths[str(role_approval.parent / "approval-authentication.json")]
+                ).hexdigest(),
+                "bundle_sha256": hashlib.sha256(b"bundle\n").hexdigest(),
+                "cosign_sha256": issuer.COSIGN_SHA256,
+                "trusted_root_sha256": issuer.TRUSTED_ROOT_SHA256,
+            },
+        )
         with authority_stack():
             issuer.assume_github_role(
                 "executor", role_arn, session, "18000", "16200", role_approval
@@ -773,10 +804,16 @@ def main():
                 )
             assert len(requests) == expected_requests
         assert github_environment.read_bytes() == b""
+        hosted_oidc_url = (
+            "https://run-actions-2-azure-eastus.actions.githubusercontent.com/178//idtoken/"
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb?api-version=2.0"
+        )
         for approved_url in (
             role_environment["ACTIONS_ID_TOKEN_REQUEST_URL"],
             f"https://pipelines.actions.githubusercontent.com{oidc_path}?api-version=2.0",
             f"https://pipelinesghubeus11.actions.githubusercontent.com:443{oidc_path}?api-version=2.0",
+            hosted_oidc_url,
         ):
             assert issuer._approved_oidc_url(approved_url).endswith(
                 "api-version=2.0&audience=sts.amazonaws.com"
@@ -793,6 +830,15 @@ def main():
             approved_url.replace("/_apis/", "/wrong/_apis/"),
             approved_url.replace("12345678-1234-1234-1234-123456789abc", "not-a-guid"),
             approved_url.replace(".com/", ".com:444/"),
+        ):
+            rejected(lambda hostile_url=hostile_url: issuer._approved_oidc_url(hostile_url))
+        for hostile_url in (
+            hosted_oidc_url.replace("/178//", "/0//"),
+            hosted_oidc_url.replace("/178//", "/178/"),
+            hosted_oidc_url.replace("run-actions-2", "run-actions-0"),
+            hosted_oidc_url.replace("azure-eastus", "aws-us-east-1"),
+            hosted_oidc_url.replace(".com/", ".com.evil/"),
+            f"https://run-actions-2-azure-eastus.actions.githubusercontent.com{oidc_path}?api-version=2.0",
         ):
             rejected(lambda hostile_url=hostile_url: issuer._approved_oidc_url(hostile_url))
         with authority_stack(opener=None) as _stack:
@@ -888,6 +934,14 @@ def main():
         issuance_snapshot = Path(temporary) / "issuance-snapshot"
         with (
             patch.object(stager, "ISSUANCE_ROOT", issuance_snapshot),
+            patch.object(
+                stager,
+                "_create_issuance_root",
+                side_effect=lambda: (
+                    issuance_snapshot.mkdir(mode=0o755),
+                    stager.os.chown(issuance_snapshot, 0, 0),
+                ),
+            ),
             patch.object(stager, "eligible"),
             patch.object(stager.adapter, "COSIGN_SHA256", hashlib.sha256(b"cosign\n").hexdigest()),
             patch.object(

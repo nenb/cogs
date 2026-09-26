@@ -24,12 +24,19 @@ import sys
 import time
 from typing import Callable
 
-_DIAGNOSTIC = b"stage2-production-provider: owner.failed\n"
+_FAILURE_PHASE = "owner"
 _MODULE_ROOT = Path(__file__).resolve().parent
 
 
+def _set_failure_phase(phase: str) -> None:
+    global _FAILURE_PHASE
+    if re.fullmatch(r"[a-z-]{1,40}", phase) is None: raise RuntimeError()
+    _FAILURE_PHASE = phase
+
+
 def _fail() -> None:
-    try: os.write(2, _DIAGNOSTIC)
+    diagnostic = f"stage2-production-provider: {_FAILURE_PHASE}.failed\n".encode("ascii")
+    try: os.write(2, diagnostic)
     except BaseException: pass
     raise SystemExit(2) from None
 
@@ -306,6 +313,10 @@ INVENTORY_QUERIES = (
     ("ssm_managed_instances", "ssm", "describe-instance-information", "account-region-wide-related-instance"),
 )
 assert tuple(row[0] for row in INVENTORY_QUERIES) == production.INVENTORY_CATEGORIES
+NONPAGEABLE_INVENTORY_OPERATIONS = frozenset({
+    ("ec2", "describe-addresses"),
+    ("ec2", "describe-key-pairs"),
+})
 
 
 def _fwupd_quiescence_guard(systemctl_path: str = "/usr/bin/systemctl",
@@ -455,6 +466,14 @@ class FixedProvider:
             absent = (allow_initial_absence and argv[0] == str(AWS)
                       and "get-command-invocation" in argv and not result.stdout
                       and b"InvocationDoesNotExist" in result.stderr)
+            plan_diagnostic = (
+                argv[:2] == (str(PYTHON), str(SOURCE / "deploy/aws-feasibility/check-plan.py"))
+                and re.fullmatch(rb"unsafe feasibility plan: [ -~]{1,1024}\n", result.stderr)
+                is not None
+            )
+            if plan_diagnostic:
+                try: os.write(2, result.stderr)
+                except BaseException: pass
             _require(absent, "fixed provider command failed")
             return None
         if json_output:
@@ -589,16 +608,19 @@ class FixedProvider:
 
     def effect(self, kind: str, ordinal: int, mode: str,
                grant_commitment: str, intent: str) -> bytes:
+        _set_failure_phase("effect-custody")
         _require(kind in production.EFFECT_KINDS)
         directory, grant = self._cycle(ordinal, mode, grant_commitment)
         receipt_path = directory / f"{kind}.receipt.json"
         _require(not receipt_path.exists(), "effect receipt replay")
         self._tfvars(directory, grant)
+        _set_failure_phase("executor-identity")
         caller = self._run((str(AWS), "--region", self.approval.region, "sts",
                             "get-caller-identity", "--output", "json", "--no-cli-pager"),
                            60, True)
         self._principal(caller, self.approval.executor_principal_commitment, "executor")
         self._claim(directory, kind, intent)
+        _set_failure_phase("local-backend")
         data, state, plan = self._local_backend(directory, grant)
         environment = {**ENV, "TF_DATA_DIR": str(data)}
         if kind in {"running", "destroy"}:
@@ -611,16 +633,20 @@ class FixedProvider:
         started = time.time_ns()
         resources = ()
         if kind == "plan":
+            _set_failure_phase("plan-custody")
             _require(plan.is_file() and plan_json.is_file()
                      and _sha256_file(plan) == grant.plan_sha256,
                      "approved plan bytes missing or changed")
+            _set_failure_phase("plan-render")
             rendered = self._run((str(TOFU),
                 f"-chdir={SOURCE / 'deploy/aws-feasibility'}", "show", "-json", str(plan)),
                 60, True, environment)
             _require(rendered == decode(_read(plan_json)),
                      "approved plan JSON is not derived from approved binary")
+            _set_failure_phase("plan-policy")
             self._run((str(PYTHON), str(SOURCE / "deploy/aws-feasibility/check-plan.py"),
                        str(plan_json)), 30)
+            _set_failure_phase("plan-bindings")
             self._validate_plan_bindings(plan_json, grant)
             identity = grant.plan_sha256
         elif kind == "apply":
@@ -823,15 +849,18 @@ class FixedProvider:
     def _api_pages(self, service: str, operation: str, account_id: str):
         token = None
         seen = set()
+        pageable = (service, operation) not in NONPAGEABLE_INVENTORY_OPERATIONS
         while True:
             argv = [str(AWS), "--profile", "observer", "--region",
                     self.approval.region, service, operation,
-                    "--output", "json", "--no-cli-pager", "--max-items", "100"]
+                    "--output", "json", "--no-cli-pager"]
+            if pageable: argv.extend(("--max-items", "100"))
             if service == "budgets": argv.extend(("--account-id", account_id))
             if token is not None: argv.extend(("--starting-token", token))
             response = self._run(tuple(argv), 120, True)
             returned = response.get("NextToken")
-            _require(returned is None or (type(returned) is str and returned and returned not in seen))
+            _require(returned is None or (pageable and type(returned) is str
+                                          and returned and returned not in seen))
             yield token, returned, response
             if returned is None: break
             seen.add(returned); token = returned
@@ -914,6 +943,7 @@ class FixedProvider:
 
     def inventory(self, sequence: int, grant_commitment: str,
                   destroyed_state_commitment: str, recovery_directory=None) -> bytes:
+        _set_failure_phase("inventory-custody")
         _require(type(sequence) is int and 1 <= sequence <= 8)
         production._digest(destroyed_state_commitment)
         ordinal = sequence if sequence <= 7 else 7
@@ -940,6 +970,7 @@ class FixedProvider:
         else:
             _write_once(claim_path, claim_raw)
         started = time.time_ns()
+        _set_failure_phase("inventory-observer-identity")
         caller = self._run((str(AWS), "--profile", "observer", "--region",
                             self.approval.region, "sts", "get-caller-identity",
                             "--output", "json", "--no-cli-pager"), 60, True)
@@ -954,6 +985,8 @@ class FixedProvider:
         related_ids = {value for key, value in graph.items()
                        if key.endswith("_id") and type(value) is str}
         for category, service, operation, scope in INVENTORY_QUERIES:
+            phase_category = category.replace("ec2", "ec-two").replace("_", "-")
+            _set_failure_phase("inventory-" + phase_category)
             for page_ordinal, (requested, returned, response) in enumerate(
                     self._api_pages(service, operation, account_id), 1):
                 response_raw = canonical(response)
@@ -985,6 +1018,7 @@ class FixedProvider:
                 except production.ProductionCampaignError as error:
                     raise ProviderBoundaryError(f"invalid {category} inventory page") from error
                 response_commitments.append(response_commitment)
+        _set_failure_phase("inventory-receipt")
         ended = time.time_ns(); _require(ended > started)
         fields = {
             "batch_commitment": self.approval.batch_commitment,
@@ -1012,6 +1046,7 @@ class FixedProvider:
 
     def recover(self, ordinal: int, mode: str, grant_commitment: str,
                 state_commitment: str) -> bytes:
+        _set_failure_phase("recovery-custody")
         directory, grant = self._cycle(ordinal, mode, grant_commitment)
         production._digest(state_commitment)
         # Recovery never calls ``effect`` and never reissues a claimed normal destroy.
@@ -1045,7 +1080,9 @@ class FixedProvider:
             _write_once(cleanup_claim, cleanup_raw)
         cleanup_settled = directory / "cleanup-destroy.settlement.json"
         if not cleanup_settled.exists():
+            _set_failure_phase("recovery-local-backend")
             data, state, _plan = self._local_backend(directory, grant)
+            _set_failure_phase("recovery-destroy")
             self._run((str(TOFU), f"-chdir={SOURCE / 'deploy/aws-feasibility'}",
                        "destroy", "-state=" + str(state), "-auto-approve", "-input=false",
                        "-lock-timeout=30s", "-var-file=" +
@@ -1055,6 +1092,7 @@ class FixedProvider:
                 "version": "cogs.stage2-cleanup-destroy-settlement/v1",
                 "grant_commitment": grant.grant_commitment, "certain": True}))
         try:
+            _set_failure_phase("recovery-inventory")
             recovery_root = directory / "cleanup-inventory"
             recovery_root.mkdir(mode=0o700, exist_ok=True)
             attempts = sorted(path for path in recovery_root.iterdir() if path.is_dir())
@@ -1071,6 +1109,7 @@ class FixedProvider:
             certain = True
         except BaseException:
             certain = False
+        _set_failure_phase("recovery-receipt")
         fields = {
             "grant_commitment": grant.grant_commitment,
             "state_commitment": state_commitment,
@@ -1090,7 +1129,9 @@ def _usage() -> None:
 
 def main(argv: tuple[str, ...] | None = None) -> None:
     args = tuple(sys.argv[1:] if argv is None else argv)
+    _set_failure_phase("root-custody")
     _require(os.geteuid() == 0 and os.getegid() == 0, "root custody required")
+    _set_failure_phase("provider-custody")
     provider = FixedProvider()
     if len(args) == 6 and args[0] == "effect":
         raw = provider.effect(args[1], int(args[2]), args[3], args[4], args[5])

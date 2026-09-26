@@ -115,6 +115,8 @@ test("shared signer closes pinned Cosign identity, filesystem, TUF, network, and
   assert.match(signer, /stage2-production-approval\.yml@refs\/heads\/main/u);
   assert.match(signer, /stage2-production-approval-signing-diagnostic\.yml@refs\/heads\/main/u);
   assert.match(signer, /stage2-r-diagnostic-preparation\.yml@refs\/heads\/main/u);
+  assert.match(signer, /stage2-r-diagnostic-preparation\.yml@refs\/heads\/fix\/issue42-r-convergence/u);
+  assert.match(signer, /stage2-r-diagnostic-campaign\.yml@refs\/heads\/fix\/issue42-r-convergence/u);
   assert.match(signer, /directory:\$runner_uid:\$runner_gid:700/u);
   assert.match(signer, /regular file:\$runner_uid:\$runner_gid:1/u);
   assert.match(signer, /--user "\$runner_uid:\$runner_gid"/u);
@@ -149,85 +151,41 @@ test("protected signing diagnostic is singleton, exact-main, non-authorizing, an
   assert.doesNotMatch(approvalDiagnostic, /configure-aws-credentials|AWS_ACCESS_KEY_ID=|opentofu|terraform|\bssm\b/iu);
 });
 
-test("R diagnostic lane exercises production bytes without creating evidence authority", () => {
+test("R convergence lane runs the split production graph without granting authority", () => {
   assert.match(diagnosticPreparation, /start-stage2-r-diagnostic-window/u);
-  assert.match(diagnosticPreparation, /stage2-r-diagnostic-preparation\.yml\/runs/u);
+  assert.match(diagnosticPreparation, /stage2-local-execution-envelope-v4\.json/u);
   assert.match(diagnosticPreparation, /NON-AUTHORITATIVE-stage2-r-diagnostic-planning/u);
-  assert.match(diagnosticPreparation, /NON-AUTHORITATIVE-stage2-r-diagnostic-approval/u);
-  assert.match(diagnosticPreparation, /stage2-production-planner\.py/u);
-  assert.match(diagnosticPreparation, /plans\/\.provider-tf-data/u);
-  assert.match(diagnosticPreparation, /rm -rf --one-file-system -- "\$bootstrap"/u);
-  assert.match(diagnosticPreparation, /find "\$RUNNER_TEMP\/planning" -mindepth 1 -name '\.\*'/u);
-  assert.ok(
-    diagnosticPreparation.indexOf('bootstrap="$RUNNER_TEMP/planning/plans/.provider-tf-data"') <
-      diagnosticPreparation.indexOf("Upload diagnostic planning bytes"),
-  );
-  assert.match(diagnosticPreparation, /COGS_STAGE2_CONTROL_REVISION: \$\{\{ inputs\.control_head \}\}/u);
-  assert.match(diagnosticPreparation, /stage2-production-approval\.py issue/u);
-  assert.match(diagnosticPreparation, /stage2-cosign-keyless-sign\.sh/u);
-  assert.ok(
-    diagnosticPreparation.indexOf("COGS_STAGE2_CONTROL_REVISION:") <
-      diagnosticPreparation.indexOf("stage2-production-approval.py issue") &&
-      diagnosticPreparation.indexOf("stage2-production-approval.py issue") <
-        diagnosticPreparation.indexOf("stage2-production-approval.py authenticate") &&
-      diagnosticPreparation.indexOf("stage2-production-approval.py authenticate") <
-        diagnosticPreparation.indexOf("stage2-cosign-keyless-sign.sh"),
-  );
-  assert.match(diagnosticPreparation, /diff -r --no-dereference/u);
+  assert.match(diagnosticPreparation, /stage2-production-approval-\$\{\{ github\.sha \}\}/u);
   assert.ok(diagnosticPreparation.includes('"production_evidence_eligible":False'));
   assert.ok(diagnosticPreparation.includes('"issue42_closure_eligible":False'));
-  assert.doesNotMatch(diagnosticPreparation, /gh variable set/u);
 
-  assert.match(diagnosticCampaign, /authorize-seven-stage2-non-authoritative-diagnostic-cycles/u);
+  assert.match(diagnosticCampaign, /start-stage2-r-split-convergence/u);
   assert.match(diagnosticCampaign, /stage2-r-diagnostic-campaign\.yml\/runs/u);
+  assert.match(diagnosticCampaign, /\.path == "\.github\/workflows\/stage2-r-diagnostic-campaign\.yml"/u);
   assert.match(diagnosticCampaign, /stage2-r-diagnostic-preparation\.yml/u);
-  assert.match(diagnosticCampaign, /NON-AUTHORITATIVE-stage2-r-diagnostic-approval/u);
-  assert.match(diagnosticCampaign, /Verify executor budget tag-read closure before resource effects/u);
-  assert.match(diagnosticCampaign, /stage2-stage-production-approval\.py/u);
-  assert.match(diagnosticCampaign, /completion_campaign_production\.py completion_campaign_aws_adapter\.py/u);
-  assert.match(diagnosticCampaign, /completion_campaign_aws_provider\.py completion_campaign_aws_entry\.py/u);
-  assert.match(diagnosticCampaign, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC=1/u);
-  assert.match(stager, /identity = adapter\.approval_identity\(\)/u);
+  assert.match(diagnosticCampaign, /COGS_STAGE2_SPLIT_CONVERGENCE/u);
+  assert.match(diagnosticCampaign, /jobs:\n {2}cycles_1_3:/u);
+  assert.match(diagnosticCampaign, / {2}cycles_4_7:/u);
+  assert.equal((diagnosticCampaign.match(/assume-github-role/gu) ?? []).length, 4);
+  assert.match(diagnosticCampaign, /Execute exactly cycles 1 through 3/u);
+  assert.match(diagnosticCampaign, /Execute exactly cycles 4 through 7 and final zero observation/u);
+  assert.match(diagnosticCampaign, /Overlay only the cumulative R convergence candidate/u);
+  assert.match(diagnosticCampaign, /validate-aws-stage2-completion-evidence-v4/u);
+  assert.match(diagnosticCampaign, /Cleanup after an uncertain segment-one outcome/u);
+  assert.match(diagnosticCampaign, /Cleanup after an uncertain segment-two campaign outcome/u);
+  assert.doesNotMatch(diagnosticCampaign, /recover-production-campaign-entry\.sh/u);
+  assert.equal((diagnosticCampaign.match(/completion_campaign_aws_recovery_entry\.py/gu) ?? []).length, 3);
+  assert.match(diagnosticCampaign, /minimum_role_duration=18000/u);
+  assert.match(diagnosticCampaign, /credential_reserve=900/u);
+  assert.equal(
+    (diagnosticCampaign.match(/if \(\( remaining < duration \)\); then duration="\$remaining"; fi/gu) ?? []).length,
+    2,
+  );
+  assert.match(diagnosticCampaign, /root\.staging/u);
+  assert.match(stager, /def _create_issuance_root\(\):/u);
+  assert.match(stager, /adapter\.campaign_identity\(\)/u);
   assert.doesNotMatch(campaign, /COGS_STAGE2_NONAUTHORITATIVE_DIAGNOSTIC/u);
-  assert.ok(
-    diagnosticCampaign.indexOf("stage2-stage-production-approval.py") <
-      diagnosticCampaign.indexOf("root=/var/lib/cogs/stage2-completion-v1/source"),
-  );
-  assert.ok(diagnosticCampaign.indexOf('target="$root/$name"') < diagnosticCampaign.indexOf("Execute seven cycles"));
-  assert.match(diagnosticCampaign, /completion_campaign_aws_recovery_entry\.py/u);
-  assert.doesNotMatch(diagnosticCampaign, /validate-aws-stage2-completion-evidence/u);
-  assert.doesNotMatch(diagnosticCampaign, /aws-stage2-completion-evidence-v[0-9]/u);
-  assert.doesNotMatch(diagnosticCampaign, /aws-actions\/configure-aws-credentials/u);
-  assert.equal((diagnosticCampaign.match(/assume-github-role/gu) ?? []).length, 2);
-  assert.equal(
-    (diagnosticCampaign.match(/remaining=\$\(\( expiry_s - now_s - 900 \)\); duration=30600; minimum=30600/gu) ?? [])
-      .length,
-    2,
-  );
-  assert.equal((diagnosticCampaign.match(/timeout-minutes: 10\n {8}env:\n {10}ROLE_ARN:/gu) ?? []).length, 2);
-  assert.equal(
-    (diagnosticCampaign.match(/required_through=\$\(\( job_start \+ 480 \* 60 \+ 900 \)\)/gu) ?? []).length,
-    2,
-  );
-  assert.equal(
-    (diagnosticCampaign.match(/test \$\(\( now_s \+ duration - 60 \)\) -ge "\$required_through"/gu) ?? []).length,
-    2,
-  );
-  assert.match(diagnosticCampaign, /timeout-minutes: 480/u);
-  assert.match(
-    diagnosticCampaign,
-    /timeout-minutes: 450[\s\S]*job_deadline=\$\(\( job_start \+ \(480 - 31\) \* 60 \)\)/u,
-  );
-  assert.match(diagnosticCampaign, /test \$\(\( approval_expiry - now_s \)\) -ge 31500/u);
-  assert.ok((480 - 31) * 60 + 10 < 450 * 60);
-  assert.ok((480 - 31) * 60 + 10 + 30 * 60 < 480 * 60);
-  assert.match(diagnosticCampaign, /cogs\.stage2-r-diagnostic-result\/v2/u);
-  assert.match(diagnosticCampaign, /NON-AUTHORITATIVE-stage2-r-diagnostic-result/u);
-  assert.match(diagnosticCampaign, /test ! -e \/var\/lib\/cogs\/stage2-aws-production-v2\/evidence-publication/u);
-  assert.match(diagnosticCampaign, /\.production_evidence_eligible == false/u);
-  assert.match(diagnosticCampaign, /\.issue42_closure_eligible == false/u);
-  assert.doesNotMatch(diagnosticCampaign, /gh variable set/u);
-  assert.doesNotMatch(diagnosticCampaign, /name: stage2-production-evidence-/u);
+  assert.doesNotMatch(`${diagnosticPreparation}\n${diagnosticCampaign}`, /gh variable set/u);
 
   const cleanImmutable =
     /\/usr\/bin\/env -i HOME=\/nonexistent LANG=C LC_ALL=C PATH=\/usr\/bin:\/bin TZ=UTC "\s*\n\s*"\/usr\/bin\/python3 -I -B \/var\/lib\/cogs\/stage2-completion-v1\/source\//u;
@@ -259,7 +217,7 @@ test("diagnostic session arithmetic admits exact boundaries and rejects one seco
 test("budget alert values cross workflow expression boundaries only through step environments", () => {
   for (const [source, expected] of [
     [campaign, 2],
-    [diagnosticCampaign, 1],
+    [diagnosticCampaign, 2],
   ] as const) {
     assert.equal(
       (source.match(/^ {10}BUDGET_ALERT_EMAIL: \$\{\{ vars\.STAGE2_AWS_BUDGET_ALERT_EMAIL \}\}$/gmu) ?? []).length,
@@ -367,16 +325,18 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /maximum_cost_micro_usd == 1100000/u);
   assert.match(campaign, /expires_unix_ns - \.not_before_unix_ns\) == 36000000000000/u);
   assert.match(campaign, /test "\$remaining" -ge 32400/u);
-  assert.match(campaign, /test "\$handoff_remaining" -ge 19800/u);
+  assert.match(campaign, /minimum_role_duration=18000/u);
+  assert.match(campaign, /credential_reserve=900/u);
+  assert.match(campaign, /test "\$handoff_remaining" -ge "\$\(\( minimum_role_duration \+ credential_reserve \)\)"/u);
   assert.doesNotMatch(campaign, /steps\.approval_verification\.outputs\.role_duration_seconds/u);
 
   const roleAssumptions = [
-    ["Acquire fresh bounded segment-one executor credentials", 18000, 16200],
-    ["Acquire fresh bounded segment-one inventory-observer credentials", 18000, 16200],
-    ["Acquire fresh bounded segment-two executor credentials", 19800, 18000],
-    ["Acquire fresh bounded segment-two inventory-observer credentials", 19800, 18000],
+    ["Acquire fresh bounded segment-one executor credentials", 18000, 16200, false],
+    ["Acquire fresh bounded segment-one inventory-observer credentials", 18000, 16200, false],
+    ["Acquire fresh bounded segment-two executor credentials", 19800, 18000, true],
+    ["Acquire fresh bounded segment-two inventory-observer credentials", 19800, 18000, true],
   ] as const;
-  for (const [name, cap, minimum] of roleAssumptions) {
+  for (const [name, cap, minimum, boundedByRemaining] of roleAssumptions) {
     const actionAt = campaign.indexOf(`      - name: ${name}\n`);
     assert.ok(actionAt >= 0, name);
     const actionEnd = campaign.indexOf("\n      - name: ", actionAt + name.length);
@@ -387,7 +347,14 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
     assert.match(action, new RegExp(`cap=${cap}; minimum=${minimum}`, "u"), name);
     assert.match(action, /duration="\$cap"/u, name);
     assert.match(action, /test "\$duration" -ge "\$minimum"/u, name);
-    assert.match(action, /test "\$duration" -eq "\$cap"/u, name);
+    if (boundedByRemaining) {
+      assert.match(action, /if \(\( remaining < duration \)\); then duration="\$remaining"; fi/u, name);
+      assert.equal((action.match(/now_s - 960/gu) ?? []).length, 2, name);
+      assert.match(action, /test "\$duration" -le "\$cap"/u, name);
+      assert.doesNotMatch(action, /test "\$duration" -eq "\$cap"/u, name);
+    } else {
+      assert.match(action, /test "\$duration" -eq "\$cap"/u, name);
+    }
     assert.match(action, /test "\$duration" -le "\$remaining"/u, name);
     assert.match(action, /assume-github-role (?:executor|observer) "\$ROLE_ARN"/u, name);
     assert.match(action, /\/var\/lib\/cogs\/stage2-aws-issuance-v1\/approval\.json/u, name);
@@ -420,12 +387,13 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(firstJob.slice(oidcRetirementAt), /ACTIONS_ID_TOKEN_REQUEST_TOKEN=\\nACTIONS_ID_TOKEN_REQUEST_URL=\\n/u);
 
   assert.match(campaign, /stage2-stage-production-approval\.py/u);
+  assert.equal((campaign.match(/sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN/gu) ?? []).length, 4);
+  assert.match(issuer, /def _expected_github_subject\(\):/u);
   assert.match(campaign, /run-production-campaign\.sh/u);
   assert.match(campaign, /recover-production-campaign-entry\.sh/u);
-  assert.match(
-    firstJob,
-    /test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials \|\|[\s\S]*segment-one-zero-complete\.json/u,
-  );
+  assert.match(firstJob, /if sudo -n test -e "\$root"; then/u);
+  assert.match(firstJob, /test -e "\$root\/aws-credentials" \|\|[\s\S]*segment-one-zero-complete\.json/u);
+  assert.match(firstJob, /sudo -n test ! -e "\$root\.staging"/u);
   assert.match(
     secondJob,
     /test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials \|\|[\s\S]*! sudo -n test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/cleanup-complete\.json/u,
@@ -471,7 +439,7 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
 
   assert.equal((campaign.match(/stage-issuance-approval/gu) ?? []).length, 2);
   assert.equal((campaign.match(/stage-issuance-continuation/gu) ?? []).length, 1);
-  assert.equal((diagnosticCampaign.match(/stage-issuance-approval/gu) ?? []).length, 1);
+  assert.equal((diagnosticCampaign.match(/stage-issuance-approval/gu) ?? []).length, 2);
   assert.match(stager, /ISSUANCE_ROOT = Path\("\/var\/lib\/cogs\/stage2-aws-issuance-v1"\)/u);
   assert.match(stager, /os\.chmod\(ISSUANCE_ROOT, 0o555\)/u);
   assert.match(stager, /ISSUANCE_ROOT \/ adapter\.CONTINUATION_ADMISSION_NAME/u);
@@ -487,7 +455,7 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(issuer, /\/etc\/ssl\/certs\/ca-certificates\.crt/u);
   assert.match(issuer, /create_default_context\(cadata=_fixed_ca_pem\(\)\)/u);
   assert.doesNotMatch(issuer, /urlopen\(/u);
-  assert.equal((`${campaign}\n${diagnosticCampaign}`.match(/test "\$account" = 372495030090/gu) ?? []).length, 3);
+  assert.equal((`${campaign}\n${diagnosticCampaign}`.match(/test "\$account" = 372495030090/gu) ?? []).length, 4);
 
   assert.match(stager, /aws-credentials/u);
   assert.match(stager, /ASIA\[A-Z0-9\]/u);
@@ -507,7 +475,8 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(providerEntry, /AWS_MAX_ATTEMPTS": "1"/u);
   assert.doesNotMatch(providerEntry, /subprocess\.run/u);
   for (const source of [campaignEntry, recoveryEntry, providerEntry, fullEntry, readinessEntry]) {
-    assert.match(source, /owner\.failed/u);
+    assert.match(source, /owner/u);
+    assert.match(source, /\.failed/u);
     assert.match(source, /except BaseException/u);
     assert.match(source, /raise SystemExit\(2\) from None/u);
   }
