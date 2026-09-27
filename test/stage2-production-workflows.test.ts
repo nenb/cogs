@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -310,6 +311,116 @@ test("production entry initialization failures emit only fixed diagnostics", () 
   }
 });
 
+test("staged production overlay admits an approved plan with nine hours remaining", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "cogs-stage2-overlay-checker-"));
+  try {
+    const staged = join(temporary, "deploy/aws-feasibility/check-plan.py");
+    mkdirSync(join(temporary, "deploy/aws-feasibility"), { recursive: true });
+    const old = spawnSync(
+      "git",
+      ["show", "ba085947eaee321dfb724d94169d42bc36d397b0:deploy/aws-feasibility/check-plan.py"],
+      { encoding: "utf8" },
+    );
+    assert.equal(old.status, 0, old.stderr);
+    writeFileSync(staged, old.stdout);
+    const changes = [
+      "aws_budgets_budget",
+      "aws_iam_instance_profile",
+      "aws_iam_role",
+      "aws_iam_role",
+      "aws_iam_role_policy",
+      "aws_iam_role_policy_attachment",
+      "aws_instance",
+      "aws_internet_gateway",
+      "aws_launch_template",
+      "aws_route",
+      "aws_route_table",
+      "aws_route_table_association",
+      "aws_scheduler_schedule",
+      "aws_security_group",
+      "aws_subnet",
+      "aws_vpc",
+    ].map((type, index) => ({
+      address: `${type}.${index}`,
+      mode: "managed",
+      type,
+      change: { actions: ["create"], after: {} },
+    }));
+    const after = (type: string) =>
+      changes.find((change) => change.type === type)?.change.after as Record<string, unknown>;
+    Object.assign(after("aws_launch_template"), {
+      instance_type: "c8i-flex.large",
+      cpu_options: [{ nested_virtualization: "enabled", core_count: 1, threads_per_core: 2 }],
+      network_interfaces: [{ associate_public_ip_address: true }],
+      metadata_options: [{ http_tokens: "required", http_put_response_hop_limit: 1 }],
+      block_device_mappings: [{ ebs: [{ volume_size: 30, encrypted: true, delete_on_termination: true }] }],
+    });
+    Object.assign(after("aws_security_group"), { ingress: [], egress: [{}, {}, {}, {}] });
+    const roles = changes.filter((change) => change.type === "aws_iam_role");
+    const terminatorRole = roles[0];
+    assert.ok(terminatorRole);
+    terminatorRole.address = "aws_iam_role.terminator";
+    Object.assign(terminatorRole.change.after, {
+      assume_role_policy: JSON.stringify({
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: "sts:AssumeRole",
+            Principal: { Service: "scheduler.amazonaws.com" },
+            Condition: {
+              ArnEquals: { "aws:SourceArn": "arn:aws:scheduler:us-east-2:123456789012:schedule-group/default" },
+              StringEquals: { "aws:SourceAccount": "123456789012" },
+            },
+          },
+        ],
+      }),
+    });
+    Object.assign(after("aws_budgets_budget"), { limit_amount: "20", limit_unit: "USD", notification: [{}, {}, {}] });
+    Object.assign(after("aws_scheduler_schedule"), {
+      action_after_completion: "DELETE",
+      schedule_expression: "at(2026-09-27T00:00:00)",
+      target: [{ arn: "arn:aws:scheduler:::aws-sdk:ec2:terminateInstances" }],
+    });
+    const plan = join(temporary, "plan.json");
+    writeFileSync(
+      plan,
+      JSON.stringify({
+        variables: { expires_at: { value: new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString() } },
+        resource_changes: changes,
+      }),
+    );
+    const stale = spawnSync("python3", ["-I", "-B", staged, plan], { encoding: "utf8" });
+    assert.notEqual(stale.status, 0);
+    assert.match(stale.stderr, /between 30 minutes and eight hours/u);
+    for (const [path, digest] of [
+      ["deploy/aws-feasibility/check-plan.py", "02852b1cf932ce7953a48e92a746c8383d0cc4bc8e29cf4915d29d7e3cbaca79"],
+      [
+        "deploy/aws-feasibility/completion_campaign_aws_provider.py",
+        "b62301e266190f893899d565535be1aa48a6a7b33519d429d97c93108c67112c",
+      ],
+      ["deploy/aws-feasibility/main.tf", "5a7dec276e10acd457d7416ac94c963cd69a2d7eb3e6a7df75908248e16cb0bb"],
+    ] as const) {
+      assert.equal(
+        (campaign.match(new RegExp(`${digest} \\d{4} ${path.replaceAll(".", "\\.")}`, "gu")) ?? []).length,
+        2,
+      );
+      const bytes = readFileSync(path);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), digest);
+      if (path.endsWith("check-plan.py")) writeFileSync(staged, bytes);
+    }
+    assert.match(providerEntry, /SOURCE = Path\("\/var\/lib\/cogs\/stage2-authoritative-remediation-v1\/source"\)/u);
+    assert.doesNotMatch(providerEntry, /SOURCE = Path\("\/var\/lib\/cogs\/stage2-completion-v1\/source"\)/u);
+    assert.equal(
+      (campaign.match(/b62301e266190f893899d565535be1aa48a6a7b33519d429d97c93108c67112c/gu) ?? []).length,
+      2,
+    );
+    const corrected = spawnSync("python3", ["-I", "-B", staged, plan], { encoding: "utf8" });
+    assert.equal(corrected.status, 0, corrected.stderr);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test("future campaign is exactly two sequential run-bound jobs with fresh credentials", () => {
   assert.match(campaign, /authorize-seven-stage2-production-cycles/u);
   assert.equal((campaign.match(/authorize-seven-stage2-production-cycles/gu) ?? []).length, 1);
@@ -436,10 +547,24 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
 
   assert.match(campaign, /stage2-stage-production-approval\.py/u);
   assert.equal((campaign.match(/Freeze exact reviewed production remediation over H/gu) ?? []).length, 2);
-  for (const digest of "3d3a099c50fe6bb74768a883e1f17783cba0a91241f435f5502a494525db342f 4083681597a45cf7f058e2df48f253b050c8bb58ed4431776bc294cea0021c97 1ace26205de4497a48661c1f868a05fa0dda8d202b4bc53f2c8d59bf0300a69b 8e59012a59916461126910b25c80ca40bcd3afcce2cf13195f1d64d5ef3fb607 69cf0bee4e6b442514bd2b53bad1decaa473c963789c653d53b73edb1f2a7eee 0848f28fec212f714bdf92e637d4ceca95d402632504e8539535d7f23c412598 83b24dbc1a3703307d8dea5a65acac3b1a98a376aad883652c3ec482c4732cee 4cffc989e1813eab098bf807f4c1df880a7108e178713c1dec4e8db989380337 bc783a90ada95b777773cf2897b196d966fb26aefcf500937cd555c5980ba83b 1e96c5942c53f64617325e6015d87db0389a743bdc59f7a97d349f590731a760".split(
+  for (const digest of "02852b1cf932ce7953a48e92a746c8383d0cc4bc8e29cf4915d29d7e3cbaca79 3d3a099c50fe6bb74768a883e1f17783cba0a91241f435f5502a494525db342f b62301e266190f893899d565535be1aa48a6a7b33519d429d97c93108c67112c 5a7dec276e10acd457d7416ac94c963cd69a2d7eb3e6a7df75908248e16cb0bb 1ace26205de4497a48661c1f868a05fa0dda8d202b4bc53f2c8d59bf0300a69b 8e59012a59916461126910b25c80ca40bcd3afcce2cf13195f1d64d5ef3fb607 69cf0bee4e6b442514bd2b53bad1decaa473c963789c653d53b73edb1f2a7eee 0848f28fec212f714bdf92e637d4ceca95d402632504e8539535d7f23c412598 83b24dbc1a3703307d8dea5a65acac3b1a98a376aad883652c3ec482c4732cee 4cffc989e1813eab098bf807f4c1df880a7108e178713c1dec4e8db989380337 bc783a90ada95b777773cf2897b196d966fb26aefcf500937cd555c5980ba83b 1e96c5942c53f64617325e6015d87db0389a743bdc59f7a97d349f590731a760".split(
     " ",
   ))
     assert.equal((campaign.match(new RegExp(digest, "gu")) ?? []).length, 2, digest);
+  for (const [path, mode, digest] of [
+    [
+      "deploy/aws-feasibility/check-plan.py",
+      "0555",
+      "02852b1cf932ce7953a48e92a746c8383d0cc4bc8e29cf4915d29d7e3cbaca79",
+    ],
+    ["deploy/aws-feasibility/main.tf", "0444", "5a7dec276e10acd457d7416ac94c963cd69a2d7eb3e6a7df75908248e16cb0bb"],
+  ] as const) {
+    assert.equal(createHash("sha256").update(readFileSync(path)).digest("hex"), digest);
+    assert.equal(
+      (campaign.match(new RegExp(`${digest} ${mode} ${path.replaceAll(".", "\\.")}`, "gu")) ?? []).length,
+      2,
+    );
+  }
   assert.equal((campaign.match(/sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN/gu) ?? []).length, 4);
   assert.match(campaign, /run-production-campaign\.sh/u);
   assert.match(campaign, /recover-production-campaign-entry\.sh/u);

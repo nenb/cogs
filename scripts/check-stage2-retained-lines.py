@@ -44,8 +44,12 @@ PRODUCT_TEST_RETAINED_LINES, PRODUCT_TEST_RETAINED_BYTES = 18_000, 8_000_000
 PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 25_216, 21_500_000
 PRODUCT_TEST_GLOBAL_LINE_FORECAST, PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 43_216, 29_500_000
 POST_DIAGNOSTIC_BASE_REVISION = "610c28587596df50531ada8986a66024ca1ca23f"
+POST_DIAGNOSTIC_TERMINAL_REVISION = "4d77f41a8c8b94ed48becf2073914bd2896a31ee"
 POST_DIAGNOSTIC_GROSS_HIGH = (500, 1_000_000)
 POST_DIAGNOSTIC_READINESS_REGENERATIONS = 1
+POST_AUTHORITATIVE_FAILURE_BASE_REVISION = POST_DIAGNOSTIC_TERMINAL_REVISION
+POST_AUTHORITATIVE_FAILURE_GROSS_HIGH = (300, 1_000_000)
+POST_AUTHORITATIVE_FAILURE_READINESS_REGENERATIONS = 1
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
@@ -444,7 +448,8 @@ def _remediation_budget():
     except (OSError, UnicodeError, ValueError):
         raise LineBudgetError() from None
     _require(set(data) == {"version", "base_revision", "global_gross_line_high", "global_gross_byte_high", "baseline",
-                           "source_limits", "product_test_correction", "post_diagnostic_remediation", "owners"})
+                           "source_limits", "product_test_correction", "post_diagnostic_remediation",
+                           "post_authoritative_failure_remediation", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
@@ -502,13 +507,23 @@ def _remediation_budget():
     _product_test_budget(data, paths)
     post = data["post_diagnostic_remediation"]
     _require(isinstance(post, dict) and set(post) == {
-        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        "base_revision", "terminal_revision", "gross_lines", "gross_bytes",
+        "readiness_regenerations", "paths"}
         and post["base_revision"] == POST_DIAGNOSTIC_BASE_REVISION
+        and post["terminal_revision"] == POST_DIAGNOSTIC_TERMINAL_REVISION
         and (post["gross_lines"], post["gross_bytes"]) == POST_DIAGNOSTIC_GROSS_HIGH
         and post["readiness_regenerations"] == POST_DIAGNOSTIC_READINESS_REGENERATIONS
         and isinstance(post["paths"], list) and post["paths"] == sorted(post["paths"])
         and len(post["paths"]) == len(set(post["paths"])))
-    _require(set(post["paths"]) <= set(paths))
+    followup = data["post_authoritative_failure_remediation"]
+    _require(isinstance(followup, dict) and set(followup) == {
+        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        and followup["base_revision"] == POST_AUTHORITATIVE_FAILURE_BASE_REVISION
+        and (followup["gross_lines"], followup["gross_bytes"]) == POST_AUTHORITATIVE_FAILURE_GROSS_HIGH
+        and followup["readiness_regenerations"] == POST_AUTHORITATIVE_FAILURE_READINESS_REGENERATIONS
+        and isinstance(followup["paths"], list) and followup["paths"] == sorted(followup["paths"])
+        and len(followup["paths"]) == len(set(followup["paths"])))
+    _require(set(post["paths"]) <= set(paths) and set(followup["paths"]) <= set(paths))
     return data, owners, paths, new_file_highs, forecasts
 
 
@@ -603,17 +618,17 @@ def _enforce_product_test_consumption(pre_lines, pre_bytes, post_lines, post_byt
     return lines, raw_bytes
 
 
-def _post_diagnostic_consumption(budget, head):
-    plan = budget["post_diagnostic_remediation"]
+def _one_successor_consumption(plan, base, head, high, include_worktree):
     allowed = tuple(plan["paths"]); allowed_set = set(allowed)
-    commit_count = int(_git(["rev-list", "--count", f"{POST_DIAGNOSTIC_BASE_REVISION}..{head}"]))
+    commit_count = int(_git(["rev-list", "--count", f"{base}..{head}"]))
     _require(commit_count in {0, 1})
-    if commit_count == 1:
-        _require(_git(["rev-list", "--parents", "-n", "1", head]).split()
-                 == [head, POST_DIAGNOSTIC_BASE_REVISION])
+    if commit_count == 0:
+        _require(head == base)
+    else:
+        _require(_git(["rev-list", "--parents", "-n", "1", head]).split() == [head, base])
     lines = raw_bytes = 0
-    slices = list(_product_test_linear_commits(POST_DIAGNOSTIC_BASE_REVISION, head))
-    slices.append((head, None))
+    slices = list(_product_test_linear_commits(base, head))
+    if include_worktree: slices.append((head, None))
     for revision, target in slices:
         changed = _product_test_changes(revision, target)
         if target is None:
@@ -621,9 +636,21 @@ def _post_diagnostic_consumption(budget, head):
         _require(changed <= allowed_set)
         lines += _gross_slice(allowed, lambda path: path in allowed_set, revision, target)
         raw_bytes += _gross_added_line_bytes(allowed, revision, target)
-    _require(lines <= POST_DIAGNOSTIC_GROSS_HIGH[0]
-             and raw_bytes <= POST_DIAGNOSTIC_GROSS_HIGH[1])
+    _require(lines <= high[0] and raw_bytes <= high[1])
     return lines, raw_bytes
+
+
+def _post_diagnostic_consumption(budget, _head):
+    plan = budget["post_diagnostic_remediation"]
+    return _one_successor_consumption(plan, POST_DIAGNOSTIC_BASE_REVISION,
+                                      POST_DIAGNOSTIC_TERMINAL_REVISION,
+                                      POST_DIAGNOSTIC_GROSS_HIGH, False)
+
+
+def _post_authoritative_failure_consumption(budget, head):
+    plan = budget["post_authoritative_failure_remediation"]
+    return _one_successor_consumption(plan, POST_AUTHORITATIVE_FAILURE_BASE_REVISION,
+                                      head, POST_AUTHORITATIVE_FAILURE_GROSS_HIGH, True)
 
 
 def _product_test_consumption_segments(budget):
@@ -784,8 +811,11 @@ def measure():
     (product_test_task_lines, product_test_task_bytes, product_test_pre_h_lines,
      product_test_pre_h_bytes, product_test_post_h_lines,
      product_test_post_h_bytes) = _product_test_consumption_segments(remediation_budget)
+    head = _git(["rev-parse", "HEAD"]).strip()
     post_diagnostic_lines, post_diagnostic_bytes = _post_diagnostic_consumption(
-        remediation_budget, _git(["rev-parse", "HEAD"]).strip())
+        remediation_budget, head)
+    post_failure_lines, post_failure_bytes = _post_authoritative_failure_consumption(
+        remediation_budget, head)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -860,6 +890,13 @@ def measure():
         "post_diagnostic_gross_high": {
             "lines": POST_DIAGNOSTIC_GROSS_HIGH[0], "bytes": POST_DIAGNOSTIC_GROSS_HIGH[1]},
         "post_diagnostic_readiness_regenerations": POST_DIAGNOSTIC_READINESS_REGENERATIONS,
+        "post_authoritative_failure_base_revision": POST_AUTHORITATIVE_FAILURE_BASE_REVISION,
+        "post_authoritative_failure_gross_added_lines": post_failure_lines,
+        "post_authoritative_failure_gross_added_line_bytes": post_failure_bytes,
+        "post_authoritative_failure_gross_high": {
+            "lines": POST_AUTHORITATIVE_FAILURE_GROSS_HIGH[0],
+            "bytes": POST_AUTHORITATIVE_FAILURE_GROSS_HIGH[1]},
+        "post_authoritative_failure_readiness_regenerations": POST_AUTHORITATIVE_FAILURE_READINESS_REGENERATIONS,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,

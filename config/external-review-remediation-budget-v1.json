@@ -942,6 +942,7 @@
   ],
   "post_diagnostic_remediation": {
     "base_revision": "610c28587596df50531ada8986a66024ca1ca23f",
+    "terminal_revision": "4d77f41a8c8b94ed48becf2073914bd2896a31ee",
     "gross_lines": 500,
     "gross_bytes": 1000000,
     "readiness_regenerations": 1,
@@ -975,6 +976,29 @@
       "test/openbao-workload-identity.test.ts",
       "test/stage2-prebuilt-rehearsal-grant.py",
       "test/stage2-production-approval.py",
+      "test/stage2-production-workflows.test.ts",
+      "test/stage2-remediation-budget.test.ts",
+      "test/stage4-offline-readiness.test.ts"
+    ]
+  },
+  "post_authoritative_failure_remediation": {
+    "base_revision": "4d77f41a8c8b94ed48becf2073914bd2896a31ee",
+    "gross_lines": 300,
+    "gross_bytes": 1000000,
+    "readiness_regenerations": 1,
+    "paths": [
+      ".github/workflows/stage2-production-campaign.yml",
+      "config/external-review-remediation-budget-v1.json",
+      "deploy/aws-feasibility/check-plan.py",
+      "deploy/aws-feasibility/completion_campaign_aws_provider.py",
+      "deploy/aws-feasibility/main.tf",
+      "docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "docs/test-reports/stage-4-offline-readiness.md",
+      "scripts/check-stage2-retained-lines.py",
+      "scripts/stage4-offline-readiness.ts",
       "test/stage2-production-workflows.test.ts",
       "test/stage2-remediation-budget.test.ts",
       "test/stage4-offline-readiness.test.ts"
