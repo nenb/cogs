@@ -413,7 +413,9 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(stager, /def verify_evidence_continuation_signature\(label\)/u);
   assert.match(stager, /"\/usr\/bin\/unshare",\s*"--net",\s*"--"/u);
   assert.equal((campaign.match(/snapshot-evidence (?:first|readback)/gu) ?? []).length, 2);
-  assert.match(campaign, /path: \/var\/lib\/cogs\/stage2-aws-evidence-v2\/first/u);
+  assert.match(campaign, /path: \/var\/lib\/cogs-stage2-aws-evidence-v2\/first/u);
+  assert.doesNotMatch(campaign, /path: \/var\/lib\/cogs\/stage2-aws-evidence-v2/u);
+  assert.match(stager, /EVIDENCE_SNAPSHOT_ROOT = Path\("\/var\/lib\/cogs-stage2-aws-evidence-v2"\)/u);
   assert.match(stager, /def snapshot_evidence_package/u);
   assert.match(stager, /set\(os\.listdir\(source_fd\)\) == set\(EVIDENCE_MEMBERS\)/u);
   assert.match(campaignAdapter, /"--foreground"/u);

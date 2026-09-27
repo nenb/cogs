@@ -1030,7 +1030,7 @@ const PACKAGE_CLEANUP_RESERVE_NS = 30n * 60n * 1_000_000_000n;
 const PINNED_TRUSTED_ROOT_SHA256 = "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e";
 const CAMPAIGN_WORKFLOW = ".github/workflows/stage2-production-campaign.yml";
 const CAMPAIGN_WORKFLOW_REF = "nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main";
-const FIXED_EVIDENCE_ROOT = "/var/lib/cogs/stage2-aws-evidence-v2";
+const FIXED_EVIDENCE_ROOT = "/var/lib/cogs-stage2-aws-evidence-v2";
 const FIXED_SIGNATURE_HELPER = "/var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py";
 const SIGNATURE_OUTPUT_LIMIT = 4096;
 

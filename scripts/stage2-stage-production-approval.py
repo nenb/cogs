@@ -30,7 +30,7 @@ PACKAGE_MANIFEST = "provider-package.json"
 PACKAGE_ARCHIVE = "provider-package.tar"
 PACKAGE_ARCHIVE_DIGEST = "provider-package.tar.sha256"
 EVIDENCE_SOURCE = DESTINATION / "evidence-publication"
-EVIDENCE_SNAPSHOT_ROOT = Path("/var/lib/cogs/stage2-aws-evidence-v2")
+EVIDENCE_SNAPSHOT_ROOT = Path("/var/lib/cogs-stage2-aws-evidence-v2")
 ISSUANCE_ROOT = Path("/var/lib/cogs/stage2-aws-issuance-v1")
 ISSUANCE_APPROVAL_MEMBERS = {
     "approval.json": 256 * 1024,

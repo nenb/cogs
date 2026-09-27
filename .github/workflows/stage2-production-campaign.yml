@@ -582,7 +582,7 @@ jobs:
           sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json; sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
             /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py snapshot-evidence first
-          destination=/var/lib/cogs/stage2-aws-evidence-v2/first
+          destination=/var/lib/cogs-stage2-aws-evidence-v2/first
           test "$(find "$destination" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = 'aws-stage2-completion-evidence-v4.json aws-stage2-completion-publication-v2.json aws-stage2-completion-report-v4.md aws-stage2-production-continuation-admission-v1.json aws-stage2-production-continuation-v1.bundle.json aws-stage2-production-continuation-v1.json '
           test "$(stat -c '%U:%G:%a' "$destination" "$destination"/* | sort -u | tr '\n' ' ')" = 'root:root:444 root:root:555 '
           npx tsx scripts/validate-aws-stage2-completion-evidence-v4.ts --package "$destination"
@@ -593,7 +593,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stage2-production-evidence-${{ github.sha }}-${{ github.run_id }}
-          path: /var/lib/cogs/stage2-aws-evidence-v2/first
+          path: /var/lib/cogs-stage2-aws-evidence-v2/first
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -620,14 +620,14 @@ jobs:
           export EVIDENCE_ARTIFACT_DIGEST="$final_digest"
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
             /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py snapshot-evidence readback "$RUNNER_TEMP/evidence-readback"
-          first=/var/lib/cogs/stage2-aws-evidence-v2/first
-          readback=/var/lib/cogs/stage2-aws-evidence-v2/readback
+          first=/var/lib/cogs-stage2-aws-evidence-v2/first
+          readback=/var/lib/cogs-stage2-aws-evidence-v2/readback
           diff -r --no-dereference "$first" "$readback"
           npx tsx scripts/validate-aws-stage2-completion-evidence-v4.ts --package "$readback"
           install -d -m 0700 "$RUNNER_TEMP/evidence-receipt"
           python3 -I -B - <<'PY' >"$RUNNER_TEMP/evidence-receipt/receipt.json"
           import hashlib,json,os,pathlib
-          root=pathlib.Path("/var/lib/cogs/stage2-aws-evidence-v2/readback"); members=[]
+          root=pathlib.Path("/var/lib/cogs-stage2-aws-evidence-v2/readback"); members=[]
           for path in sorted(root.iterdir()):
               if not path.is_file() or path.is_symlink(): raise SystemExit(2)
               raw=path.read_bytes(); members.append({"name":path.name,"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()})
