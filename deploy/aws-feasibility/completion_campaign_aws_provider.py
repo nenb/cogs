@@ -44,7 +44,7 @@ except BaseException:
     raise
 
 ROOT = Path("/var/lib/cogs/stage2-aws-production-v2")
-SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
+SOURCE = Path("/var/lib/cogs/stage2-authoritative-remediation-v1/source")
 TOFU = ROOT / "tofu"
 TOFU_SHA256 = "e11e783ab8ee0a029da32c2ab1817952121208d0ae9d6cf2d91fa0687f573a88"
 PROVIDER_PREFIX = "registry.opentofu.org/hashicorp/aws/6.54.0/linux_amd64"

@@ -131,8 +131,10 @@ jobs:
           root=/var/lib/cogs/stage2-authoritative-remediation-v1; staging="$root.staging"
           sudo -n test ! -e "$root"; sudo -n test ! -e "$staging"; sudo -n mkdir -m 0700 "$staging"; sudo -n cp -a /var/lib/cogs/stage2-completion-v1/source "$staging/source"
           while read -r digest mode path; do test "$(sha256sum "$path" | cut -d' ' -f1)" = "$digest"; sudo -n install -o root -g root -m "$mode" "$path" "$staging/source/$path"; test "$(sudo -n sha256sum "$staging/source/$path" | cut -d' ' -f1)" = "$digest"; done <<'EOF'
+          02852b1cf932ce7953a48e92a746c8383d0cc4bc8e29cf4915d29d7e3cbaca79 0555 deploy/aws-feasibility/check-plan.py
           3d3a099c50fe6bb74768a883e1f17783cba0a91241f435f5502a494525db342f 0444 deploy/aws-feasibility/completion_campaign_aws_adapter.py
-          4083681597a45cf7f058e2df48f253b050c8bb58ed4431776bc294cea0021c97 0444 deploy/aws-feasibility/completion_campaign_aws_provider.py
+          b62301e266190f893899d565535be1aa48a6a7b33519d429d97c93108c67112c 0444 deploy/aws-feasibility/completion_campaign_aws_provider.py
+          5a7dec276e10acd457d7416ac94c963cd69a2d7eb3e6a7df75908248e16cb0bb 0444 deploy/aws-feasibility/main.tf
           1ace26205de4497a48661c1f868a05fa0dda8d202b4bc53f2c8d59bf0300a69b 0555 deploy/aws-feasibility/recover-production-campaign-entry.sh
           8e59012a59916461126910b25c80ca40bcd3afcce2cf13195f1d64d5ef3fb607 0555 deploy/aws-feasibility/recover-production-campaign.sh
           69cf0bee4e6b442514bd2b53bad1decaa473c963789c653d53b73edb1f2a7eee 0555 deploy/aws-feasibility/run-production-campaign.sh
@@ -467,8 +469,10 @@ jobs:
           root=/var/lib/cogs/stage2-authoritative-remediation-v1; staging="$root.staging"
           sudo -n test ! -e "$root"; sudo -n test ! -e "$staging"; sudo -n mkdir -m 0700 "$staging"; sudo -n cp -a /var/lib/cogs/stage2-completion-v1/source "$staging/source"
           while read -r digest mode path; do test "$(sha256sum "$path" | cut -d' ' -f1)" = "$digest"; sudo -n install -o root -g root -m "$mode" "$path" "$staging/source/$path"; test "$(sudo -n sha256sum "$staging/source/$path" | cut -d' ' -f1)" = "$digest"; done <<'EOF'
+          02852b1cf932ce7953a48e92a746c8383d0cc4bc8e29cf4915d29d7e3cbaca79 0555 deploy/aws-feasibility/check-plan.py
           3d3a099c50fe6bb74768a883e1f17783cba0a91241f435f5502a494525db342f 0444 deploy/aws-feasibility/completion_campaign_aws_adapter.py
-          4083681597a45cf7f058e2df48f253b050c8bb58ed4431776bc294cea0021c97 0444 deploy/aws-feasibility/completion_campaign_aws_provider.py
+          b62301e266190f893899d565535be1aa48a6a7b33519d429d97c93108c67112c 0444 deploy/aws-feasibility/completion_campaign_aws_provider.py
+          5a7dec276e10acd457d7416ac94c963cd69a2d7eb3e6a7df75908248e16cb0bb 0444 deploy/aws-feasibility/main.tf
           1ace26205de4497a48661c1f868a05fa0dda8d202b4bc53f2c8d59bf0300a69b 0555 deploy/aws-feasibility/recover-production-campaign-entry.sh
           8e59012a59916461126910b25c80ca40bcd3afcce2cf13195f1d64d5ef3fb607 0555 deploy/aws-feasibility/recover-production-campaign.sh
           69cf0bee4e6b442514bd2b53bad1decaa473c963789c653d53b73edb1f2a7eee 0555 deploy/aws-feasibility/run-production-campaign.sh
