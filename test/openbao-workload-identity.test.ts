@@ -206,8 +206,10 @@ test("pre-abort, caller abort, and login timeout fail closed without callback or
   const item = await jwtFixture();
   let fetchCalls = 0;
   let callbackCalls = 0;
+  const fetchEntered = Promise.withResolvers<void>();
   const hangingFetch: typeof fetch = async (_url, init) => {
     fetchCalls += 1;
+    fetchEntered.resolve();
     return await new Promise<Response>((_resolve, reject) => {
       const signal = init?.signal;
       const abort = () => reject(new Error(`${jwtOne} ${clientToken}`));
@@ -231,7 +233,8 @@ test("pre-abort, caller abort, and login timeout fail closed without callback or
     const pending = identity.withToken(caller.signal, async () => {
       callbackCalls += 1;
     });
-    setTimeout(() => caller.abort(), 5);
+    await fetchEntered.promise;
+    caller.abort();
     await rejects(pending, [jwtOne, clientToken, item.path]);
 
     await rejects(

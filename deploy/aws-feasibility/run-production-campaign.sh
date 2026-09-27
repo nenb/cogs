@@ -32,6 +32,6 @@ else
     "COGS_STAGE2_APPROVAL_ARTIFACT_NAME=$COGS_STAGE2_APPROVAL_ARTIFACT_NAME"
   )
 fi
-cd /var/lib/cogs/stage2-completion-v1/source
+cd /var/lib/cogs/stage2-authoritative-remediation-v1/source
 exec /usr/bin/env -i "${clean[@]}" /usr/bin/python3 -I -B \
-  /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_entry.py
+  /var/lib/cogs/stage2-authoritative-remediation-v1/source/deploy/aws-feasibility/completion_campaign_aws_entry.py

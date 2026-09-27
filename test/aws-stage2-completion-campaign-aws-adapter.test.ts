@@ -141,7 +141,7 @@ test("launcher executable dispatch selects only the exact adapter-custody admiss
     writeFileSync(
       executable,
       launcher
-        .replaceAll("/var/lib/cogs/stage2-completion-v1/source", source)
+        .replaceAll("/var/lib/cogs/stage2-authoritative-remediation-v1/source", source)
         .replaceAll("/var/lib/cogs/stage2-aws-production-v2", custody)
         .replaceAll("/usr/bin/sudo", fakeSudo),
     );

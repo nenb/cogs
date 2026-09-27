@@ -367,16 +367,18 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /maximum_cost_micro_usd == 1100000/u);
   assert.match(campaign, /expires_unix_ns - \.not_before_unix_ns\) == 36000000000000/u);
   assert.match(campaign, /test "\$remaining" -ge 32400/u);
-  assert.match(campaign, /test "\$handoff_remaining" -ge 19800/u);
+  assert.match(campaign, /minimum_role_duration=18000/u);
+  assert.match(campaign, /credential_reserve=960/u);
+  assert.match(campaign, /test "\$handoff_remaining" -ge "\$\(\( minimum_role_duration \+ credential_reserve \)\)"/u);
   assert.doesNotMatch(campaign, /steps\.approval_verification\.outputs\.role_duration_seconds/u);
 
   const roleAssumptions = [
-    ["Acquire fresh bounded segment-one executor credentials", 18000, 16200],
-    ["Acquire fresh bounded segment-one inventory-observer credentials", 18000, 16200],
-    ["Acquire fresh bounded segment-two executor credentials", 19800, 18000],
-    ["Acquire fresh bounded segment-two inventory-observer credentials", 19800, 18000],
+    ["Acquire fresh bounded segment-one executor credentials", 18000, 16200, false],
+    ["Acquire fresh bounded segment-one inventory-observer credentials", 18000, 16200, false],
+    ["Acquire fresh bounded segment-two executor credentials", 19800, 18000, true],
+    ["Acquire fresh bounded segment-two inventory-observer credentials", 19800, 18000, true],
   ] as const;
-  for (const [name, cap, minimum] of roleAssumptions) {
+  for (const [name, cap, minimum, boundedByRemaining] of roleAssumptions) {
     const actionAt = campaign.indexOf(`      - name: ${name}\n`);
     assert.ok(actionAt >= 0, name);
     const actionEnd = campaign.indexOf("\n      - name: ", actionAt + name.length);
@@ -387,7 +389,15 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
     assert.match(action, new RegExp(`cap=${cap}; minimum=${minimum}`, "u"), name);
     assert.match(action, /duration="\$cap"/u, name);
     assert.match(action, /test "\$duration" -ge "\$minimum"/u, name);
-    assert.match(action, /test "\$duration" -eq "\$cap"/u, name);
+    if (boundedByRemaining) {
+      assert.match(action, /if \(\( remaining < duration \)\); then duration="\$remaining"; fi/u, name);
+      assert.equal((action.match(/now_s - 960/gu) ?? []).length, 2, name);
+      assert.match(action, /test "\$duration" -le "\$cap"/u, name);
+      assert.doesNotMatch(action, /test "\$duration" -eq "\$cap"/u, name);
+    } else {
+      assert.match(action, /expiry_s - \$\(date \+%s\) - 960/u, name);
+      assert.match(action, /test "\$duration" -eq "\$cap"/u, name);
+    }
     assert.match(action, /test "\$duration" -le "\$remaining"/u, name);
     assert.match(action, /assume-github-role (?:executor|observer) "\$ROLE_ARN"/u, name);
     assert.match(action, /\/var\/lib\/cogs\/stage2-aws-issuance-v1\/approval\.json/u, name);
@@ -404,6 +414,11 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   ] as const) {
     assert.match(job, new RegExp(`timeout-minutes: ${campaignMinutes}`, "u"));
     assert.match(job, new RegExp(`job_deadline=\\$\\(\\( job_start \\+ \\(${jobMinutes} - 31\\) \\* 60 \\)\\)`, "u"));
+    assert.match(job, /COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX.*\^\[1-9\]\[0-9\]\*\$/u);
+    assert.match(job, /COGS_STAGE2_OBSERVER_EXPIRATION_UNIX.*\^\[1-9\]\[0-9\]\*\$/u);
+    assert.match(job, /credential_deadline=\$\(\( COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX - 1860 \)\)/u);
+    assert.match(job, /COGS_STAGE2_OBSERVER_EXPIRATION_UNIX - 1860 < credential_deadline/u);
+    assert.match(job, /credential_deadline < job_deadline/u);
     assert.match(job, /remaining=\$\(\( job_deadline - now_s \)\)/u);
     assert.match(job, /test "\$remaining" -gt 0/u);
     assert.match(job, /\/usr\/bin\/timeout --signal=TERM --kill-after=10s "\$remaining"s sudo -n/u);
@@ -420,12 +435,25 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(firstJob.slice(oidcRetirementAt), /ACTIONS_ID_TOKEN_REQUEST_TOKEN=\\nACTIONS_ID_TOKEN_REQUEST_URL=\\n/u);
 
   assert.match(campaign, /stage2-stage-production-approval\.py/u);
+  assert.equal((campaign.match(/Freeze exact reviewed production remediation over H/gu) ?? []).length, 2);
+  for (const digest of "3d3a099c50fe6bb74768a883e1f17783cba0a91241f435f5502a494525db342f 4083681597a45cf7f058e2df48f253b050c8bb58ed4431776bc294cea0021c97 1ace26205de4497a48661c1f868a05fa0dda8d202b4bc53f2c8d59bf0300a69b 8e59012a59916461126910b25c80ca40bcd3afcce2cf13195f1d64d5ef3fb607 69cf0bee4e6b442514bd2b53bad1decaa473c963789c653d53b73edb1f2a7eee 0848f28fec212f714bdf92e637d4ceca95d402632504e8539535d7f23c412598 83b24dbc1a3703307d8dea5a65acac3b1a98a376aad883652c3ec482c4732cee 4cffc989e1813eab098bf807f4c1df880a7108e178713c1dec4e8db989380337 bc783a90ada95b777773cf2897b196d966fb26aefcf500937cd555c5980ba83b 1e96c5942c53f64617325e6015d87db0389a743bdc59f7a97d349f590731a760".split(
+    " ",
+  ))
+    assert.equal((campaign.match(new RegExp(digest, "gu")) ?? []).length, 2, digest);
+  assert.equal((campaign.match(/sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN/gu) ?? []).length, 4);
   assert.match(campaign, /run-production-campaign\.sh/u);
   assert.match(campaign, /recover-production-campaign-entry\.sh/u);
+  const uncertainOneAt = firstJob.indexOf("      - name: Cleanup after an uncertain segment-one outcome\n");
+  const uncertainOneEnd = firstJob.indexOf("\n      - name: ", uncertainOneAt + 10);
+  const uncertainOne = firstJob.slice(uncertainOneAt, uncertainOneEnd);
+  assert.ok(uncertainOneAt >= 0);
   assert.match(
-    firstJob,
-    /test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials \|\|[\s\S]*segment-one-zero-complete\.json/u,
+    uncertainOne,
+    /if: always\(\) && steps\.production_staging\.outcome == 'success' && steps\.campaign_segment\.outcome != 'success'/u,
   );
+  assert.match(uncertainOne, /sudo -n test -e "\$root"/u);
+  assert.match(uncertainOne, /test -e "\$root\/aws-credentials" \|\|[\s\S]*segment-one-zero-complete\.json/u);
+  assert.doesNotMatch(uncertainOne, /root\.staging/u);
   assert.match(
     secondJob,
     /test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/aws-credentials \|\|[\s\S]*! sudo -n test -e \/var\/lib\/cogs\/stage2-aws-production-v2\/cleanup-complete\.json/u,
@@ -445,7 +473,9 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(stager, /def verify_evidence_continuation_signature\(label\)/u);
   assert.match(stager, /"\/usr\/bin\/unshare",\s*"--net",\s*"--"/u);
   assert.equal((campaign.match(/snapshot-evidence (?:first|readback)/gu) ?? []).length, 2);
-  assert.match(campaign, /path: \/var\/lib\/cogs\/stage2-aws-evidence-v2\/first/u);
+  assert.match(campaign, /path: \/var\/lib\/cogs-stage2-aws-evidence-v2\/first/u);
+  assert.doesNotMatch(campaign, /path: \/var\/lib\/cogs\/stage2-aws-evidence-v2/u);
+  assert.match(stager, /EVIDENCE_SNAPSHOT_ROOT = Path\("\/var\/lib\/cogs-stage2-aws-evidence-v2"\)/u);
   assert.match(stager, /def snapshot_evidence_package/u);
   assert.match(stager, /set\(os\.listdir\(source_fd\)\) == set\(EVIDENCE_MEMBERS\)/u);
   assert.match(campaignAdapter, /"--foreground"/u);
@@ -473,6 +503,8 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.equal((campaign.match(/stage-issuance-continuation/gu) ?? []).length, 1);
   assert.equal((diagnosticCampaign.match(/stage-issuance-approval/gu) ?? []).length, 1);
   assert.match(stager, /ISSUANCE_ROOT = Path\("\/var\/lib\/cogs\/stage2-aws-issuance-v1"\)/u);
+  assert.match(stager, /def _create_issuance_root\(\):/u);
+  assert.match(stager, /\("cogs", 0o700, True\)/u);
   assert.match(stager, /os\.chmod\(ISSUANCE_ROOT, 0o555\)/u);
   assert.match(stager, /ISSUANCE_ROOT \/ adapter\.CONTINUATION_ADMISSION_NAME/u);
   assert.match(stager, /Credential issuance and provider execution must retain one exact signed/u);
@@ -486,6 +518,10 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(issuer, /pipelines\{shard\}/u);
   assert.match(issuer, /\/etc\/ssl\/certs\/ca-certificates\.crt/u);
   assert.match(issuer, /create_default_context\(cadata=_fixed_ca_pem\(\)\)/u);
+  assert.match(issuer, /run-actions-\[1-9\]/u);
+  assert.match(issuer, /approval-authentication-custody\/v1/u);
+  assert.match(issuer, /COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX/u);
+  assert.match(issuer, /COGS_STAGE2_OBSERVER_EXPIRATION_UNIX/u);
   assert.doesNotMatch(issuer, /urlopen\(/u);
   assert.equal((`${campaign}\n${diagnosticCampaign}`.match(/test "\$account" = 372495030090/gu) ?? []).length, 3);
 

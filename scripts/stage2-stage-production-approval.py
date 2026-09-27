@@ -30,7 +30,7 @@ PACKAGE_MANIFEST = "provider-package.json"
 PACKAGE_ARCHIVE = "provider-package.tar"
 PACKAGE_ARCHIVE_DIGEST = "provider-package.tar.sha256"
 EVIDENCE_SOURCE = DESTINATION / "evidence-publication"
-EVIDENCE_SNAPSHOT_ROOT = Path("/var/lib/cogs/stage2-aws-evidence-v2")
+EVIDENCE_SNAPSHOT_ROOT = Path("/var/lib/cogs-stage2-aws-evidence-v2")
 ISSUANCE_ROOT = Path("/var/lib/cogs/stage2-aws-issuance-v1")
 ISSUANCE_APPROVAL_MEMBERS = {
     "approval.json": 256 * 1024,
@@ -215,6 +215,38 @@ def remove_partial(expected):
     require(not any(STAGING.iterdir())); STAGING.rmdir(); sync(STAGING.parent)
 
 
+def _create_issuance_root():
+    """Create the private fixed root without trusting or exposing its parent."""
+    descriptors = []
+    parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptors.append(parent)
+    try:
+        for name, mode, create in (("var", 0o755, False), ("lib", 0o755, False),
+                                   ("cogs", 0o700, True)):
+            if create:
+                try:
+                    os.mkdir(name, mode, dir_fd=parent); os.fsync(parent)
+                except FileExistsError: pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                            os.O_CLOEXEC, dir_fd=parent)
+            descriptors.append(child); seen = os.fstat(child)
+            require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                    and stat.S_IMODE(seen.st_mode) == mode)
+            parent = child
+        os.mkdir(ISSUANCE_ROOT.name, 0o755, dir_fd=parent)
+        issuance = os.open(ISSUANCE_ROOT.name, os.O_RDONLY | os.O_DIRECTORY |
+                           os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        try:
+            os.fchown(issuance, 0, 0); os.fchmod(issuance, 0o755)
+            seen = os.fstat(issuance)
+            require(stat.S_ISDIR(seen.st_mode) and seen.st_uid == seen.st_gid == 0
+                    and stat.S_IMODE(seen.st_mode) == 0o755)
+            os.fsync(issuance); os.fsync(parent)
+        finally: os.close(issuance)
+    finally:
+        for descriptor in reversed(descriptors): os.close(descriptor)
+
+
 def _capture_named_files(source, members):
     directory = os.open(Path(source), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     opened = {}
@@ -332,8 +364,7 @@ def stage_issuance_approval(source):
         and hashlib.sha256(captured["sigstore-trusted-root.json"]).hexdigest()
         == adapter.TRUSTED_ROOT_SHA256
     )
-    ISSUANCE_ROOT.mkdir(mode=0o755)
-    os.chown(ISSUANCE_ROOT, 0, 0)
+    _create_issuance_root()
     for name, raw in captured.items():
         write(ISSUANCE_ROOT / name, raw, 0o555 if name == "cosign" else 0o444)
     result = subprocess.run(
@@ -367,6 +398,17 @@ def stage_issuance_approval(source):
     sync(ISSUANCE_ROOT)
     sync(ISSUANCE_ROOT.parent)
     return hashlib.sha256(captured["approval.json"]).hexdigest()
+
+
+def _authentication_custody(authentication_raw, bundle_raw):
+    """Reproduce the adapter's complete authenticated approval commitment."""
+    require(type(authentication_raw) is bytes and type(bundle_raw) is bytes)
+    return production._commit(b"cogs.stage2-approval-authentication-custody/v1", {
+        "authentication_sha256": hashlib.sha256(authentication_raw).hexdigest(),
+        "bundle_sha256": hashlib.sha256(bundle_raw).hexdigest(),
+        "cosign_sha256": adapter.COSIGN_SHA256,
+        "trusted_root_sha256": adapter.TRUSTED_ROOT_SHA256,
+    })
 
 
 def stage_issuance_continuation(
@@ -443,9 +485,10 @@ def stage_issuance_continuation(
     approval_value["plan_sha256s"] = tuple(approval_value["plan_sha256s"])
     approval_value["phase_cycle_counts"] = tuple(approval_value["phase_cycle_counts"])
     approval = production.ProductionApproval(**approval_value)
-    authentication_sha256 = hashlib.sha256(
-        read(ISSUANCE_ROOT / "approval-authentication.json", 256 * 1024)
-    ).hexdigest()
+    authentication_sha256 = _authentication_custody(
+        read(ISSUANCE_ROOT / "approval-authentication.json", 256 * 1024),
+        read(ISSUANCE_ROOT / "approval-authentication.bundle.json", 1024 * 1024),
+    )
     parsed = production.continuation_from_bytes(
         captured[adapter.CONTINUATION_NAME],
         approval,
