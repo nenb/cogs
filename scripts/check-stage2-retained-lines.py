@@ -43,6 +43,9 @@ PRODUCT_TEST_Q_TREE = "9ad48a2be811745f0d8032a0a9f52a33c4b2edec"
 PRODUCT_TEST_RETAINED_LINES, PRODUCT_TEST_RETAINED_BYTES = 18_000, 8_000_000
 PRODUCT_TEST_REMAINING_LINES, PRODUCT_TEST_REMAINING_BYTES = 25_216, 21_500_000
 PRODUCT_TEST_GLOBAL_LINE_FORECAST, PRODUCT_TEST_GLOBAL_BYTE_FORECAST = 43_216, 29_500_000
+POST_DIAGNOSTIC_BASE_REVISION = "610c28587596df50531ada8986a66024ca1ca23f"
+POST_DIAGNOSTIC_GROSS_HIGH = (500, 1_000_000)
+POST_DIAGNOSTIC_READINESS_REGENERATIONS = 1
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
@@ -441,7 +444,7 @@ def _remediation_budget():
     except (OSError, UnicodeError, ValueError):
         raise LineBudgetError() from None
     _require(set(data) == {"version", "base_revision", "global_gross_line_high", "global_gross_byte_high", "baseline",
-                           "source_limits", "product_test_correction", "owners"})
+                           "source_limits", "product_test_correction", "post_diagnostic_remediation", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
@@ -497,6 +500,15 @@ def _remediation_budget():
         _require(planned_new <= new_file_highs[owner])
     _require(paths.get(str(REMEDIATION_BUDGET_PATH.relative_to(ROOT))) == "integration")
     _product_test_budget(data, paths)
+    post = data["post_diagnostic_remediation"]
+    _require(isinstance(post, dict) and set(post) == {
+        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        and post["base_revision"] == POST_DIAGNOSTIC_BASE_REVISION
+        and (post["gross_lines"], post["gross_bytes"]) == POST_DIAGNOSTIC_GROSS_HIGH
+        and post["readiness_regenerations"] == POST_DIAGNOSTIC_READINESS_REGENERATIONS
+        and isinstance(post["paths"], list) and post["paths"] == sorted(post["paths"])
+        and len(post["paths"]) == len(set(post["paths"])))
+    _require(set(post["paths"]) <= set(paths))
     return data, owners, paths, new_file_highs, forecasts
 
 
@@ -591,6 +603,29 @@ def _enforce_product_test_consumption(pre_lines, pre_bytes, post_lines, post_byt
     return lines, raw_bytes
 
 
+def _post_diagnostic_consumption(budget, head):
+    plan = budget["post_diagnostic_remediation"]
+    allowed = tuple(plan["paths"]); allowed_set = set(allowed)
+    commit_count = int(_git(["rev-list", "--count", f"{POST_DIAGNOSTIC_BASE_REVISION}..{head}"]))
+    _require(commit_count in {0, 1})
+    if commit_count == 1:
+        _require(_git(["rev-list", "--parents", "-n", "1", head]).split()
+                 == [head, POST_DIAGNOSTIC_BASE_REVISION])
+    lines = raw_bytes = 0
+    slices = list(_product_test_linear_commits(POST_DIAGNOSTIC_BASE_REVISION, head))
+    slices.append((head, None))
+    for revision, target in slices:
+        changed = _product_test_changes(revision, target)
+        if target is None:
+            changed.update(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
+        _require(changed <= allowed_set)
+        lines += _gross_slice(allowed, lambda path: path in allowed_set, revision, target)
+        raw_bytes += _gross_added_line_bytes(allowed, revision, target)
+    _require(lines <= POST_DIAGNOSTIC_GROSS_HIGH[0]
+             and raw_bytes <= POST_DIAGNOSTIC_GROSS_HIGH[1])
+    return lines, raw_bytes
+
+
 def _product_test_consumption_segments(budget):
     tasks = budget["product_test_correction"]["remaining_tranche"]["allocations"]
     _require([task["name"] for task in tasks] == list(PRODUCT_TEST_TASK_PATHS))
@@ -600,9 +635,11 @@ def _product_test_consumption_segments(budget):
              and _git(["rev-list", "--parents", "-n", "1", PRODUCT_TEST_FINAL_H_REVISION]).split()
              == [PRODUCT_TEST_FINAL_H_REVISION, PRODUCT_TEST_FINAL_H_PARENT]
              and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_Q, PRODUCT_TEST_FINAL_H_REVISION]) == ""
-             and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_FINAL_H_REVISION, head]) == "")
+             and _git(["merge-base", "--is-ancestor", PRODUCT_TEST_FINAL_H_REVISION, POST_DIAGNOSTIC_BASE_REVISION]) == ""
+             and _git(["merge-base", "--is-ancestor", POST_DIAGNOSTIC_BASE_REVISION, head]) == "")
     pre_lines, pre_bytes = _product_test_segment(PRODUCT_TEST_Q, PRODUCT_TEST_FINAL_H_REVISION, False)
-    post_lines, post_bytes = _product_test_segment(PRODUCT_TEST_FINAL_H_REVISION, head, True)
+    post_lines, post_bytes = _product_test_segment(
+        PRODUCT_TEST_FINAL_H_REVISION, POST_DIAGNOSTIC_BASE_REVISION, False)
     lines, raw_bytes = _enforce_product_test_consumption(pre_lines, pre_bytes, post_lines, post_bytes)
     _lines(SOURCE_INVENTORY)
     source_inventory = SOURCE_INVENTORY.read_bytes()
@@ -747,6 +784,8 @@ def measure():
     (product_test_task_lines, product_test_task_bytes, product_test_pre_h_lines,
      product_test_pre_h_bytes, product_test_post_h_lines,
      product_test_post_h_bytes) = _product_test_consumption_segments(remediation_budget)
+    post_diagnostic_lines, post_diagnostic_bytes = _post_diagnostic_consumption(
+        remediation_budget, _git(["rev-parse", "HEAD"]).strip())
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -815,6 +854,12 @@ def measure():
         "product_test_retained_and_consumed_gross_line_bytes": PRODUCT_TEST_RETAINED_BYTES + sum(product_test_task_bytes.values()),
         "product_test_global_gross_line_forecast": PRODUCT_TEST_GLOBAL_LINE_FORECAST,
         "product_test_global_gross_byte_forecast": PRODUCT_TEST_GLOBAL_BYTE_FORECAST,
+        "post_diagnostic_base_revision": POST_DIAGNOSTIC_BASE_REVISION,
+        "post_diagnostic_gross_added_lines": post_diagnostic_lines,
+        "post_diagnostic_gross_added_line_bytes": post_diagnostic_bytes,
+        "post_diagnostic_gross_high": {
+            "lines": POST_DIAGNOSTIC_GROSS_HIGH[0], "bytes": POST_DIAGNOSTIC_GROSS_HIGH[1]},
+        "post_diagnostic_readiness_regenerations": POST_DIAGNOSTIC_READINESS_REGENERATIONS,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,

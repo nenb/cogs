@@ -67,7 +67,7 @@ CAMPAIGN_IDENTITY = (
     "https://github.com/nenb/cogs/.github/workflows/"
     "stage2-production-campaign.yml@refs/heads/main")
 STATE_ROOT = ROOT / "provider-state"
-SOURCE = Path("/var/lib/cogs/stage2-completion-v1/source")
+SOURCE = Path("/var/lib/cogs/stage2-authoritative-remediation-v1/source")
 EFFECT_COMMAND = SOURCE / "deploy/aws-feasibility/run-production-effect.sh"
 REMOTE_COMMAND = SOURCE / "deploy/aws-feasibility/run-production-remote.sh"
 INVENTORY_COMMAND = SOURCE / "deploy/aws-feasibility/run-production-inventory.sh"

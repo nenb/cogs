@@ -404,7 +404,7 @@ test("root signature verifier uses only the exact fixed offline helper command",
     return { status: 0, signal: null, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
   };
   for (const label of ["first", "readback"])
-    verifyRootAwsStage2ContinuationSignature(`/var/lib/cogs/stage2-aws-evidence-v2/${label}`, executor);
+    verifyRootAwsStage2ContinuationSignature(`/var/lib/cogs-stage2-aws-evidence-v2/${label}`, executor);
   assert.equal(calls.length, 2);
   for (const [index, call] of calls.entries()) {
     assert.equal(call.command, "/usr/bin/sudo");
@@ -420,7 +420,7 @@ test("root signature verifier uses only the exact fixed offline helper command",
       "/usr/bin/python3",
       "-I",
       "-B",
-      "/var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py",
+      "/var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py",
       "verify-evidence-continuation-signature",
       index === 0 ? "first" : "readback",
     ]);
@@ -439,7 +439,7 @@ test("root signature verifier uses only the exact fixed offline helper command",
     { status: 0, signal: null, stdout: Buffer.alloc(4097), stderr: Buffer.alloc(0) },
   ]) {
     assert.throws(
-      () => verifyRootAwsStage2ContinuationSignature("/var/lib/cogs/stage2-aws-evidence-v2/first", () => failed),
+      () => verifyRootAwsStage2ContinuationSignature("/var/lib/cogs-stage2-aws-evidence-v2/first", () => failed),
       /signature/u,
     );
   }

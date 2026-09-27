@@ -52,7 +52,10 @@ TLS_CA_MAX_BYTES = 1024 * 1024
 ISSUANCE_ROOT = Path("/var/lib/cogs/stage2-aws-issuance-v1")
 ISSUANCE_APPROVAL = ISSUANCE_ROOT / "approval.json"
 ISSUANCE_AUTHENTICATION = ISSUANCE_ROOT / "approval-authentication.json"
+ISSUANCE_AUTHENTICATION_BUNDLE = ISSUANCE_ROOT / "approval-authentication.bundle.json"
 ISSUANCE_PACKAGE = ISSUANCE_ROOT / production.QUALIFICATION_PACKAGE_NAME
+COSIGN_SHA256 = "5db1043ec70bf92296da977941b19b3d86869af3018d4f4a0f457bf54d76bb68"
+TRUSTED_ROOT_SHA256 = "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e"
 ISSUANCE_CONTINUATION = ISSUANCE_ROOT / "aws-stage2-production-continuation-v1.json"
 ISSUANCE_CONTINUATION_BUNDLE = ISSUANCE_ROOT / "aws-stage2-production-continuation-v1.bundle.json"
 ISSUANCE_ADMISSION = ISSUANCE_ROOT / "aws-stage2-production-continuation-admission-v1.json"
@@ -253,21 +256,18 @@ def _approved_oidc_url(request_url):
     parsed = urlsplit(request_url)
     guid = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
     shard = r"(?:[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?)?"
-    host = rf"pipelines{shard}\.actions\.githubusercontent\.com"
-    token_path = (
-        rf"/[A-Za-z0-9]{{1,128}}/{guid}/_apis/distributedtask/"
-        rf"hubs/[A-Za-z0-9._-]{{1,64}}/plans/{guid}/jobs/{guid}/idtoken"
-    )
-    require(
-        parsed.scheme == "https"
-        and parsed.hostname is not None
-        and re.fullmatch(host, parsed.hostname) is not None
-        and parsed.port in {None, 443}
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.fragment
-        and re.fullmatch(token_path, parsed.path) is not None
-    )
+    legacy_host = rf"pipelines{shard}\.actions\.githubusercontent\.com"
+    legacy_path = (rf"/[A-Za-z0-9]{{1,128}}/{guid}/_apis/distributedtask/"
+                   rf"hubs/[A-Za-z0-9._-]{{1,64}}/plans/{guid}/jobs/{guid}/idtoken")
+    hosted_host = (r"run-actions-[1-9][0-9]{0,2}-azure-"
+                   r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\.actions\.githubusercontent\.com")
+    hosted_path = rf"/[1-9][0-9]{{0,18}}//idtoken/{guid}/{guid}"
+    legacy = parsed.hostname is not None and re.fullmatch(legacy_host, parsed.hostname) is not None
+    hosted = parsed.hostname is not None and re.fullmatch(hosted_host, parsed.hostname) is not None
+    require(parsed.scheme == "https" and (legacy or hosted) and parsed.port in {None, 443}
+            and parsed.username is None and parsed.password is None and not parsed.fragment
+            and ((legacy and re.fullmatch(legacy_path, parsed.path) is not None)
+                 or (hosted and re.fullmatch(hosted_path, parsed.path) is not None)))
     query = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
     require(query == [("api-version", "2.0")])
     return urlunsplit(
@@ -304,6 +304,7 @@ def _validated_role_authority(selector, role_arn, approval_path):
     partition, account_id, role_name = match.groups()
     approval_raw = _root_issuance_read(ISSUANCE_APPROVAL, MAX_BYTES)
     authentication_raw = _root_issuance_read(ISSUANCE_AUTHENTICATION, MAX_BYTES)
+    authentication_bundle_raw = _root_issuance_read(ISSUANCE_AUTHENTICATION_BUNDLE, 1024 * 1024)
     package_raw = _root_issuance_read(ISSUANCE_PACKAGE, MAX_BYTES)
     try:
         value, authentication, package = map(
@@ -343,7 +344,13 @@ def _validated_role_authority(selector, role_arn, approval_path):
         else approval.inventory_observer_principal_commitment
     )
     require(production.executor_principal_commitment(partition, account_id, role_name) == expected)
-    return approval, hashlib.sha256(authentication_raw).hexdigest(), account_id, role_name
+    authentication_custody = production._commit(
+        b"cogs.stage2-approval-authentication-custody/v1", {
+            "authentication_sha256": hashlib.sha256(authentication_raw).hexdigest(),
+            "bundle_sha256": hashlib.sha256(authentication_bundle_raw).hexdigest(),
+            "cosign_sha256": COSIGN_SHA256, "trusted_root_sha256": TRUSTED_ROOT_SHA256,
+        })
+    return approval, authentication_custody, account_id, role_name
 
 
 def assume_github_role(
@@ -384,7 +391,7 @@ def assume_github_role(
             and admission.bundle_sha256 == hashlib.sha256(bundle_raw).hexdigest()
         )
         runway_deadline = min(runway_deadline, continuation.cleanup_deadline_unix_ns)
-    require(duration <= runway_deadline // 1_000_000_000 - now - 900)
+    require(duration <= runway_deadline // 1_000_000_000 - now - 960)
     # The private opener disables proxies and redirects before either token is read.
     opener = _direct_https_opener()
     request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
@@ -468,7 +475,7 @@ def assume_github_role(
         raise ApprovalIssuerError() from error
     response_now = int(time.time())
     require(
-        duration <= runway_deadline // 1_000_000_000 - response_now - 900
+        duration <= runway_deadline // 1_000_000_000 - response_now - 960
         and expires >= response_now + minimum
         and expires >= response_now + duration - 60
         and expires <= response_now + duration + 300
@@ -495,8 +502,14 @@ def assume_github_role(
             and stat.S_IMODE(info.st_mode) & 0o022 == 0
         )
         os.fchmod(descriptor, 0o600)
+        expiration_name = {
+            "executor": "COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX",
+            "observer": "COGS_STAGE2_OBSERVER_EXPIRATION_UNIX",
+        }[selector]
         output = (
-            f"AWS_ACCESS_KEY_ID={access}\nAWS_SECRET_ACCESS_KEY={secret}\nAWS_SESSION_TOKEN={token}\nAWS_DEFAULT_REGION={AWS_REGION}\nAWS_REGION={AWS_REGION}\n"
+            f"AWS_ACCESS_KEY_ID={access}\nAWS_SECRET_ACCESS_KEY={secret}\n"
+            f"AWS_SESSION_TOKEN={token}\nAWS_DEFAULT_REGION={AWS_REGION}\n"
+            f"AWS_REGION={AWS_REGION}\n{expiration_name}={expires}\n"
         ).encode("ascii")
         require(os.write(descriptor, output) == len(output))
         os.fsync(descriptor)

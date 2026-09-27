@@ -171,6 +171,34 @@ test("ADR0370 retires elapsed S authority and requires a supervised fresh genera
   );
 });
 
+test("ADR0370 amendment bounds the terminal diagnostic production remediation separately", () => {
+  const adr = readFileSync("docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md", "utf8");
+  for (const text of [
+    "36284775744",
+    "/var/lib/cogs-stage2-aws-evidence-v2",
+    "500 gross added lines and 1,000,000 gross added line-bytes",
+    "The next rereview rejected the local generation",
+    "1,860-second cleanup-and-transition reserve",
+    "exactly one direct child of the tranche base",
+    "one replacement final readiness generation",
+    "Stage 4 remains blocked",
+  ])
+    assert.ok(adr.includes(text), text);
+  runPython(`
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py')
+b,_,_,_,_=m['_remediation_budget'](); p=b['post_diagnostic_remediation']
+assert p['base_revision']=='610c28587596df50531ada8986a66024ca1ca23f' and (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(500,1000000,1)
+assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths'])) and m['PRODUCT_TEST_PENDING_READINESS_REGENERATIONS']==0
+head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_diagnostic_consumption'](b,head)
+assert 0 < lines <= 500 and 0 < raw <= 1000000
+real_git=m['_git']; m['_post_diagnostic_consumption'].__globals__['_git']=lambda args: '2' if args[:2]==['rev-list','--count'] else real_git(args)
+try: m['_post_diagnostic_consumption'](b,head)
+except m['LineBudgetError']: pass
+else: raise AssertionError('second descendant commit accepted')
+`);
+});
+
 test("final-HGQ enforcement freezes exact H and separately consumes the post-H reserve", () => {
   runPython(`
 import runpy

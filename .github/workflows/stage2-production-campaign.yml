@@ -112,12 +112,6 @@ jobs:
           # or OIDC use; this conservatively exceeds the formal effect/cleanup need.
           test "$remaining" -ge 32400
 
-      - name: Freeze authenticated segment-one issuance authority before OIDC
-        run: |
-          set -euo pipefail
-          sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py \
-            stage-issuance-approval "$RUNNER_TEMP/approval"
-
       - name: Acquire and stage exact implementation H before credentials
         run: |
           set -euo pipefail
@@ -131,6 +125,29 @@ jobs:
           test "$(git -C "$destination" rev-parse HEAD)" = "$h"
           sudo -n /usr/bin/python3 -I -B "$destination/scripts/prepare-stage2-fixed-source.py" >/dev/null
 
+      - name: Freeze exact reviewed production remediation over H
+        run: |
+          set -euo pipefail
+          root=/var/lib/cogs/stage2-authoritative-remediation-v1; staging="$root.staging"
+          sudo -n test ! -e "$root"; sudo -n test ! -e "$staging"; sudo -n mkdir -m 0700 "$staging"; sudo -n cp -a /var/lib/cogs/stage2-completion-v1/source "$staging/source"
+          while read -r digest mode path; do test "$(sha256sum "$path" | cut -d' ' -f1)" = "$digest"; sudo -n install -o root -g root -m "$mode" "$path" "$staging/source/$path"; test "$(sudo -n sha256sum "$staging/source/$path" | cut -d' ' -f1)" = "$digest"; done <<'EOF'
+          3d3a099c50fe6bb74768a883e1f17783cba0a91241f435f5502a494525db342f 0444 deploy/aws-feasibility/completion_campaign_aws_adapter.py
+          4083681597a45cf7f058e2df48f253b050c8bb58ed4431776bc294cea0021c97 0444 deploy/aws-feasibility/completion_campaign_aws_provider.py
+          1ace26205de4497a48661c1f868a05fa0dda8d202b4bc53f2c8d59bf0300a69b 0555 deploy/aws-feasibility/recover-production-campaign-entry.sh
+          8e59012a59916461126910b25c80ca40bcd3afcce2cf13195f1d64d5ef3fb607 0555 deploy/aws-feasibility/recover-production-campaign.sh
+          69cf0bee4e6b442514bd2b53bad1decaa473c963789c653d53b73edb1f2a7eee 0555 deploy/aws-feasibility/run-production-campaign.sh
+          0848f28fec212f714bdf92e637d4ceca95d402632504e8539535d7f23c412598 0555 deploy/aws-feasibility/run-production-effect.sh
+          83b24dbc1a3703307d8dea5a65acac3b1a98a376aad883652c3ec482c4732cee 0555 deploy/aws-feasibility/run-production-inventory.sh
+          4cffc989e1813eab098bf807f4c1df880a7108e178713c1dec4e8db989380337 0555 deploy/aws-feasibility/run-production-remote.sh
+          bc783a90ada95b777773cf2897b196d966fb26aefcf500937cd555c5980ba83b 0444 scripts/stage2-production-approval.py
+          1e96c5942c53f64617325e6015d87db0389a743bdc59f7a97d349f590731a760 0444 scripts/stage2-stage-production-approval.py
+          EOF
+          sudo -n find "$staging" -type f -exec chmod a-w {} +; sudo -n find "$staging" -type d -exec chmod 0555 {} +; sudo -n mv "$staging" "$root"; sudo -n sync -f /var/lib/cogs
+
+      - name: Freeze authenticated segment-one issuance authority before OIDC
+        run: |
+          set -euo pipefail; sudo -n /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py stage-issuance-approval "$RUNNER_TEMP/approval"
+
       - name: Acquire fresh bounded segment-one executor credentials
         timeout-minutes: 10
         env:
@@ -138,9 +155,10 @@ jobs:
         run: |
           set -euo pipefail
           expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
-          remaining=$(( expiry_s - $(date +%s) - 900 )); cap=18000; minimum=16200; duration="$cap"
+          remaining=$(( expiry_s - $(date +%s) - 960 )); cap=18000; minimum=16200; duration="$cap"
           test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+          sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-production-approval.py \
             assume-github-role executor "$ROLE_ARN" "cogs-stage2-campaign-s1-$GITHUB_RUN_ID" \
             "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json
 
@@ -164,9 +182,10 @@ jobs:
         run: |
           set -euo pipefail
           expiry_s=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 ))
-          remaining=$(( expiry_s - $(date +%s) - 900 )); cap=18000; minimum=16200; duration="$cap"
+          remaining=$(( expiry_s - $(date +%s) - 960 )); cap=18000; minimum=16200; duration="$cap"
           test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+          sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-production-approval.py \
             assume-github-role observer "$ROLE_ARN" "cogs-stage2-observer-s1-$GITHUB_RUN_ID" \
             "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json
 
@@ -179,13 +198,13 @@ jobs:
           printf '[profile nebula]\nregion = us-east-1\noutput = json\n[profile observer]\nregion = us-east-1\noutput = json\n' >"$RUNNER_TEMP/aws-config"
           printf '[observer]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >>"$RUNNER_TEMP/aws-credentials"
           printf '%s\n' "$BUDGET_ALERT_EMAIL" >"$RUNNER_TEMP/budget-email"
-          sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
+          sudo -n /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
 
       - name: Recover exact failed segment-one staging
         if: always() && steps.production_staging.outcome != 'success'
         run: |
           set -euo pipefail
-          if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2 || sudo -n test -e /var/lib/cogs/stage2-aws-production-v2.staging; then sudo -n env COGS_STAGE2_STAGING_RECOVERY_ONLY=1 /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"; fi
+          if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2 || sudo -n test -e /var/lib/cogs/stage2-aws-production-v2.staging; then sudo -n env COGS_STAGE2_STAGING_RECOVERY_ONLY=1 /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"; fi
           sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2; sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2.staging
 
       - name: Retire runner AWS credential files and exported AWS environment
@@ -204,8 +223,15 @@ jobs:
           start_file="$RUNNER_TEMP/stage2-job-start-epoch"
           test "$(stat -c '%a:%h' "$start_file")" = 600:1
           job_start=$(cat "$start_file"); [[ "$job_start" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COGS_STAGE2_OBSERVER_EXPIRATION_UNIX" =~ ^[1-9][0-9]*$ ]]
           now_s=$(date +%s)
           job_deadline=$(( job_start + (300 - 31) * 60 ))
+          credential_deadline=$(( COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX - 1860 ))
+          if (( COGS_STAGE2_OBSERVER_EXPIRATION_UNIX - 1860 < credential_deadline )); then
+            credential_deadline=$(( COGS_STAGE2_OBSERVER_EXPIRATION_UNIX - 1860 ))
+          fi
+          if (( credential_deadline < job_deadline )); then job_deadline="$credential_deadline"; fi
           remaining=$(( job_deadline - now_s ))
           test "$remaining" -gt 0
           campaign_status=0
@@ -218,23 +244,27 @@ jobs:
             COGS_STAGE2_APPROVAL_ARTIFACT_ID="$APPROVAL_ARTIFACT_ID" \
             COGS_STAGE2_APPROVAL_ARTIFACT_DIGEST="$APPROVAL_ARTIFACT_DIGEST" \
             COGS_STAGE2_APPROVAL_ARTIFACT_NAME="stage2-production-approval-$GITHUB_SHA-$APPROVAL_RUN_ID" \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh \
+            /var/lib/cogs/stage2-authoritative-remediation-v1/source/deploy/aws-feasibility/run-production-campaign.sh \
             || campaign_status=$?
           exit "$campaign_status"
 
       - name: Cleanup after an uncertain segment-one outcome
-        if: always() && steps.campaign_segment.outcome != 'success'
+        if: always() && steps.production_staging.outcome == 'success' && steps.campaign_segment.outcome != 'success'
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials || \
-             { ! sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json && \
-               ! sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/segment-one-zero-complete.json; }; then
+          root=/var/lib/cogs/stage2-aws-production-v2
+          sudo -n test -e "$root"
+          if sudo -n test -e "$root/aws-credentials" || \
+             { ! sudo -n test -e "$root/cleanup-complete.json" && \
+               ! sudo -n test -e "$root/segment-one-zero-complete.json"; }; then
             sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-              /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/recover-production-campaign-entry.sh
+              /var/lib/cogs/stage2-authoritative-remediation-v1/source/deploy/aws-feasibility/recover-production-campaign-entry.sh
           fi
-          if ! sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json; then sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/segment-one-zero-complete.json; fi
-          sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
+          if ! sudo -n test -e "$root/cleanup-complete.json"; then
+            sudo -n test -e "$root/segment-one-zero-complete.json"
+          fi
+          sudo -n test ! -e "$root/aws-credentials"
 
       - name: Build credential-free signed continuation package after root credential retirement
         id: continuation_package
@@ -415,22 +445,10 @@ jobs:
           /usr/bin/python3 -I -B scripts/stage2-production-approval.py eligibility "$out/approval.json"
           approval_remaining=$(( $(jq -er '.expires_unix_ns' "$out/approval.json") / 1000000000 - $(date +%s) - 60 ))
           handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - $(date +%s) - 60 ))
-          test "$approval_remaining" -ge 19800
-          test "$handoff_remaining" -ge 19800
-
-      - name: Freeze authenticated segment-two issuance authority before OIDC
-        run: |
-          set -euo pipefail
-          sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py \
-            stage-issuance-approval "$RUNNER_TEMP/approval"
-          sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py \
-            stage-issuance-continuation "$RUNNER_TEMP/continuation" "$GITHUB_SHA" "$GITHUB_RUN_ID" \
-            '${{ needs.cycles_1_3.outputs.producer_job_id }}' \
-            '${{ steps.handoff_admission.outputs.consumer_job_id }}' \
-            "$CONTINUATION_ARTIFACT_ID" "$CONTINUATION_ARTIFACT_DIGEST" \
-            "stage2-production-continuation-$GITHUB_SHA-$GITHUB_RUN_ID-1" \
-            "$APPROVAL_RUN_ID" "$APPROVAL_ARTIFACT_ID" "$APPROVAL_ARTIFACT_DIGEST" \
-            "stage2-production-approval-$GITHUB_SHA-$APPROVAL_RUN_ID"
+          minimum_role_duration=18000
+          credential_reserve=960
+          test "$approval_remaining" -ge "$(( minimum_role_duration + credential_reserve ))"
+          test "$handoff_remaining" -ge "$(( minimum_role_duration + credential_reserve ))"
 
       - name: Acquire and stage exact implementation H before credentials
         run: |
@@ -443,6 +461,32 @@ jobs:
           test "$(git -C "$destination" rev-parse HEAD)" = "$h"
           sudo -n /usr/bin/python3 -I -B "$destination/scripts/prepare-stage2-fixed-source.py" >/dev/null
 
+      - name: Freeze exact reviewed production remediation over H
+        run: |
+          set -euo pipefail
+          root=/var/lib/cogs/stage2-authoritative-remediation-v1; staging="$root.staging"
+          sudo -n test ! -e "$root"; sudo -n test ! -e "$staging"; sudo -n mkdir -m 0700 "$staging"; sudo -n cp -a /var/lib/cogs/stage2-completion-v1/source "$staging/source"
+          while read -r digest mode path; do test "$(sha256sum "$path" | cut -d' ' -f1)" = "$digest"; sudo -n install -o root -g root -m "$mode" "$path" "$staging/source/$path"; test "$(sudo -n sha256sum "$staging/source/$path" | cut -d' ' -f1)" = "$digest"; done <<'EOF'
+          3d3a099c50fe6bb74768a883e1f17783cba0a91241f435f5502a494525db342f 0444 deploy/aws-feasibility/completion_campaign_aws_adapter.py
+          4083681597a45cf7f058e2df48f253b050c8bb58ed4431776bc294cea0021c97 0444 deploy/aws-feasibility/completion_campaign_aws_provider.py
+          1ace26205de4497a48661c1f868a05fa0dda8d202b4bc53f2c8d59bf0300a69b 0555 deploy/aws-feasibility/recover-production-campaign-entry.sh
+          8e59012a59916461126910b25c80ca40bcd3afcce2cf13195f1d64d5ef3fb607 0555 deploy/aws-feasibility/recover-production-campaign.sh
+          69cf0bee4e6b442514bd2b53bad1decaa473c963789c653d53b73edb1f2a7eee 0555 deploy/aws-feasibility/run-production-campaign.sh
+          0848f28fec212f714bdf92e637d4ceca95d402632504e8539535d7f23c412598 0555 deploy/aws-feasibility/run-production-effect.sh
+          83b24dbc1a3703307d8dea5a65acac3b1a98a376aad883652c3ec482c4732cee 0555 deploy/aws-feasibility/run-production-inventory.sh
+          4cffc989e1813eab098bf807f4c1df880a7108e178713c1dec4e8db989380337 0555 deploy/aws-feasibility/run-production-remote.sh
+          bc783a90ada95b777773cf2897b196d966fb26aefcf500937cd555c5980ba83b 0444 scripts/stage2-production-approval.py
+          1e96c5942c53f64617325e6015d87db0389a743bdc59f7a97d349f590731a760 0444 scripts/stage2-stage-production-approval.py
+          EOF
+          sudo -n find "$staging" -type f -exec chmod a-w {} +; sudo -n find "$staging" -type d -exec chmod 0555 {} +; sudo -n mv "$staging" "$root"; sudo -n sync -f /var/lib/cogs
+
+      - name: Freeze authenticated segment-two issuance authority before OIDC
+        run: |
+          set -euo pipefail
+          helper=/var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py
+          sudo -n /usr/bin/python3 -I -B "$helper" stage-issuance-approval "$RUNNER_TEMP/approval"
+          sudo -n /usr/bin/python3 -I -B "$helper" stage-issuance-continuation "$RUNNER_TEMP/continuation" "$GITHUB_SHA" "$GITHUB_RUN_ID" '${{ needs.cycles_1_3.outputs.producer_job_id }}' '${{ steps.handoff_admission.outputs.consumer_job_id }}' "$CONTINUATION_ARTIFACT_ID" "$CONTINUATION_ARTIFACT_DIGEST" "stage2-production-continuation-$GITHUB_SHA-$GITHUB_RUN_ID-1" "$APPROVAL_RUN_ID" "$APPROVAL_ARTIFACT_ID" "$APPROVAL_ARTIFACT_DIGEST" "stage2-production-approval-$GITHUB_SHA-$APPROVAL_RUN_ID"
+
       - name: Acquire fresh bounded segment-two executor credentials
         timeout-minutes: 10
         env:
@@ -450,12 +494,14 @@ jobs:
         run: |
           set -euo pipefail
           now_s=$(date +%s)
-          approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 900 ))
-          handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 900 ))
+          approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 960 ))
+          handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 960 ))
           remaining="$approval_remaining"; if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
           cap=19800; minimum=18000; duration="$cap"
-          test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+          if (( remaining < duration )); then duration="$remaining"; fi
+          test "$duration" -ge "$minimum"; test "$duration" -le "$cap"; test "$duration" -le "$remaining"
+          sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-production-approval.py \
             assume-github-role executor "$ROLE_ARN" "cogs-stage2-campaign-s2-$GITHUB_RUN_ID" \
             "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json \
             /var/lib/cogs/stage2-aws-issuance-v1/aws-stage2-production-continuation-v1.json
@@ -478,12 +524,14 @@ jobs:
         run: |
           set -euo pipefail
           now_s=$(date +%s)
-          approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 900 ))
-          handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 900 ))
+          approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 960 ))
+          handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 960 ))
           remaining="$approval_remaining"; if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
           cap=19800; minimum=18000; duration="$cap"
-          test "$duration" -ge "$minimum"; test "$duration" -eq "$cap"; test "$duration" -le "$remaining"
-          /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-production-approval.py \
+          if (( remaining < duration )); then duration="$remaining"; fi
+          test "$duration" -ge "$minimum"; test "$duration" -le "$cap"; test "$duration" -le "$remaining"
+          sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV \
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-production-approval.py \
             assume-github-role observer "$ROLE_ARN" "cogs-stage2-observer-s2-$GITHUB_RUN_ID" \
             "$duration" "$minimum" /var/lib/cogs/stage2-aws-issuance-v1/approval.json \
             /var/lib/cogs/stage2-aws-issuance-v1/aws-stage2-production-continuation-v1.json
@@ -497,8 +545,8 @@ jobs:
           printf '[profile nebula]\nregion = us-east-1\noutput = json\n[profile observer]\nregion = us-east-1\noutput = json\n' >"$RUNNER_TEMP/aws-config"
           printf '[observer]\naws_access_key_id = %s\naws_secret_access_key = %s\naws_session_token = %s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >>"$RUNNER_TEMP/aws-credentials"
           printf '%s\n' "$BUDGET_ALERT_EMAIL" >"$RUNNER_TEMP/budget-email"
-          sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
-          sudo -n /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py stage-continuation \
+          sudo -n /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
+          sudo -n /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py stage-continuation \
             "$RUNNER_TEMP/continuation" "$GITHUB_SHA" "$GITHUB_RUN_ID" \
             '${{ needs.cycles_1_3.outputs.producer_job_id }}' \
             '${{ steps.handoff_admission.outputs.consumer_job_id }}' \
@@ -513,9 +561,9 @@ jobs:
         run: |
           set -euo pipefail
           if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials; then
-            sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/recover-production-campaign-entry.sh
+            sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC /var/lib/cogs/stage2-authoritative-remediation-v1/source/deploy/aws-feasibility/recover-production-campaign-entry.sh
           elif sudo -n test -e /var/lib/cogs/stage2-aws-production-v2.staging; then
-            sudo -n env COGS_STAGE2_STAGING_RECOVERY_ONLY=1 /usr/bin/python3 -I -B scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
+            sudo -n env COGS_STAGE2_STAGING_RECOVERY_ONLY=1 /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py "$RUNNER_TEMP/approval" "$RUNNER_TEMP/budget-email" "$RUNNER_TEMP/aws-config" "$RUNNER_TEMP/aws-credentials"
           fi
           sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
 
@@ -536,14 +584,21 @@ jobs:
           start_file="$RUNNER_TEMP/stage2-job-start-epoch"
           test "$(stat -c '%a:%h' "$start_file")" = 600:1
           job_start=$(cat "$start_file"); [[ "$job_start" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX" =~ ^[1-9][0-9]*$ ]]
+          [[ "$COGS_STAGE2_OBSERVER_EXPIRATION_UNIX" =~ ^[1-9][0-9]*$ ]]
           now_s=$(date +%s)
           job_deadline=$(( job_start + (330 - 31) * 60 ))
+          credential_deadline=$(( COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX - 1860 ))
+          if (( COGS_STAGE2_OBSERVER_EXPIRATION_UNIX - 1860 < credential_deadline )); then
+            credential_deadline=$(( COGS_STAGE2_OBSERVER_EXPIRATION_UNIX - 1860 ))
+          fi
+          if (( credential_deadline < job_deadline )); then job_deadline="$credential_deadline"; fi
           remaining=$(( job_deadline - now_s ))
           test "$remaining" -gt 0
           campaign_status=0
           /usr/bin/timeout --signal=TERM --kill-after=10s "$remaining"s sudo -n \
             env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-            /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/run-production-campaign.sh \
+            /var/lib/cogs/stage2-authoritative-remediation-v1/source/deploy/aws-feasibility/run-production-campaign.sh \
             || campaign_status=$?
           exit "$campaign_status"
 
@@ -555,7 +610,7 @@ jobs:
           if sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials || \
              ! sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json; then
             sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin TZ=UTC \
-              /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/recover-production-campaign-entry.sh
+              /var/lib/cogs/stage2-authoritative-remediation-v1/source/deploy/aws-feasibility/recover-production-campaign-entry.sh
           fi
           sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json
           sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
@@ -566,8 +621,8 @@ jobs:
           set -euo pipefail
           sudo -n test -e /var/lib/cogs/stage2-aws-production-v2/cleanup-complete.json; sudo -n test ! -e /var/lib/cogs/stage2-aws-production-v2/aws-credentials
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
-            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py snapshot-evidence first
-          destination=/var/lib/cogs/stage2-aws-evidence-v2/first
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py snapshot-evidence first
+          destination=/var/lib/cogs-stage2-aws-evidence-v2/first
           test "$(find "$destination" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = 'aws-stage2-completion-evidence-v4.json aws-stage2-completion-publication-v2.json aws-stage2-completion-report-v4.md aws-stage2-production-continuation-admission-v1.json aws-stage2-production-continuation-v1.bundle.json aws-stage2-production-continuation-v1.json '
           test "$(stat -c '%U:%G:%a' "$destination" "$destination"/* | sort -u | tr '\n' ' ')" = 'root:root:444 root:root:555 '
           npx tsx scripts/validate-aws-stage2-completion-evidence-v4.ts --package "$destination"
@@ -578,7 +633,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stage2-production-evidence-${{ github.sha }}-${{ github.run_id }}
-          path: /var/lib/cogs/stage2-aws-evidence-v2/first
+          path: /var/lib/cogs-stage2-aws-evidence-v2/first
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -604,15 +659,15 @@ jobs:
           jq -e --arg d "$final_digest" --argjson r "$GITHUB_RUN_ID" --arg n "stage2-production-evidence-$GITHUB_SHA-$GITHUB_RUN_ID" '.expired == false and .digest == $d and .workflow_run.id == $r and .name == $n and .size_in_bytes > 0' "$RUNNER_TEMP/evidence-artifact.json" >/dev/null
           export EVIDENCE_ARTIFACT_DIGEST="$final_digest"
           sudo -n env -i HOME=/nonexistent LANG=C LC_ALL=C PATH=/usr/bin:/bin \
-            /usr/bin/python3 -I -B /var/lib/cogs/stage2-completion-v1/source/scripts/stage2-stage-production-approval.py snapshot-evidence readback "$RUNNER_TEMP/evidence-readback"
-          first=/var/lib/cogs/stage2-aws-evidence-v2/first
-          readback=/var/lib/cogs/stage2-aws-evidence-v2/readback
+            /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-stage-production-approval.py snapshot-evidence readback "$RUNNER_TEMP/evidence-readback"
+          first=/var/lib/cogs-stage2-aws-evidence-v2/first
+          readback=/var/lib/cogs-stage2-aws-evidence-v2/readback
           diff -r --no-dereference "$first" "$readback"
           npx tsx scripts/validate-aws-stage2-completion-evidence-v4.ts --package "$readback"
           install -d -m 0700 "$RUNNER_TEMP/evidence-receipt"
           python3 -I -B - <<'PY' >"$RUNNER_TEMP/evidence-receipt/receipt.json"
           import hashlib,json,os,pathlib
-          root=pathlib.Path("/var/lib/cogs/stage2-aws-evidence-v2/readback"); members=[]
+          root=pathlib.Path("/var/lib/cogs-stage2-aws-evidence-v2/readback"); members=[]
           for path in sorted(root.iterdir()):
               if not path.is_file() or path.is_symlink(): raise SystemExit(2)
               raw=path.read_bytes(); members.append({"name":path.name,"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()})

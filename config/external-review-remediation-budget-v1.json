@@ -939,5 +939,45 @@
         "test/stage4-schema-registry.test.ts"
       ]
     }
-  ]
+  ],
+  "post_diagnostic_remediation": {
+    "base_revision": "610c28587596df50531ada8986a66024ca1ca23f",
+    "gross_lines": 500,
+    "gross_bytes": 1000000,
+    "readiness_regenerations": 1,
+    "paths": [
+      ".github/workflows/stage2-production-campaign.yml",
+      "config/external-review-remediation-budget-v1.json",
+      "deploy/aws-feasibility/completion_campaign_aws_adapter.py",
+      "deploy/aws-feasibility/completion_campaign_aws_provider.py",
+      "deploy/aws-feasibility/recover-production-campaign-entry.sh",
+      "deploy/aws-feasibility/recover-production-campaign.sh",
+      "deploy/aws-feasibility/run-production-campaign.sh",
+      "deploy/aws-feasibility/run-production-effect.sh",
+      "deploy/aws-feasibility/run-production-inventory.sh",
+      "deploy/aws-feasibility/run-production-remote.sh",
+      "docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md",
+      "docs/security-evidence/plans/stage2-prebuilt-completion-prerequisite-map.md",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "docs/test-reports/stage-4-offline-readiness.md",
+      "scripts/check-stage2-retained-lines.py",
+      "scripts/stage2-production-approval.py",
+      "scripts/stage2-stage-production-approval.py",
+      "scripts/stage4-offline-readiness.ts",
+      "scripts/validate-aws-stage2-completion-evidence-v4.ts",
+      "test/aws-stage2-completion-campaign-aws-adapter.test.ts",
+      "test/aws-stage2-completion-campaign-aws-provider.py",
+      "test/aws-stage2-completion-evidence-v4.test.ts",
+      "test/fixtures/stage2-completion/production-v4-test-only.json",
+      "test/fixtures/stage2-completion/production-v4-test-only.md",
+      "test/openbao-workload-identity.test.ts",
+      "test/stage2-prebuilt-rehearsal-grant.py",
+      "test/stage2-production-approval.py",
+      "test/stage2-production-workflows.test.ts",
+      "test/stage2-remediation-budget.test.ts",
+      "test/stage4-offline-readiness.test.ts"
+    ]
+  }
 }

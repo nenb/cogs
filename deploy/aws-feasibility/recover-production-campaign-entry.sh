@@ -2,7 +2,7 @@
 set -euo pipefail
 # Sole zero-argument cleanup-only crash entry; it cannot resume or mint success.
 [ "$#" -eq 0 ] || exit 64
-cd /var/lib/cogs/stage2-completion-v1/source
+cd /var/lib/cogs/stage2-authoritative-remediation-v1/source
 exec /usr/bin/env -i HOME=/root LANG=C LC_ALL=C PATH=/usr/local/bin:/usr/bin:/bin TZ=UTC \
   /usr/bin/python3 -I -B \
-  /var/lib/cogs/stage2-completion-v1/source/deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py
+  /var/lib/cogs/stage2-authoritative-remediation-v1/source/deploy/aws-feasibility/completion_campaign_aws_recovery_entry.py
