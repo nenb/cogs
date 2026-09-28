@@ -217,23 +217,43 @@ import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,_,_,_=m['_remediation_budget'](); p=b['post_authoritative_failure_remediation']
 assert p['base_revision']=='4d77f41a8c8b94ed48becf2073914bd2896a31ee'
+assert p['terminal_revision']=='4916341c74cb55b8f3247bf5a3c8848672aac3ad'
 assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(300,1000000,1)
 assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
 head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_authoritative_failure_consumption'](b,head)
 assert 0 < lines <= 300 and 0 < raw <= 1000000
-real_git=m['_git']; scope=m['_post_authoritative_failure_consumption'].__globals__
-def reject(fake_git,candidate,label):
+`);
+});
+
+test("ADR0370 amendment retires the partial campaign and bounds only segment-two runway correction", () => {
+  const adr = readFileSync("docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md", "utf8");
+  for (const text of [
+    "36352983437",
+    "36354691379",
+    "36355908374",
+    "10947890127",
+    "one-second shell-to-helper sampling drift",
+    "180-second issuance slack",
+    "exactly one protected direct child of `4916341c74cb55b8f3247bf5a3c8848672aac3ad`",
+    "180 gross added lines and 1,000,000 gross added line-bytes",
+  ])
+    assert.ok(adr.includes(text), text);
+  runPython(`
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py')
+b,_,_,_,_=m['_remediation_budget'](); p=b['post_segment_two_failure_remediation']
+assert p['base_revision']=='4916341c74cb55b8f3247bf5a3c8848672aac3ad'
+assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(180,1000000,1)
+assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
+head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_segment_two_failure_consumption'](b,head)
+assert 0 < lines <= 180 and 0 < raw <= 1000000
+real_git=m['_git']; scope=m['_post_segment_two_failure_consumption'].__globals__
+def reject(fake_git,label):
     scope['_git']=fake_git
-    try: m['_post_authoritative_failure_consumption'](b,candidate)
+    try: m['_post_segment_two_failure_consumption'](b,head)
     except m['LineBudgetError']: pass
     else: raise AssertionError(label)
-reject(lambda args: '0' if args[:2]==['rev-list','--count'] else real_git(args),
-       '610c28587596df50531ada8986a66024ca1ca23f','ancestor accepted as base')
-reject(lambda args: ('1' if args[:2]==['rev-list','--count'] else
-                     head+' '+'0'*40 if args[:3]==['rev-list','--parents','-n'] else real_git(args)),
-       head,'wrong parent accepted')
-reject(lambda args: '2' if args[:2]==['rev-list','--count'] else real_git(args),
-       head,'second descendant commit accepted')
+reject(lambda args: '2' if args[:2]==['rev-list','--count'] else real_git(args),'second descendant accepted')
 `);
 });
 

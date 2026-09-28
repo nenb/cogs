@@ -48,8 +48,12 @@ POST_DIAGNOSTIC_TERMINAL_REVISION = "4d77f41a8c8b94ed48becf2073914bd2896a31ee"
 POST_DIAGNOSTIC_GROSS_HIGH = (500, 1_000_000)
 POST_DIAGNOSTIC_READINESS_REGENERATIONS = 1
 POST_AUTHORITATIVE_FAILURE_BASE_REVISION = POST_DIAGNOSTIC_TERMINAL_REVISION
+POST_AUTHORITATIVE_FAILURE_TERMINAL_REVISION = "4916341c74cb55b8f3247bf5a3c8848672aac3ad"
 POST_AUTHORITATIVE_FAILURE_GROSS_HIGH = (300, 1_000_000)
 POST_AUTHORITATIVE_FAILURE_READINESS_REGENERATIONS = 1
+POST_SEGMENT_TWO_FAILURE_BASE_REVISION = POST_AUTHORITATIVE_FAILURE_TERMINAL_REVISION
+POST_SEGMENT_TWO_FAILURE_GROSS_HIGH = (180, 1_000_000)
+POST_SEGMENT_TWO_FAILURE_READINESS_REGENERATIONS = 1
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
@@ -449,7 +453,8 @@ def _remediation_budget():
         raise LineBudgetError() from None
     _require(set(data) == {"version", "base_revision", "global_gross_line_high", "global_gross_byte_high", "baseline",
                            "source_limits", "product_test_correction", "post_diagnostic_remediation",
-                           "post_authoritative_failure_remediation", "owners"})
+                           "post_authoritative_failure_remediation", "post_segment_two_failure_remediation",
+                           "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
@@ -517,13 +522,22 @@ def _remediation_budget():
         and len(post["paths"]) == len(set(post["paths"])))
     followup = data["post_authoritative_failure_remediation"]
     _require(isinstance(followup, dict) and set(followup) == {
-        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        "base_revision", "terminal_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
         and followup["base_revision"] == POST_AUTHORITATIVE_FAILURE_BASE_REVISION
+        and followup["terminal_revision"] == POST_AUTHORITATIVE_FAILURE_TERMINAL_REVISION
         and (followup["gross_lines"], followup["gross_bytes"]) == POST_AUTHORITATIVE_FAILURE_GROSS_HIGH
         and followup["readiness_regenerations"] == POST_AUTHORITATIVE_FAILURE_READINESS_REGENERATIONS
         and isinstance(followup["paths"], list) and followup["paths"] == sorted(followup["paths"])
         and len(followup["paths"]) == len(set(followup["paths"])))
-    _require(set(post["paths"]) <= set(paths) and set(followup["paths"]) <= set(paths))
+    segment_two = data["post_segment_two_failure_remediation"]
+    _require(isinstance(segment_two, dict) and set(segment_two) == {
+        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        and segment_two["base_revision"] == POST_SEGMENT_TWO_FAILURE_BASE_REVISION
+        and (segment_two["gross_lines"], segment_two["gross_bytes"]) == POST_SEGMENT_TWO_FAILURE_GROSS_HIGH
+        and segment_two["readiness_regenerations"] == POST_SEGMENT_TWO_FAILURE_READINESS_REGENERATIONS
+        and isinstance(segment_two["paths"], list) and segment_two["paths"] == sorted(segment_two["paths"])
+        and len(segment_two["paths"]) == len(set(segment_two["paths"])))
+    _require(all(set(plan["paths"]) <= set(paths) for plan in (post, followup, segment_two)))
     return data, owners, paths, new_file_highs, forecasts
 
 
@@ -647,10 +661,17 @@ def _post_diagnostic_consumption(budget, _head):
                                       POST_DIAGNOSTIC_GROSS_HIGH, False)
 
 
-def _post_authoritative_failure_consumption(budget, head):
+def _post_authoritative_failure_consumption(budget, _head):
     plan = budget["post_authoritative_failure_remediation"]
     return _one_successor_consumption(plan, POST_AUTHORITATIVE_FAILURE_BASE_REVISION,
-                                      head, POST_AUTHORITATIVE_FAILURE_GROSS_HIGH, True)
+                                      POST_AUTHORITATIVE_FAILURE_TERMINAL_REVISION,
+                                      POST_AUTHORITATIVE_FAILURE_GROSS_HIGH, False)
+
+
+def _post_segment_two_failure_consumption(budget, head):
+    plan = budget["post_segment_two_failure_remediation"]
+    return _one_successor_consumption(plan, POST_SEGMENT_TWO_FAILURE_BASE_REVISION,
+                                      head, POST_SEGMENT_TWO_FAILURE_GROSS_HIGH, True)
 
 
 def _product_test_consumption_segments(budget):
@@ -816,6 +837,8 @@ def measure():
         remediation_budget, head)
     post_failure_lines, post_failure_bytes = _post_authoritative_failure_consumption(
         remediation_budget, head)
+    segment_two_lines, segment_two_bytes = _post_segment_two_failure_consumption(
+        remediation_budget, head)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -897,6 +920,13 @@ def measure():
             "lines": POST_AUTHORITATIVE_FAILURE_GROSS_HIGH[0],
             "bytes": POST_AUTHORITATIVE_FAILURE_GROSS_HIGH[1]},
         "post_authoritative_failure_readiness_regenerations": POST_AUTHORITATIVE_FAILURE_READINESS_REGENERATIONS,
+        "post_segment_two_failure_base_revision": POST_SEGMENT_TWO_FAILURE_BASE_REVISION,
+        "post_segment_two_failure_gross_added_lines": segment_two_lines,
+        "post_segment_two_failure_gross_added_line_bytes": segment_two_bytes,
+        "post_segment_two_failure_gross_high": {
+            "lines": POST_SEGMENT_TWO_FAILURE_GROSS_HIGH[0],
+            "bytes": POST_SEGMENT_TWO_FAILURE_GROSS_HIGH[1]},
+        "post_segment_two_failure_readiness_regenerations": POST_SEGMENT_TWO_FAILURE_READINESS_REGENERATIONS,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,
