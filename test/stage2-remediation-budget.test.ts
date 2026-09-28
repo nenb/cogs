@@ -243,14 +243,39 @@ import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,_,_,_=m['_remediation_budget'](); p=b['post_segment_two_failure_remediation']
 assert p['base_revision']=='4916341c74cb55b8f3247bf5a3c8848672aac3ad'
+assert p['terminal_revision']=='24dbbab12323ed8e0f9a489411b4a6109ccfecaf'
 assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(180,1000000,1)
 assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
 head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_segment_two_failure_consumption'](b,head)
 assert 0 < lines <= 180 and 0 < raw <= 1000000
-real_git=m['_git']; scope=m['_post_segment_two_failure_consumption'].__globals__
+`);
+});
+
+test("ADR0370 amendment retires the elapsed admission window without production changes", () => {
+  const adr = readFileSync("docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md", "utf8");
+  for (const text of [
+    "36380349043",
+    "36382995189",
+    "36386441695",
+    "fewer than 32,400 seconds remained",
+    "failed before OIDC, STS, OpenTofu, SSM, or any AWS mutation",
+    "exactly one governance-only protected direct child of `24dbbab12323ed8e0f9a489411b4a6109ccfecaf`",
+    "150 gross added lines and 1,000,000 gross added line-bytes",
+  ])
+    assert.ok(adr.includes(text), text);
+  runPython(`
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py')
+b,_,_,_,_=m['_remediation_budget'](); p=b['post_admission_window_remediation']
+assert p['base_revision']=='24dbbab12323ed8e0f9a489411b4a6109ccfecaf'
+assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(150,1000000,1)
+assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
+head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_admission_window_consumption'](b,head)
+assert 0 < lines <= 150 and 0 < raw <= 1000000
+real_git=m['_git']; scope=m['_post_admission_window_consumption'].__globals__
 def reject(fake_git,label):
     scope['_git']=fake_git
-    try: m['_post_segment_two_failure_consumption'](b,head)
+    try: m['_post_admission_window_consumption'](b,head)
     except m['LineBudgetError']: pass
     else: raise AssertionError(label)
 reject(lambda args: '2' if args[:2]==['rev-list','--count'] else real_git(args),'second descendant accepted')
