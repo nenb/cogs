@@ -580,12 +580,12 @@ def main():
             + base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
             + ".signature"
         )
-        expiration = (
-            issuer.datetime.fromtimestamp(fixed_now + 18_000, issuer.timezone.utc)
-            .isoformat()
-            .replace("+00:00", "Z")
-        )
-        def xml_for(role=executor_role):
+        def xml_for(role=executor_role, duration=18_000, issued_at=fixed_now):
+            expiration = (
+                issuer.datetime.fromtimestamp(issued_at + duration, issuer.timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
             return (
                 '<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleWithWebIdentityResult><Credentials>'
                 f"<AccessKeyId>ASIA{'A' * 16}</AccessKeyId><SecretAccessKey>{'s' * 40}</SecretAccessKey><SessionToken>{'t' * 128}</SessionToken><Expiration>{expiration}</Expiration>"
@@ -687,8 +687,28 @@ def main():
             and f"COGS_STAGE2_EXECUTOR_EXPIRATION_UNIX={fixed_now + 18_000}\n"
             in github_environment.read_text()
         )
-        github_environment.write_bytes(b"")
-        requests.clear()
+        boundary_value = dict(role_value)
+        boundary_value["expires_unix_ns"] = (fixed_now + 20_101) * 1_000_000_000
+        boundary_value["not_before_unix_ns"] = (fixed_now - 15_899) * 1_000_000_000
+        boundary_value["batch_commitment"] = production.approval_batch_commitment(boundary_value)
+        boundary_raw = canonical(boundary_value)
+        boundary_authentication = {**role_authentication, "approval_sha256": hashlib.sha256(boundary_raw).hexdigest()}
+        authority_paths[str(role_approval)] = boundary_raw
+        authority_paths[str(role_approval.parent / "approval-authentication.json")] = canonical(boundary_authentication)
+        github_environment.write_bytes(b""); requests.clear()
+        response_xml[0] = xml_for(duration=18_961, issued_at=fixed_now + 2)
+        with authority_stack(times=(fixed_now + 1, fixed_now + 1, fixed_now + 2)):
+            issuer.assume_github_role("executor", role_arn, session, "18961", "18000", role_approval)
+        assert len(requests) == 2
+        github_environment.write_bytes(b""); requests.clear()
+        with authority_stack(times=(fixed_now + 1,)):
+            rejected(lambda: issuer.assume_github_role(
+                "executor", role_arn, session, "19141", "18000", role_approval))
+        assert not requests
+        authority_paths[str(role_approval)] = role_approval.read_bytes()
+        authority_paths[str(role_approval.parent / "approval-authentication.json")] = canonical(role_authentication)
+        response_xml[0] = xml_for()
+        github_environment.write_bytes(b""); requests.clear()
         with authority_stack(times=(fixed_now, fixed_now, fixed_now + 120)):
             rejected(
                 lambda: issuer.assume_github_role(

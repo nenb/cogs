@@ -449,8 +449,9 @@ jobs:
           handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - $(date +%s) - 60 ))
           minimum_role_duration=18000
           credential_reserve=960
-          test "$approval_remaining" -ge "$(( minimum_role_duration + credential_reserve ))"
-          test "$handoff_remaining" -ge "$(( minimum_role_duration + credential_reserve ))"
+          issuance_slack=180
+          test "$approval_remaining" -ge "$(( minimum_role_duration + credential_reserve + issuance_slack ))"
+          test "$handoff_remaining" -ge "$(( minimum_role_duration + credential_reserve + issuance_slack ))"
 
       - name: Acquire and stage exact implementation H before credentials
         run: |
@@ -501,9 +502,9 @@ jobs:
           approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 960 ))
           handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 960 ))
           remaining="$approval_remaining"; if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
-          cap=19800; minimum=18000; duration="$cap"
-          if (( remaining < duration )); then duration="$remaining"; fi
-          test "$duration" -ge "$minimum"; test "$duration" -le "$cap"; test "$duration" -le "$remaining"
+          cap=19800; minimum=18000; issuance_slack=180; safe_remaining=$(( remaining - issuance_slack )); duration="$cap"
+          if (( safe_remaining < duration )); then duration="$safe_remaining"; fi
+          test "$duration" -ge "$minimum"; test "$duration" -le "$cap"; test "$duration" -le "$safe_remaining"
           sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV \
             /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-production-approval.py \
             assume-github-role executor "$ROLE_ARN" "cogs-stage2-campaign-s2-$GITHUB_RUN_ID" \
@@ -531,9 +532,9 @@ jobs:
           approval_remaining=$(( $(jq -er '.expires_unix_ns' "$RUNNER_TEMP/approval/approval.json") / 1000000000 - now_s - 960 ))
           handoff_remaining=$(( $(jq -er '.cleanup_deadline_unix_ns' "$RUNNER_TEMP/continuation/aws-stage2-production-continuation-v1.json") / 1000000000 - now_s - 960 ))
           remaining="$approval_remaining"; if (( handoff_remaining < remaining )); then remaining="$handoff_remaining"; fi
-          cap=19800; minimum=18000; duration="$cap"
-          if (( remaining < duration )); then duration="$remaining"; fi
-          test "$duration" -ge "$minimum"; test "$duration" -le "$cap"; test "$duration" -le "$remaining"
+          cap=19800; minimum=18000; issuance_slack=180; safe_remaining=$(( remaining - issuance_slack )); duration="$cap"
+          if (( safe_remaining < duration )); then duration="$safe_remaining"; fi
+          test "$duration" -ge "$minimum"; test "$duration" -le "$cap"; test "$duration" -le "$safe_remaining"
           sudo -n --preserve-env=ACTIONS_ID_TOKEN_REQUEST_TOKEN,ACTIONS_ID_TOKEN_REQUEST_URL,GITHUB_ENV \
             /usr/bin/python3 -I -B /var/lib/cogs/stage2-authoritative-remediation-v1/source/scripts/stage2-production-approval.py \
             assume-github-role observer "$ROLE_ARN" "cogs-stage2-observer-s2-$GITHUB_RUN_ID" \

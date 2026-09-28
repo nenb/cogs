@@ -480,7 +480,11 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
   assert.match(campaign, /test "\$remaining" -ge 32400/u);
   assert.match(campaign, /minimum_role_duration=18000/u);
   assert.match(campaign, /credential_reserve=960/u);
-  assert.match(campaign, /test "\$handoff_remaining" -ge "\$\(\( minimum_role_duration \+ credential_reserve \)\)"/u);
+  assert.match(campaign, /issuance_slack=180/u);
+  assert.match(
+    campaign,
+    /test "\$handoff_remaining" -ge "\$\(\( minimum_role_duration \+ credential_reserve \+ issuance_slack \)\)"/u,
+  );
   assert.doesNotMatch(campaign, /steps\.approval_verification\.outputs\.role_duration_seconds/u);
 
   const roleAssumptions = [
@@ -501,18 +505,34 @@ test("future campaign is exactly two sequential run-bound jobs with fresh creden
     assert.match(action, /duration="\$cap"/u, name);
     assert.match(action, /test "\$duration" -ge "\$minimum"/u, name);
     if (boundedByRemaining) {
-      assert.match(action, /if \(\( remaining < duration \)\); then duration="\$remaining"; fi/u, name);
+      assert.match(action, /issuance_slack=180; safe_remaining=\$\(\( remaining - issuance_slack \)\)/u, name);
+      assert.match(action, /if \(\( safe_remaining < duration \)\); then duration="\$safe_remaining"; fi/u, name);
       assert.equal((action.match(/now_s - 960/gu) ?? []).length, 2, name);
       assert.match(action, /test "\$duration" -le "\$cap"/u, name);
+      assert.match(action, /test "\$duration" -le "\$safe_remaining"/u, name);
       assert.doesNotMatch(action, /test "\$duration" -eq "\$cap"/u, name);
     } else {
       assert.match(action, /expiry_s - \$\(date \+%s\) - 960/u, name);
       assert.match(action, /test "\$duration" -eq "\$cap"/u, name);
+      assert.match(action, /test "\$duration" -le "\$remaining"/u, name);
     }
-    assert.match(action, /test "\$duration" -le "\$remaining"/u, name);
     assert.match(action, /assume-github-role (?:executor|observer) "\$ROLE_ARN"/u, name);
     assert.match(action, /\/var\/lib\/cogs\/stage2-aws-issuance-v1\/approval\.json/u, name);
   }
+
+  const executorAt = campaign.indexOf("      - name: Acquire fresh bounded segment-two executor credentials\n");
+  const executorAction = campaign.slice(executorAt, campaign.indexOf("\n      - name: ", executorAt + 10));
+  const arithmetic = executorAction
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^(?:remaining=|cap=|if \(\( safe_remaining|test "\$duration")/u.test(line))
+    .join("\n");
+  const boundaryScript = `set -euo pipefail; approval_remaining=19141; handoff_remaining=$approval_remaining; ${arithmetic}; printf '%s\\n' "$duration"`;
+  const boundary = spawnSync("bash", ["-c", boundaryScript], { encoding: "utf8" });
+  assert.equal(boundary.status, 0, boundary.stderr);
+  assert.equal(boundary.stdout, "18961\n");
+  assert.ok(19_141 > 19_141 - 1);
+  assert.ok(Number(boundary.stdout) <= 19_141 - 1 && Number(boundary.stdout) >= 18_000);
 
   const firstJob = campaign.slice(campaign.indexOf("  cycles_1_3:"), campaign.indexOf("  cycles_4_7:"));
   const secondJob = campaign.slice(campaign.indexOf("  cycles_4_7:"));
