@@ -83,12 +83,17 @@ def pages(sequence):
     result = []
     for category in production.INVENTORY_CATEGORIES:
         public = category in {"network_interfaces", "eni_public_associations", "elastic_ips"}
+        resources = ([{"category": category,
+                       "identity_commitment": d(f"deleted-instance-{sequence}"),
+                       "disposition": "deleted", "public_address_commitment": None}]
+                     if category == "ec2_instances" else [])
         value = {"category": category, "service": "fake", "operation": "observe",
                  "query_scope": ("account-region-wide-public-address" if public else "campaign-graph"),
                  "ordinal": 1, "request_token_commitment": None,
                  "next_token_commitment": None, "response_commitment": d(f"response-{category}"),
-                 "resources": []}
-        constructor = dict(value); constructor["resources"] = ()
+                 "resources": resources}
+        constructor = dict(value); constructor["resources"] = tuple(
+            production.InventoryResource(**resource) for resource in resources)
         result.append(production.InventoryPage(
             **constructor, page_commitment=production._commit(
                 b"cogs.stage2-inventory-page/v2", value)))

@@ -260,6 +260,14 @@ test("test-only canonical v4 projection validates and renderer requires its vali
   assert.equal(validated.evidence.result, "pass");
   assert.equal(validated.evidence.cycles.length, 7);
   assert.equal(validated.evidence.inventories.length, 8);
+  const resources = validated.evidence.inventories.flatMap((inventory) =>
+    inventory.pages.flatMap((page) => page.resources),
+  );
+  assert.equal(resources.length, 8);
+  assert.equal(
+    resources.every((resource) => resource.disposition === "deleted" && resource.public_address_commitment === null),
+    true,
+  );
   assert.equal(validated.evidence.cycles[0]?.workloads?.length, 21);
   assert.equal(
     validated.evidence.cycles.slice(1).every((cycle) => cycle.workloads === undefined),
