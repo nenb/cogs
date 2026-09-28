@@ -60,8 +60,12 @@ POST_ADMISSION_WINDOW_TERMINAL_REVISION = "ee3dc57fa62a5af393a06702d1d4a117e2202
 POST_ADMISSION_WINDOW_GROSS_HIGH = (150, 1_000_000)
 POST_ADMISSION_WINDOW_READINESS_REGENERATIONS = 1
 POST_EVIDENCE_SCHEMA_FAILURE_BASE_REVISION = POST_ADMISSION_WINDOW_TERMINAL_REVISION
+POST_EVIDENCE_SCHEMA_FAILURE_TERMINAL_REVISION = "43f3f5738b2d944df2d6077e69b882db1e2d81d0"
 POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH = (250, 1_000_000)
 POST_EVIDENCE_SCHEMA_FAILURE_READINESS_REGENERATIONS = 1
+POST_CAMPAIGN_ADMISSION_MISS_BASE_REVISION = POST_EVIDENCE_SCHEMA_FAILURE_TERMINAL_REVISION
+POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH = (160, 1_000_000)
+POST_CAMPAIGN_ADMISSION_MISS_READINESS_REGENERATIONS = 1
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
@@ -462,7 +466,8 @@ def _remediation_budget():
     _require(set(data) == {"version", "base_revision", "global_gross_line_high", "global_gross_byte_high", "baseline",
                            "source_limits", "product_test_correction", "post_diagnostic_remediation",
                            "post_authoritative_failure_remediation", "post_segment_two_failure_remediation",
-                           "post_admission_window_remediation", "post_evidence_schema_failure_remediation", "owners"})
+                           "post_admission_window_remediation", "post_evidence_schema_failure_remediation",
+                           "post_campaign_admission_miss_remediation", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
@@ -557,14 +562,24 @@ def _remediation_budget():
         and len(admission["paths"]) == len(set(admission["paths"])))
     evidence = data["post_evidence_schema_failure_remediation"]
     _require(isinstance(evidence, dict) and set(evidence) == {
-        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        "base_revision", "terminal_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
         and evidence["base_revision"] == POST_EVIDENCE_SCHEMA_FAILURE_BASE_REVISION
+        and evidence["terminal_revision"] == POST_EVIDENCE_SCHEMA_FAILURE_TERMINAL_REVISION
         and (evidence["gross_lines"], evidence["gross_bytes"]) == POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH
         and evidence["readiness_regenerations"] == POST_EVIDENCE_SCHEMA_FAILURE_READINESS_REGENERATIONS
         and isinstance(evidence["paths"], list) and evidence["paths"] == sorted(evidence["paths"])
         and len(evidence["paths"]) == len(set(evidence["paths"])))
+    campaign_miss = data["post_campaign_admission_miss_remediation"]
+    _require(isinstance(campaign_miss, dict) and set(campaign_miss) == {
+        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        and campaign_miss["base_revision"] == POST_CAMPAIGN_ADMISSION_MISS_BASE_REVISION
+        and (campaign_miss["gross_lines"], campaign_miss["gross_bytes"]) == POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH
+        and campaign_miss["readiness_regenerations"] == POST_CAMPAIGN_ADMISSION_MISS_READINESS_REGENERATIONS
+        and isinstance(campaign_miss["paths"], list)
+        and campaign_miss["paths"] == sorted(campaign_miss["paths"])
+        and len(campaign_miss["paths"]) == len(set(campaign_miss["paths"])))
     _require(all(set(plan["paths"]) <= set(paths)
-                 for plan in (post, followup, segment_two, admission, evidence)))
+                 for plan in (post, followup, segment_two, admission, evidence, campaign_miss)))
     return data, owners, paths, new_file_highs, forecasts
 
 
@@ -709,10 +724,17 @@ def _post_admission_window_consumption(budget, _head):
                                       POST_ADMISSION_WINDOW_GROSS_HIGH, False)
 
 
-def _post_evidence_schema_failure_consumption(budget, head):
+def _post_evidence_schema_failure_consumption(budget, _head):
     plan = budget["post_evidence_schema_failure_remediation"]
     return _one_successor_consumption(plan, POST_EVIDENCE_SCHEMA_FAILURE_BASE_REVISION,
-                                      head, POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH, True)
+                                      POST_EVIDENCE_SCHEMA_FAILURE_TERMINAL_REVISION,
+                                      POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH, False)
+
+
+def _post_campaign_admission_miss_consumption(budget, head):
+    plan = budget["post_campaign_admission_miss_remediation"]
+    return _one_successor_consumption(plan, POST_CAMPAIGN_ADMISSION_MISS_BASE_REVISION,
+                                      head, POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH, True)
 
 
 def _product_test_consumption_segments(budget):
@@ -884,6 +906,8 @@ def measure():
         remediation_budget, head)
     evidence_schema_lines, evidence_schema_bytes = _post_evidence_schema_failure_consumption(
         remediation_budget, head)
+    campaign_miss_lines, campaign_miss_bytes = _post_campaign_admission_miss_consumption(
+        remediation_budget, head)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -986,6 +1010,13 @@ def measure():
             "lines": POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH[0],
             "bytes": POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH[1]},
         "post_evidence_schema_failure_readiness_regenerations": POST_EVIDENCE_SCHEMA_FAILURE_READINESS_REGENERATIONS,
+        "post_campaign_admission_miss_base_revision": POST_CAMPAIGN_ADMISSION_MISS_BASE_REVISION,
+        "post_campaign_admission_miss_gross_added_lines": campaign_miss_lines,
+        "post_campaign_admission_miss_gross_added_line_bytes": campaign_miss_bytes,
+        "post_campaign_admission_miss_gross_high": {
+            "lines": POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH[0],
+            "bytes": POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH[1]},
+        "post_campaign_admission_miss_readiness_regenerations": POST_CAMPAIGN_ADMISSION_MISS_READINESS_REGENERATIONS,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,
