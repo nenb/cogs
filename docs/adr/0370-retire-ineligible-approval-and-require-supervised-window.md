@@ -97,3 +97,17 @@ Authorize exactly one protected direct child of `4916341c74cb55b8f3247bf5a3c8848
 Establish `post_segment_two_failure_remediation` as a separate non-refilling tranche of at most 180 gross added lines and 1,000,000 gross added line-bytes across only its literal sorted paths. It does not alter the terminal 500/500 post-diagnostic or 271/300 post-authoritative-failure consumption, grants no deletion credit, and remains subject to all older repository limits.
 
 After protected merge and exact-head CI, permit only a fresh zero baseline, one fresh first-created planning run, independent audit, one plan-bound approval, and one attempt-one campaign executing all seven cycles from ordinal 1. Canonical evidence upload and numeric-ID readback, byte equality, V4 validation, receipt readback, credential retirement, final account-wide zero, temporary IAM removal, and final independent audit remain mandatory. Stage 4 remains blocked and non-authorizing.
+
+## Amendment 4: retire the elapsed admission window
+
+- Date: 2026-09-28
+- Decider: Nick Byrne
+- Scope: terminal pre-credential generation disposition and one governance-only successor
+
+Protected successor `24dbbab12323ed8e0f9a489411b4a6109ccfecaf` passed exact-head CI. Fresh planning `36380349043` / artifact `10952935360` (`sha256:417d7e8f8ea9b46d44e9fc49ec2334978d7145378b558b3861682f7b945f1ad2`) and plan-bound approval `36382995189` / artifact `10953661290` (`sha256:ad2e2a14c653f6884a35c644aeadb2ceb0418973866b90dd72a5631537637505`) passed independent review. Campaign `36386441695`, attempt one, then failed closed at the unchanged nine-hour admission gate. By verification time fewer than 32,400 seconds remained before approval expiry. The run failed before OIDC, STS, OpenTofu, SSM, or any AWS mutation; segment two never started. Independent account-wide inventory remained byte-identical zero with SHA-256 `f6f11122417090d4edb52e756c470ce550296e8a07a7299db01704efbf8237b4`.
+
+Retire that planning, approval, and campaign generation, including every plan, batch, approval, token, and elapsed window. None may be rerun, retried, resumed, reused, stitched, or credited. Preserve exact H/G/Q and qualification `36036544983`; no H restart is required. The failure was an operational delay before the intentional admission boundary, not a defect in reviewed production behavior, so no workflow, helper, provider, graph, duration, cost, evidence, or cleanup behavior may change.
+
+Authorize exactly one governance-only protected direct child of `24dbbab12323ed8e0f9a489411b4a6109ccfecaf` to record this disposition, freeze the completed segment-two tranche, establish deletion-blind direct-child accounting, and perform one deterministic readiness regeneration. Establish `post_admission_window_remediation` as a separate non-refilling tranche of at most 150 gross added lines and 1,000,000 gross added line-bytes across only its literal sorted paths. Pre-rereview generations are terminal; the final post-format generation is the sole accepted regeneration.
+
+After protected merge and exact-head CI, require a fresh zero baseline, one fresh planning run, immediate independent audit, one fresh plan-bound approval, immediate independent audit, and one attempt-one campaign from cycle 1 while at least nine actual hours remain. Existing temporary IAM may remain until closure. All canonical publication/readback, V4 validation, receipt, retirement, cleanup, final-zero, independent-audit, and IAM-removal gates remain mandatory. Stage 4 remains separate, blocked, and non-authorizing.
