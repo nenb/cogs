@@ -1030,6 +1030,7 @@
   },
   "post_admission_window_remediation": {
     "base_revision": "24dbbab12323ed8e0f9a489411b4a6109ccfecaf",
+    "terminal_revision": "ee3dc57fa62a5af393a06702d1d4a117e2202a4f",
     "gross_lines": 150,
     "gross_bytes": 1000000,
     "readiness_regenerations": 1,
@@ -1043,6 +1044,30 @@
       "docs/test-reports/stage-4-offline-readiness.md",
       "scripts/check-stage2-retained-lines.py",
       "scripts/stage4-offline-readiness.ts",
+      "test/stage2-remediation-budget.test.ts",
+      "test/stage4-offline-readiness.test.ts"
+    ]
+  },
+  "post_evidence_schema_failure_remediation": {
+    "base_revision": "ee3dc57fa62a5af393a06702d1d4a117e2202a4f",
+    "gross_lines": 250,
+    "gross_bytes": 1000000,
+    "readiness_regenerations": 1,
+    "paths": [
+      "config/external-review-remediation-budget-v1.json",
+      "docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md",
+      "docs/security-evidence/plans/stage2-prebuilt-completion-prerequisite-map.md",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "docs/test-reports/stage-4-offline-readiness.md",
+      "schemas/aws-stage2-production-continuation-v1.json",
+      "scripts/check-stage2-retained-lines.py",
+      "scripts/stage4-offline-readiness.ts",
+      "test/aws-stage2-completion-campaign-production.py",
+      "test/aws-stage2-completion-evidence-v4.test.ts",
+      "test/fixtures/stage2-completion/production-v4-test-only.json",
+      "test/fixtures/stage2-completion/production-v4-test-only.md",
       "test/stage2-remediation-budget.test.ts",
       "test/stage4-offline-readiness.test.ts"
     ]

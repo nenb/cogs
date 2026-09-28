@@ -56,8 +56,12 @@ POST_SEGMENT_TWO_FAILURE_TERMINAL_REVISION = "24dbbab12323ed8e0f9a489411b4a6109c
 POST_SEGMENT_TWO_FAILURE_GROSS_HIGH = (180, 1_000_000)
 POST_SEGMENT_TWO_FAILURE_READINESS_REGENERATIONS = 1
 POST_ADMISSION_WINDOW_BASE_REVISION = POST_SEGMENT_TWO_FAILURE_TERMINAL_REVISION
+POST_ADMISSION_WINDOW_TERMINAL_REVISION = "ee3dc57fa62a5af393a06702d1d4a117e2202a4f"
 POST_ADMISSION_WINDOW_GROSS_HIGH = (150, 1_000_000)
 POST_ADMISSION_WINDOW_READINESS_REGENERATIONS = 1
+POST_EVIDENCE_SCHEMA_FAILURE_BASE_REVISION = POST_ADMISSION_WINDOW_TERMINAL_REVISION
+POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH = (250, 1_000_000)
+POST_EVIDENCE_SCHEMA_FAILURE_READINESS_REGENERATIONS = 1
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
@@ -458,7 +462,7 @@ def _remediation_budget():
     _require(set(data) == {"version", "base_revision", "global_gross_line_high", "global_gross_byte_high", "baseline",
                            "source_limits", "product_test_correction", "post_diagnostic_remediation",
                            "post_authoritative_failure_remediation", "post_segment_two_failure_remediation",
-                           "post_admission_window_remediation", "owners"})
+                           "post_admission_window_remediation", "post_evidence_schema_failure_remediation", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
@@ -544,13 +548,23 @@ def _remediation_budget():
         and len(segment_two["paths"]) == len(set(segment_two["paths"])))
     admission = data["post_admission_window_remediation"]
     _require(isinstance(admission, dict) and set(admission) == {
-        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        "base_revision", "terminal_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
         and admission["base_revision"] == POST_ADMISSION_WINDOW_BASE_REVISION
+        and admission["terminal_revision"] == POST_ADMISSION_WINDOW_TERMINAL_REVISION
         and (admission["gross_lines"], admission["gross_bytes"]) == POST_ADMISSION_WINDOW_GROSS_HIGH
         and admission["readiness_regenerations"] == POST_ADMISSION_WINDOW_READINESS_REGENERATIONS
         and isinstance(admission["paths"], list) and admission["paths"] == sorted(admission["paths"])
         and len(admission["paths"]) == len(set(admission["paths"])))
-    _require(all(set(plan["paths"]) <= set(paths) for plan in (post, followup, segment_two, admission)))
+    evidence = data["post_evidence_schema_failure_remediation"]
+    _require(isinstance(evidence, dict) and set(evidence) == {
+        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        and evidence["base_revision"] == POST_EVIDENCE_SCHEMA_FAILURE_BASE_REVISION
+        and (evidence["gross_lines"], evidence["gross_bytes"]) == POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH
+        and evidence["readiness_regenerations"] == POST_EVIDENCE_SCHEMA_FAILURE_READINESS_REGENERATIONS
+        and isinstance(evidence["paths"], list) and evidence["paths"] == sorted(evidence["paths"])
+        and len(evidence["paths"]) == len(set(evidence["paths"])))
+    _require(all(set(plan["paths"]) <= set(paths)
+                 for plan in (post, followup, segment_two, admission, evidence)))
     return data, owners, paths, new_file_highs, forecasts
 
 
@@ -688,10 +702,17 @@ def _post_segment_two_failure_consumption(budget, _head):
                                       POST_SEGMENT_TWO_FAILURE_GROSS_HIGH, False)
 
 
-def _post_admission_window_consumption(budget, head):
+def _post_admission_window_consumption(budget, _head):
     plan = budget["post_admission_window_remediation"]
     return _one_successor_consumption(plan, POST_ADMISSION_WINDOW_BASE_REVISION,
-                                      head, POST_ADMISSION_WINDOW_GROSS_HIGH, True)
+                                      POST_ADMISSION_WINDOW_TERMINAL_REVISION,
+                                      POST_ADMISSION_WINDOW_GROSS_HIGH, False)
+
+
+def _post_evidence_schema_failure_consumption(budget, head):
+    plan = budget["post_evidence_schema_failure_remediation"]
+    return _one_successor_consumption(plan, POST_EVIDENCE_SCHEMA_FAILURE_BASE_REVISION,
+                                      head, POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH, True)
 
 
 def _product_test_consumption_segments(budget):
@@ -861,6 +882,8 @@ def measure():
         remediation_budget, head)
     admission_lines, admission_bytes = _post_admission_window_consumption(
         remediation_budget, head)
+    evidence_schema_lines, evidence_schema_bytes = _post_evidence_schema_failure_consumption(
+        remediation_budget, head)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -956,6 +979,13 @@ def measure():
             "lines": POST_ADMISSION_WINDOW_GROSS_HIGH[0],
             "bytes": POST_ADMISSION_WINDOW_GROSS_HIGH[1]},
         "post_admission_window_readiness_regenerations": POST_ADMISSION_WINDOW_READINESS_REGENERATIONS,
+        "post_evidence_schema_failure_base_revision": POST_EVIDENCE_SCHEMA_FAILURE_BASE_REVISION,
+        "post_evidence_schema_failure_gross_added_lines": evidence_schema_lines,
+        "post_evidence_schema_failure_gross_added_line_bytes": evidence_schema_bytes,
+        "post_evidence_schema_failure_gross_high": {
+            "lines": POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH[0],
+            "bytes": POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH[1]},
+        "post_evidence_schema_failure_readiness_regenerations": POST_EVIDENCE_SCHEMA_FAILURE_READINESS_REGENERATIONS,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,

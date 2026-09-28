@@ -268,6 +268,7 @@ import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,_,_,_=m['_remediation_budget'](); p=b['post_admission_window_remediation']
 assert p['base_revision']=='24dbbab12323ed8e0f9a489411b4a6109ccfecaf'
+assert p['terminal_revision']=='ee3dc57fa62a5af393a06702d1d4a117e2202a4f'
 assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(150,1000000,1)
 assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
 head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_admission_window_consumption'](b,head)
@@ -279,6 +280,36 @@ def reject(fake_git,label):
     except m['LineBudgetError']: pass
     else: raise AssertionError(label)
 reject(lambda args: '2' if args[:2]==['rev-list','--count'] else real_git(args),'second descendant accepted')
+`);
+});
+
+test("ADR0370 amendment corrects only the production continuation nullable resource schema", () => {
+  const adr = readFileSync("docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md", "utf8");
+  for (const text of [
+    "36400549408",
+    "36402679733",
+    "36405315973",
+    "10969904875",
+    "public_address_commitment: null",
+    "five deleted `ec2_instances` rows",
+    "exactly one protected direct child",
+    "250 gross added lines and 1,000,000 gross added line-bytes",
+  ])
+    assert.ok(adr.includes(text), text);
+  runPython(`
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py')
+b,_,_,_,_=m['_remediation_budget'](); p=b['post_evidence_schema_failure_remediation']
+assert p['base_revision']=='ee3dc57fa62a5af393a06702d1d4a117e2202a4f'
+assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(250,1000000,1)
+assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
+head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_evidence_schema_failure_consumption'](b,head)
+assert 0 < lines <= 250 and 0 < raw <= 1000000
+real_git=m['_git']; scope=m['_post_evidence_schema_failure_consumption'].__globals__
+scope['_git']=lambda args: '2' if args[:2]==['rev-list','--count'] else real_git(args)
+try: m['_post_evidence_schema_failure_consumption'](b,head)
+except m['LineBudgetError']: pass
+else: raise AssertionError('second descendant accepted')
 `);
 });
 

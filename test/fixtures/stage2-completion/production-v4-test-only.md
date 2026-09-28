@@ -9,7 +9,7 @@ Status: pass-only rendering of validated, redacted completion evidence.
 - Cycles: 7 (one full, six readiness)
 - Fixed handoff boundary: after cycle 3
 - Continuation artifact digest: `sha256:8888888888888888888888888888888888888888888888888888888888888888`
-- Handoff authentication commitment: `de57fc115c4bd158e605fea18411cde196055a5ce24c412b9ff709a54c0c4c11`
+- Handoff authentication commitment: `8e1e4efa503d6a9f70c34360a68c0907748332a831832eee84b17ababc0d0f9e`
 
 ## Measurements
 
@@ -30,7 +30,7 @@ Status: pass-only rendering of validated, redacted completion evidence.
 
 - State-bound destroy attempts: 7
 - Detailed inventory observations: 8
-- Final zero commitment: `e017f7c157a26012533a6c8e62cba5ac21bc1285bab25b2efae7550cecd29c41`
+- Final zero commitment: `8b8597379e4fb44323d5f8e37fd72134f11f577b44a3387ac54cd4e132af649c`
 - Aggregate cost: 7 micro-USD
 
 ## Limitations
