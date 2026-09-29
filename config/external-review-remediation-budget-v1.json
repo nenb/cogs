@@ -782,6 +782,7 @@
         "docs/operations/stage-3-model-auth.md",
         "docs/operations/stage-4-offline-readiness.md",
         "docs/security-evidence/README.md",
+        "docs/security-evidence/pi-0.84.2-npm-audit-remediation.md",
         "docs/security-evidence/plans/stage2-prebuilt-completion-prerequisite-map.md",
         "docs/security-evidence/release-image-set-assertion-34774398155.canonical.json",
         "docs/security-evidence/release-image-set-review-34774398155.canonical.json",
@@ -822,6 +823,7 @@
         "schemas/stage4-authenticated-runtime-artifact-evidence-v4.json",
         "schemas/stage4-offline-readiness-package-v5.json",
         "scripts/check-image-pins.ts",
+        "scripts/check-npm-audit.ts",
         "scripts/check-stage2-retained-lines.py",
         "scripts/native-qualification/common.py",
         "scripts/pi-real-provider-integration.ts",
@@ -1088,6 +1090,29 @@
       "docs/test-reports/stage-4-offline-readiness.md",
       "scripts/check-stage2-retained-lines.py",
       "scripts/stage4-offline-readiness.ts",
+      "test/stage2-remediation-budget.test.ts",
+      "test/stage4-offline-readiness.test.ts"
+    ],
+    "terminal_revision": "c1bb1669365ad237b544c70872679118e811b69d"
+  },
+  "post_npm_audit_disposition_remediation": {
+    "base_revision": "c1bb1669365ad237b544c70872679118e811b69d",
+    "gross_lines": 340,
+    "gross_bytes": 1000000,
+    "readiness_regenerations": 1,
+    "paths": [
+      "config/external-review-remediation-budget-v1.json",
+      "docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md",
+      "docs/security-evidence/pi-0.84.2-npm-audit-remediation.md",
+      "docs/security-evidence/plans/stage2-prebuilt-completion-prerequisite-map.md",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "docs/test-reports/stage-4-offline-readiness.md",
+      "scripts/check-npm-audit.ts",
+      "scripts/check-stage2-retained-lines.py",
+      "scripts/stage4-offline-readiness.ts",
+      "test/ci-infrastructure-boundary.test.ts",
       "test/stage2-remediation-budget.test.ts",
       "test/stage4-offline-readiness.test.ts"
     ]
