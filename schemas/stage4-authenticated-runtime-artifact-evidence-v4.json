@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.dev/schemas/stage4-authenticated-runtime-artifact-evidence-v4.json",
   "title": "Cogs Stage 4 authenticated runtime artifact evidence v4",
-  "description": "A strict local/static artifact closure with a separately reviewed current-source worker/sandbox image set; it remains blocked on OpenBao, AWS-resolved EKS identity, Envoy publisher authentication, and campaign approval.",
+  "description": "A strict local/static artifact closure for the active dependency freeze; the separately reviewed worker/sandbox image set is historical and absent from active selection, and runtime closure remains blocked.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,7 +16,8 @@
     "static_candidate_freeze",
     "claims",
     "blockers",
-    "binding_sha256"
+    "binding_sha256",
+    "historical_stage2_containerd"
   ],
   "properties": {
     "version": {
@@ -41,33 +42,25 @@
     "containerd": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "source_commit", "artifact", "authentication", "selected_executables"],
+      "required": ["package", "delivery", "artifact_sha256", "authentication_observed", "runtime_observed", "state"],
       "properties": {
-        "version": {
-          "const": "2.2.1"
+        "package": {
+          "const": "containerd-2.2.5-1.amzn2023.0.1"
         },
-        "source_commit": {
-          "$ref": "#/$defs/gitSha"
+        "delivery": {
+          "const": "al2023-native-package"
         },
-        "artifact": {
-          "$ref": "#/$defs/containerdArtifact"
+        "artifact_sha256": {
+          "type": "null"
         },
-        "authentication": {
-          "$ref": "#/$defs/containerdAuthentication"
+        "authentication_observed": {
+          "const": false
         },
-        "selected_executables": {
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "prefixItems": [
-            {
-              "$ref": "#/$defs/archiveMember"
-            },
-            {
-              "$ref": "#/$defs/archiveMember"
-            }
-          ],
-          "items": false
+        "runtime_observed": {
+          "const": false
+        },
+        "state": {
+          "const": "target-unauthenticated-unobserved"
         }
       }
     },
@@ -309,7 +302,7 @@
           "const": "2.2.5-1.amzn2023.0.1"
         },
         "selected_containerd_override_required": {
-          "const": true
+          "const": false
         },
         "region": {
           "const": "us-east-1"
@@ -373,16 +366,16 @@
       ],
       "properties": {
         "candidate_artifact_closure_complete": {
-          "const": true
+          "const": false
         },
         "selected_runtime_artifacts_authenticated": {
-          "const": true
+          "const": false
         },
         "local_candidate_freeze_complete": {
           "const": true
         },
         "release_image_set_present": {
-          "const": true
+          "const": false
         },
         "exact_image_runtime_closure_satisfied": {
           "const": false
@@ -415,14 +408,21 @@
     },
     "blockers": {
       "type": "array",
-      "minItems": 4,
-      "maxItems": 4,
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
       "prefixItems": [
         {
-          "const": "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT"
+          "const": "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT"
+        },
+        {
+          "const": "RELEASE_IMAGE_SET_ABSENT"
         },
         {
           "const": "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED"
+        },
+        {
+          "const": "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED"
         },
         {
           "const": "ENVOY_UPSTREAM_SIGNATURE_UNAVAILABLE"
@@ -435,6 +435,53 @@
     },
     "binding_sha256": {
       "$ref": "#/$defs/sha256"
+    },
+    "historical_stage2_containerd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "source_commit",
+        "artifact",
+        "authentication",
+        "selected_executables",
+        "selected_runtime",
+        "interpretation"
+      ],
+      "properties": {
+        "version": {
+          "const": "2.2.1"
+        },
+        "source_commit": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "artifact": {
+          "$ref": "#/$defs/containerdArtifact"
+        },
+        "authentication": {
+          "$ref": "#/$defs/containerdAuthentication"
+        },
+        "selected_executables": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/archiveMember"
+            },
+            {
+              "$ref": "#/$defs/archiveMember"
+            }
+          ],
+          "items": false
+        },
+        "selected_runtime": {
+          "const": false
+        },
+        "interpretation": {
+          "const": "historical-stage2-evidence-only"
+        }
+      }
     }
   },
   "$defs": {
@@ -741,7 +788,7 @@
           "$ref": "#/$defs/sha256"
         },
         "pi_version": {
-          "const": "0.84.2"
+          "const": "0.86.0"
         },
         "pi_agent_core_sri": {
           "type": "string",
@@ -773,7 +820,7 @@
       ],
       "properties": {
         "state": {
-          "const": "reviewed-current-source-image-set"
+          "const": "reviewed-historical-source-image-set"
         },
         "assertion_sha256": {
           "const": "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332"

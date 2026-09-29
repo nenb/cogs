@@ -17,7 +17,7 @@ When classes disagree, use the least-authoritative result and preserve uncertain
 
 ## Common operating rules
 
-- Stage 2 issue #42 remains the cloud-entry blocker; closure permits only a fresh Stage 4 request. [Authority: offline readiness blockers](../stage-4-offline-readiness.md#honest-image-nic-and-runtime-blockers)
+- Stage 2 issue #42 is closed as exact historical evidence only; it grants no Stage 4 authority, and only a fresh approved Stage 4 request may authorize one attempt. [Authority: offline readiness closure record](../stage-4-offline-readiness.md#canonical-issue-42-stage-2-closure-record)
 - Historical NIC v1 remains blocked; active v2 preserves external launch-template selection with operator attestation but observes no launch-template/provider state, and the EKS image remains unresolved. [Authority: NIC source contract](../stage-4-nic-node-group-contract.md)
 - Subscription OAuth is disabled and unadvertised. Issue #13 is future post-MVP work only; worker refresh tokens are forbidden. [Authority: matrix OAuth blocker](../stage-5-api-key-release-acceptance-matrix.md#subscription-oauth-blocker)
 - Missing identity/policy/audit/ownership/storage/runtime/network/evidence fails closed without local-tool, `runc`, TCG, open-egress, or credential fallback. [Authority: DESIGN mandatory invariants](../../../DESIGN.md#44-mandatory-invariants)

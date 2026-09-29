@@ -25,7 +25,7 @@ This guide contains no OpenBao command, token, endpoint credential, or secret va
 | Local fact | Exact authority and applicability |
 |---|---|
 | OpenBao `2.6.1` at the recorded exact digest is retired after fixed HIGH Go standard-library findings; historical smoke and code are non-authorizing review material only. | [Authority: OpenBao retirement record](../../security-evidence/openbao-2.6.1-retirement.md) |
-| `OPENBAO_FIXED_RELEASE_IMAGE_ABSENT` blocks current campaign readiness; active model-auth/runtime/launcher smoke cannot resume independently of a clean authenticated replacement image. | [Authority: Stage 3 model-auth retirement](../stage-3-model-auth.md) |
+| `OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT` blocks current campaign readiness; active model-auth/runtime/launcher smoke cannot resume independently of a clean authenticated replacement image. | [Authority: Stage 3 model-auth retirement](../stage-3-model-auth.md) |
 | The old scoped vulnerability dispositions were removed rather than renewed or expanded. | [Authority: OpenBao retirement record](../../security-evidence/openbao-2.6.1-retirement.md) and [planned CVE procedure](cve-response.md#response-flow) |
 
 ## Future cloud evidence

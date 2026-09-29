@@ -10,14 +10,16 @@ const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact
 
 export const STAGE4_RUNTIME_ARTIFACT_MAX_BYTES = 64 * 1024;
 export const STAGE4_RUNTIME_ARTIFACT_BLOCKERS = Object.freeze([
-  "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
+  "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
+  "RELEASE_IMAGE_SET_ABSENT",
   "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED",
+  "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
   "ENVOY_UPSTREAM_SIGNATURE_UNAVAILABLE",
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
 ] as const);
 
 export type Stage4RuntimeArtifactReasonCode =
-  | "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED"
+  | "STAGE4_RUNTIME_ARTIFACT_TARGET_UNRESOLVED_BLOCKED"
   | "STAGE4_RUNTIME_ARTIFACT_BOUNDED_INPUT_INVALID"
   | "STAGE4_RUNTIME_ARTIFACT_CANONICAL_INPUT_INVALID"
   | "STAGE4_RUNTIME_ARTIFACT_SCHEMA_INVALID"
@@ -43,7 +45,7 @@ export type Stage4RuntimeArtifactVerdict = Readonly<{
   release_eligible: false;
   evidence_sha256: string | null;
   binding_sha256: string | null;
-  status: "candidate-closure-complete-blocked" | "preserve-uncertain";
+  status: "target-runtime-unresolved-blocked" | "preserve-uncertain";
   reason_code: Stage4RuntimeArtifactReasonCode;
   blockers: readonly (typeof STAGE4_RUNTIME_ARTIFACT_BLOCKERS)[number][];
 }>;
@@ -57,7 +59,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "022c53fe7ab3e11c2004a96c29ace00b715d55cf7e83b4743094e811394b01bd";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "e8f20d3ab107010615aac8f83a3bae1a44f64bc2abb06573b342d7b6668eb9b5";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
@@ -109,6 +111,14 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
     authority: "local-static-public-release-artifact-closure",
     platform: { os: "linux", architecture: "amd64" },
     containerd: {
+      package: "containerd-2.2.5-1.amzn2023.0.1",
+      delivery: "al2023-native-package",
+      artifact_sha256: null,
+      authentication_observed: false,
+      runtime_observed: false,
+      state: "target-unauthenticated-unobserved",
+    },
+    historical_stage2_containerd: {
       version: "2.2.1",
       source_commit: "dea7da592f5d1d2b7755e3a161be07f43fad8f75",
       artifact: {
@@ -137,12 +147,10 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
           size: 44050184,
           sha256: "f5d70cf9a249a70a70c379ba8f7259ea91122650cc06103bc0fc44a04dbc54da",
         },
-        {
-          path: "bin/ctr",
-          size: 22143160,
-          sha256: "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db",
-        },
+        { path: "bin/ctr", size: 22143160, sha256: "448b1d7a2da84b6265dc4685afcc6c69a6299de43b942b8a3d6d540f6585d1db" },
       ],
+      selected_runtime: false,
+      interpretation: "historical-stage2-evidence-only",
     },
     kata: {
       version: "3.32.0",
@@ -222,7 +230,7 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
       source_ami_name: "al2023-ami-minimal-2023.12.20260727.0-kernel-6.12-x86_64",
       public_kernel_package: "6.12.94-123.192.amzn2023",
       baked_containerd_package: "2.2.5-1.amzn2023.0.1",
-      selected_containerd_override_required: true,
+      selected_containerd_override_required: false,
       region: "us-east-1",
       ami_id: null,
       running_kernel_release: null,
@@ -268,16 +276,16 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
         inventory_sha256: STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256,
       },
       dependency_lock: {
-        package_lock_sha256: "42151881d9945740578313e2d3117e3bcac93a26d99a65ece8b18d15631601e1",
-        pi_version: "0.84.2",
+        package_lock_sha256: "8ba952c6392ba81875f2088ac88448ffa85812411f56f110eb6c489d91f46b48",
+        pi_version: "0.86.0",
         pi_agent_core_sri:
-          "sha512-8Pn3wSCxj0cfo5I6jxQYVB/3uuQRmHhAlEclyjqpOuMEdQMIODHizRogv56FLdbU+dTiGnybeHQ2N+sV1/L2YA==",
-        pi_ai_sri: "sha512-6MzsrYIYNVlE7SfpbL2yYb67Qo58p/7Q+xWG1RZvoX1P80aRCHSod2/13aFpxkow1lPO2LEh3c495J0Gwmyjig==",
+          "sha512-0nGRbPeR2Sx+TXCP+xTNeCoZDegRXshQ9ROWE+wc1XR2l6bARgbelkjiiFwVVJRslbwQa5Hmo/r2JXfAqqkK+A==",
+        pi_ai_sri: "sha512-7jc4tNTBiJrfg+2/nra6JPz2d3OGiGHDKrSVHpnfvsMgMy0uy4noGb7WidDNcqSEAK1S0kcRRTmpYAK66ZlTSw==",
         pi_coding_agent_sri:
-          "sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA==",
+          "sha512-tzLh/10bPQZbA9shvA8TALT4eSNCifJaDq672MPXHldsvZ9t9lQ8J5Z9CD1d7UZVzG4l85XUZWo6ZCCNhBULxw==",
       },
       release_images: {
-        state: "reviewed-current-source-image-set",
+        state: "reviewed-historical-source-image-set",
         assertion_sha256: "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332",
         review_sha256: "37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4",
         workflow_run_id: 34774398155,
@@ -289,10 +297,10 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
       },
     },
     claims: {
-      candidate_artifact_closure_complete: true,
-      selected_runtime_artifacts_authenticated: true,
+      candidate_artifact_closure_complete: false,
+      selected_runtime_artifacts_authenticated: false,
       local_candidate_freeze_complete: true,
-      release_image_set_present: true,
+      release_image_set_present: false,
       exact_image_runtime_closure_satisfied: false,
       campaign_authorized: false,
       cloud_execution_observed: false,
@@ -317,17 +325,17 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 function verdict(reason: Stage4RuntimeArtifactReasonCode, evidenceSha: string | null, binding: string | null) {
-  const complete = reason === "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED";
+  const valid = reason === "STAGE4_RUNTIME_ARTIFACT_TARGET_UNRESOLVED_BLOCKED";
   return Object.freeze({
     version: "cogs.stage4-authenticated-runtime-artifact-verdict/v4" as const,
     authority: "local-static-runtime-artifact-classifier" as const,
-    candidate_artifact_closure_complete: complete,
-    selected_runtime_artifacts_authenticated: complete,
-    eks_public_candidate_selected: complete,
+    candidate_artifact_closure_complete: false,
+    selected_runtime_artifacts_authenticated: false,
+    eks_public_candidate_selected: valid,
     eks_ami_id_resolved: false as const,
     running_kernel_resolved: false as const,
-    release_image_set_present: complete,
-    exact_image_identity_closure_satisfied: complete,
+    release_image_set_present: false,
+    exact_image_identity_closure_satisfied: false,
     campaign_authorized: false as const,
     cloud_execution_observed: false as const,
     provider_truth_observed: false as const,
@@ -337,9 +345,9 @@ function verdict(reason: Stage4RuntimeArtifactReasonCode, evidenceSha: string | 
     release_eligible: false as const,
     evidence_sha256: evidenceSha,
     binding_sha256: binding,
-    status: complete ? ("candidate-closure-complete-blocked" as const) : ("preserve-uncertain" as const),
+    status: valid ? ("target-runtime-unresolved-blocked" as const) : ("preserve-uncertain" as const),
     reason_code: reason,
-    blockers: complete ? STAGE4_RUNTIME_ARTIFACT_BLOCKERS : Object.freeze([]),
+    blockers: valid ? STAGE4_RUNTIME_ARTIFACT_BLOCKERS : Object.freeze([]),
   });
 }
 
@@ -373,5 +381,5 @@ export function classifyStage4RuntimeArtifactEvidence(input: unknown): Stage4Run
   if (!bytesEqual(captured.bytes, expected)) {
     return verdict("STAGE4_RUNTIME_ARTIFACT_SEMANTIC_DRIFT", evidenceSha, binding);
   }
-  return verdict("STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED", evidenceSha, binding);
+  return verdict("STAGE4_RUNTIME_ARTIFACT_TARGET_UNRESOLVED_BLOCKED", evidenceSha, binding);
 }

@@ -116,9 +116,9 @@ const validSamples: Record<string, unknown> = {
     reason: "allowed",
   },
   "export-manifest-v1alpha2.json": {
-    version: "cogs.export/v1alpha2",
+    version: "cogs.export/v1alpha3",
     cogs_version: "0.0.0",
-    pi_version: "0.84.2",
+    pi_version: "0.86.0",
     session_id: "session-123",
     created_at: "2026-07-10T12:00:00Z",
     mode: "raw",

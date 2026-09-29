@@ -22,6 +22,7 @@ import type { Ajv as AjvCore, Options } from "ajv";
 import {
   canonicalStage4OfflineReadinessBytes,
   classifyStage4OfflineReadiness,
+  STAGE2_ISSUE42_CLOSURE_RECORD,
   STAGE4_INDEPENDENT_INVENTORY_SCOPES,
   STAGE4_PROPOSED_RESOURCE_GRAPH,
   STAGE4_READINESS_ARTIFACT_KEYS,
@@ -84,8 +85,9 @@ test("committed canonical package is locally complete but campaign-blocked and n
   assert.equal(verdict.local_preparation_complete, true);
   assert.equal(verdict.local_preparation_scope, "bounded-package-assembly-and-local-validation-only");
   assert.equal(verdict.trusted_render_preparation_complete, true);
-  assert.equal(verdict.candidate_artifact_closure_complete, true);
-  assert.equal(verdict.selected_runtime_artifacts_authenticated, true);
+  assert.equal(verdict.issue_42_stage2_evidence_accepted, true);
+  assert.equal(verdict.candidate_artifact_closure_complete, false);
+  assert.equal(verdict.selected_runtime_artifacts_authenticated, false);
   assert.equal(verdict.exact_image_runtime_closure_satisfied, false);
   assert.equal(verdict.campaign_request_ready, false);
   assert.equal(verdict.campaign_approved, false);
@@ -99,8 +101,40 @@ test("committed canonical package is locally complete but campaign-blocked and n
   assert.deepEqual(verdict.blockers, STAGE4_READINESS_BLOCKERS);
   assert.equal(verdict.package_sha256, stage4OfflineReadinessSha256(packageBytes()));
   assert.equal(verdict.binding_root_sha256, packageObject().artifact_bindings.binding_root_sha256);
+  const value = packageObject();
+  assert.deepEqual(value.stage2_issue42, STAGE2_ISSUE42_CLOSURE_RECORD);
+  assert.equal(value.campaign_proposal.account_binding.account_id, "372495030090");
+  assert.equal(value.campaign_proposal.account_binding.provider_observed, false);
+  assert.equal(value.issue_359_scope.openbao.required_for_issue_359, false);
+  assert.equal(value.issue_359_scope.openbao.required_for_issue_360_361_362_exit_production_release, true);
+  assert.ok(value.identities.roles.every((role: Record<string, any>) => role.owner_declared === "Nick Byrne"));
+  assert.ok(value.identities.roles.every((role: Record<string, any>) => role.principal_binding_sha256 === null));
   assert.ok(Object.isFrozen(verdict));
   assert.ok(Object.isFrozen(verdict.blockers));
+});
+
+test("changed readiness facts fail closed under hostile mutation", () => {
+  const mutations: Array<[string, (value: Record<string, any>) => void]> = [
+    ["historical closure", (value) => (value.stage2_issue42.campaign.run_id += 1)],
+    ["provider-unobserved account", (value) => (value.campaign_proposal.account_binding.provider_observed = true)],
+    [
+      "post-359 OpenBao scope",
+      (value) => (value.issue_359_scope.openbao.required_for_issue_360_361_362_exit_production_release = false),
+    ],
+    ["unobserved principal", (value) => (value.identities.roles[0].principal_binding_sha256 = "a".repeat(64))],
+    [
+      "incomplete provider graph",
+      (value) => (value.campaign_proposal.resource_graph.provider_projection_complete = true),
+    ],
+    ["ordered retirement", (value) => value.stop_destroy.retirement_order.reverse()],
+    [
+      "bounded S3 inventory",
+      (value) => (value.stop_destroy.independent_inventory.scopes[36].scope = "objects-account-wide"),
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    assert.equal(classify(canonicalMutation(mutate, true)).local_preparation_complete, false, name);
+  }
 });
 
 test("verdict and package compile under strict independent schemas", () => {
@@ -451,12 +485,15 @@ test("committed inventories are canonical, complete for their scopes, and bind e
   assert.equal(runtime.runtime.containerd.version, committedPackage.pins.runtime.containerd_version);
   assert.equal(runtime.runtime.qemu.version, committedPackage.pins.runtime.qemu_version);
   assert.equal(runtime.runtime.containerd.artifact_sha256, committedPackage.pins.runtime.containerd_artifact_sha256);
-  assert.equal(runtime.runtime.containerd.artifact_state, "authenticated-public-release-selected-candidate");
+  assert.equal(runtime.runtime.containerd.artifact_state, "target-unauthenticated-unobserved-al2023-native-package");
+  assert.equal(runtime.runtime.containerd.artifact_sha256, null);
+  assert.equal(runtime.historical_stage2_containerd.version, "2.2.1");
+  assert.equal(runtime.historical_stage2_containerd.selected_runtime, false);
   assert.equal(runtime.runtime.qemu.artifact_sha256, committedPackage.pins.runtime.qemu_artifact_sha256);
   assert.equal(runtime.runtime.qemu.provenance, "kata-bundled-release-member");
   assert.equal(runtime.historical_host_observation.qemu.version, "8.2.2");
   assert.equal(runtime.historical_host_observation.qemu.selected_runtime, false);
-  assert.equal(committedPackage.pins.runtime.exact_runtime_artifact_closure_satisfied, true);
+  assert.equal(committedPackage.pins.runtime.exact_runtime_artifact_closure_satisfied, false);
 });
 
 test("source reads reject final and component symlinks, hard links, and oversize files", () => {
@@ -658,14 +695,19 @@ test("unsupported local pass labels and audit promotion cannot yield local compl
   }
 });
 
-test("resource ceilings and service-specific inventory scopes form one exact closed world", () => {
+test("desired topology and inventory remain exact while provider projection stays unresolved", () => {
   const value = packageObject();
-  assert.equal(value.campaign_proposal.resource_graph.closed_world, true);
-  assert.equal(value.campaign_proposal.resource_graph.undeclared_resource_classes_allowed, false);
+  assert.equal(value.campaign_proposal.resource_graph.state, "owner-approved-proposal-not-provider-validated");
+  assert.equal(value.campaign_proposal.resource_graph.desired_direct_topology_complete, true);
+  assert.equal(value.campaign_proposal.resource_graph.provider_projection_complete, false);
+  assert.equal(
+    value.campaign_proposal.resource_graph.provider_created_class_set,
+    "incomplete-pending-saved-plan-projection",
+  );
   assert.deepEqual(
     value.campaign_proposal.resource_graph.classes,
-    STAGE4_PROPOSED_RESOURCE_GRAPH.map(([resourceClass, maximumCount, resourceType, sizeGib]) => ({
-      maximum_count: maximumCount,
+    STAGE4_PROPOSED_RESOURCE_GRAPH.map(([resourceClass, desiredCount, resourceType, sizeGib]) => ({
+      desired_count: desiredCount,
       resource_class: resourceClass,
       resource_type: resourceType,
       size_gib_each: sizeGib,
@@ -686,8 +728,12 @@ test("resource ceilings and service-specific inventory scopes form one exact clo
     value.stop_destroy.independent_inventory.scopes.map((row: { resource_class: string }) => row.resource_class),
   );
   for (const row of value.stop_destroy.independent_inventory.scopes) {
-    assert.match(row.scope, /account/u, row.resource_class);
-    assert.match(row.scope, /service-wide/u, row.resource_class);
+    if (row.service !== "s3") {
+      assert.match(row.scope, /account/u, row.resource_class);
+      assert.match(row.scope, /service-wide/u, row.resource_class);
+    } else {
+      assert.match(row.scope, /exact-owner-declared-state-bucket/u, row.resource_class);
+    }
     assert.doesNotMatch(row.scope, /approved|exact-campaign|enumerated-role|node-attachment/u, row.resource_class);
   }
   for (const resourceClass of [
@@ -697,22 +743,53 @@ test("resource ceilings and service-specific inventory scopes form one exact clo
     "load-balancer",
     "target-group",
     "ebs-snapshot",
-    "eks-managed-addon",
+    "kms-key",
+    "kms-alias",
   ]) {
     assert.equal(
       value.campaign_proposal.resource_graph.classes.find(
         (row: { resource_class: string }) => row.resource_class === resourceClass,
-      ).maximum_count,
+      ).desired_count,
       0,
       resourceClass,
     );
   }
 
+  assert.deepEqual(value.campaign_proposal.managed_addons, [
+    "vpc-cni",
+    "kube-proxy",
+    "coredns",
+    "eks-pod-identity-agent",
+    "aws-ebs-csi-driver",
+  ]);
+  assert.deepEqual(value.campaign_proposal.access, {
+    eks_endpoint: "private-only",
+    node_inbound_access: "none",
+    administration: "ssm-only-via-trusted-node",
+  });
+  assert.equal(value.campaign_proposal.spend.alert_email, "byrnen8@tcd.ie");
+  assert.deepEqual(value.stop_destroy.retirement_order, [
+    "infrastructure-destroy",
+    "independent-retained-state-custody-inventory",
+    "retained-ebs-and-all-s3-state-residue-retirement",
+    "final-independent-deletion-blind-zero-residue-inventory",
+  ]);
+  assert.ok(
+    value.campaign_proposal.resource_graph.classes.some(
+      (row: Record<string, any>) => row.resource_class === "sandbox-node" && row.resource_type.includes("nested-kvm"),
+    ),
+  );
+  assert.ok(
+    value.campaign_proposal.resource_graph.classes.some(
+      (row: Record<string, any>) => row.resource_class === "campaign-state-object" && row.desired_count === 1,
+    ),
+  );
+
   for (const mutate of [
     (candidate: Record<string, any>) => candidate.campaign_proposal.resource_graph.classes.reverse(),
     (candidate: Record<string, any>) => candidate.campaign_proposal.resource_graph.classes.pop(),
     (candidate: Record<string, any>) => {
-      candidate.campaign_proposal.resource_graph.classes[0].maximum_count = 2;
+      candidate.campaign_proposal.resource_graph.classes[0].desired_count = 2;
     },
     (candidate: Record<string, any>) => candidate.stop_destroy.independent_inventory.scopes.reverse(),
     (candidate: Record<string, any>) => {
@@ -893,15 +970,15 @@ test("NIC v2 remains non-observing while node-image and runtime uncertainty cann
       },
     ],
     [
-      "reviewed release image set removed",
+      "historical release image set promoted",
       (value) => {
-        value.pins.images.release_image_set_present = false;
+        value.pins.images.release_image_set_present = true;
       },
     ],
     [
-      "reviewed image identity closure removed",
+      "historical image identity closure promoted",
       (value) => {
-        value.pins.images.exact_image_closure_satisfied = false;
+        value.pins.images.exact_image_closure_satisfied = true;
       },
     ],
     [
@@ -917,15 +994,15 @@ test("NIC v2 remains non-observing while node-image and runtime uncertainty cann
       },
     ],
     [
-      "runtime artifact closure downgraded",
+      "runtime artifact closure promoted",
       (value) => {
-        value.pins.runtime.exact_runtime_artifact_closure_satisfied = false;
+        value.pins.runtime.exact_runtime_artifact_closure_satisfied = true;
       },
     ],
     [
-      "account invented",
+      "account provider observation invented",
       (value) => {
-        value.campaign_proposal.account_binding.account_sha256 = "a".repeat(64);
+        value.campaign_proposal.account_binding.provider_observed = true;
       },
     ],
     [
@@ -1169,6 +1246,7 @@ test("classifier source has no executable provider, filesystem, environment, or 
       "cloud_execution_observed",
       "current_resources_observed",
       "exact_image_runtime_closure_satisfied",
+      "issue_42_stage2_evidence_accepted",
       "local_preparation_complete",
       "local_preparation_scope",
       "package_sha256",

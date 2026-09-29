@@ -13,15 +13,15 @@ RUN npm run build --ignore-scripts
 FROM node-runtime AS production-dependencies
 WORKDIR /opt/cogs
 COPY package.json package-lock.json ./
-# Pi 0.84.2's authenticated shrinkwrap contains the reviewed fixed nested
+# Pi 0.86.0's authenticated shrinkwrap contains the reviewed fixed nested
 # dependencies directly. Fail closed on any package-tree drift before copying runtime bytes.
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
-    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-agent-core/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 0.84.2 \
-    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-ai/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 0.84.2 \
-    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 0.84.2 \
+    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-agent-core/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 0.86.0 \
+    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-ai/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 0.86.0 \
+    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 0.86.0 \
     && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 5.0.9 \
-    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/node_modules/undici/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 8.9.0 \
-    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/node_modules/protobufjs/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 7.6.5 \
+    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/node_modules/undici/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 8.10.2 \
+    && test "$(node --input-type=module --eval 'import package_ from "./node_modules/@earendil-works/pi-coding-agent/node_modules/protobufjs/package.json" with { type: "json" }; process.stdout.write(package_.version)')" = 7.6.6 \
     && rm -rf node_modules/.bin node_modules/.cache \
     && node --input-type=module --eval \
       'import { readFileSync, writeFileSync } from "node:fs"; const source = JSON.parse(readFileSync("package.json", "utf8")); const output = { name: source.name, version: source.version, private: true, type: "module", engines: { node: "22.22.2" }, dependencies: source.dependencies }; writeFileSync("package.json", `${JSON.stringify(output, null, 2)}\n`);'

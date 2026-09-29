@@ -68,8 +68,13 @@ POST_CAMPAIGN_ADMISSION_MISS_TERMINAL_REVISION = "c1bb1669365ad237b544c708726791
 POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH = (160, 1_000_000)
 POST_CAMPAIGN_ADMISSION_MISS_READINESS_REGENERATIONS = 1
 POST_NPM_AUDIT_DISPOSITION_BASE_REVISION = POST_CAMPAIGN_ADMISSION_MISS_TERMINAL_REVISION
+POST_NPM_AUDIT_DISPOSITION_TERMINAL_REVISION = "ea0e814df4a21cc0e307fd5074be4e7377d9bbcf"
 POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH = (340, 1_000_000)
 POST_NPM_AUDIT_DISPOSITION_READINESS_REGENERATIONS = 1
+ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION = "ea0e814df4a21cc0e307fd5074be4e7377d9bbcf"
+ISSUE358_STAGE4_LOCAL_PREPARATION_GROSS_HIGH = (4_000, 550_000)
+ISSUE358_STAGE4_LOCAL_PREPARATION_NEW_FILE_HIGH = 0
+ISSUE358_STAGE4_LOCAL_PREPARATION_READINESS_REGENERATIONS = 0
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
@@ -437,7 +442,8 @@ def _gross_bytes(budget, product_test=False):
     revision = REMEDIATION_BASE_REVISION
     highs = PRODUCT_TEST_BYTE_FORECASTS if product_test else REMEDIATION_BYTE_HIGHS
     gross = {entry["name"]: _gross_added_line_bytes(
-        (*entry["existing_paths"], *entry["new_files"]) if product_test else tuple(entry["paths"]), revision)
+        (*entry["existing_paths"], *entry["new_files"]) if product_test else tuple(entry["paths"]),
+        revision, ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION)
         for entry in entries}
     _require(set(gross) == set(highs) and all(gross[owner] <= highs[owner] for owner in highs))
     _require(sum(gross.values()) <= (
@@ -472,7 +478,7 @@ def _remediation_budget():
                            "post_authoritative_failure_remediation", "post_segment_two_failure_remediation",
                            "post_admission_window_remediation", "post_evidence_schema_failure_remediation",
                            "post_campaign_admission_miss_remediation", "post_npm_audit_disposition_remediation",
-                           "owners"})
+                           "issue358_stage4_local_preparation", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
@@ -597,8 +603,24 @@ def _remediation_budget():
         _require(isinstance(path, str) and path and "\x00" not in path)
         candidate = Path(path)
         _require(not candidate.is_absolute() and ".." not in candidate.parts)
-    _require(all(set(plan["paths"]) <= set(paths)
-                 for plan in (post, followup, segment_two, admission, evidence, campaign_miss, npm_disposition)))
+    issue358 = data["issue358_stage4_local_preparation"]
+    _require(isinstance(issue358, dict) and set(issue358) == {
+        "base_revision", "gross_lines", "gross_bytes", "new_file_high",
+        "readiness_regenerations", "paths"}
+        and issue358["base_revision"] == ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION
+        and (issue358["gross_lines"], issue358["gross_bytes"])
+        == ISSUE358_STAGE4_LOCAL_PREPARATION_GROSS_HIGH
+        and issue358["new_file_high"] == ISSUE358_STAGE4_LOCAL_PREPARATION_NEW_FILE_HIGH
+        and issue358["readiness_regenerations"]
+        == ISSUE358_STAGE4_LOCAL_PREPARATION_READINESS_REGENERATIONS
+        and isinstance(issue358["paths"], list)
+        and issue358["paths"] == sorted(issue358["paths"])
+        and len(issue358["paths"]) == len(set(issue358["paths"])))
+    issue358_base_names = set(_nul_records(_git([
+        "ls-tree", "-r", "--name-only", "-z", ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION])))
+    _require(set(issue358["paths"]) <= issue358_base_names)
+    _require(all(set(plan["paths"]) <= set(paths) for plan in (
+        post, followup, segment_two, admission, evidence, campaign_miss, npm_disposition)))
     return data, owners, paths, new_file_highs, forecasts
 
 
@@ -757,10 +779,18 @@ def _post_campaign_admission_miss_consumption(budget, _head):
                                       POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH, False)
 
 
-def _post_npm_audit_disposition_consumption(budget, head):
+def _post_npm_audit_disposition_consumption(budget, _head):
     plan = budget["post_npm_audit_disposition_remediation"]
     return _one_successor_consumption(plan, POST_NPM_AUDIT_DISPOSITION_BASE_REVISION,
-                                      head, POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH, True)
+                                      POST_NPM_AUDIT_DISPOSITION_TERMINAL_REVISION,
+                                      POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH, False)
+
+
+def _issue358_stage4_local_preparation_consumption(budget, head):
+    plan = budget["issue358_stage4_local_preparation"]
+    return _one_successor_consumption(
+        plan, ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION, head,
+        ISSUE358_STAGE4_LOCAL_PREPARATION_GROSS_HIGH, True)
 
 
 def _product_test_consumption_segments(budget):
@@ -809,7 +839,8 @@ def _remediation_gross():
     new_files = {owner: 0 for owner in highs}
     base_names = set(_nul_records(_git(["ls-tree", "-r", "--name-only", "-z", REMEDIATION_BASE_REVISION])))
     output = _git(["-c", "diff.renames=false", "diff", "--no-renames", "--no-ext-diff",
-                   "--no-textconv", "--numstat", "-z", REMEDIATION_BASE_REVISION, "--", "."])
+                   "--no-textconv", "--numstat", "-z", REMEDIATION_BASE_REVISION,
+                   ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION, "--", "."])
     changed = {}
     for record in _nul_records(output):
         columns = record.split("\t", 2)
@@ -817,10 +848,7 @@ def _remediation_gross():
         name = columns[2]
         _require(name in allocations and name not in changed)
         changed[name] = int(columns[0])
-    ordinary = set(_nul_records(_git(["ls-files", "--others", "--exclude-standard", "-z", "--", "."])))
-    ignored = set(_nul_records(_git(["ls-files", "--others", "--ignored", "--exclude-standard",
-                                     "-z", "--", *allocations])))
-    _require(not ignored)
+    ordinary = set()
     for name in ordinary:
         _require(name in allocations and name not in changed)
         changed[name] = _lines(ROOT / name)
@@ -935,6 +963,8 @@ def measure():
     campaign_miss_lines, campaign_miss_bytes = _post_campaign_admission_miss_consumption(
         remediation_budget, head)
     npm_disposition_lines, npm_disposition_bytes = _post_npm_audit_disposition_consumption(
+        remediation_budget, ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION)
+    issue358_lines, issue358_bytes = _issue358_stage4_local_preparation_consumption(
         remediation_budget, head)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
@@ -1052,6 +1082,14 @@ def measure():
             "lines": POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH[0],
             "bytes": POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH[1]},
         "post_npm_audit_disposition_readiness_regenerations": POST_NPM_AUDIT_DISPOSITION_READINESS_REGENERATIONS,
+        "issue358_stage4_local_preparation_base_revision": ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION,
+        "issue358_stage4_local_preparation_gross_added_lines": issue358_lines,
+        "issue358_stage4_local_preparation_gross_added_line_bytes": issue358_bytes,
+        "issue358_stage4_local_preparation_gross_high": {
+            "lines": ISSUE358_STAGE4_LOCAL_PREPARATION_GROSS_HIGH[0],
+            "bytes": ISSUE358_STAGE4_LOCAL_PREPARATION_GROSS_HIGH[1]},
+        "issue358_stage4_local_preparation_new_file_high": ISSUE358_STAGE4_LOCAL_PREPARATION_NEW_FILE_HIGH,
+        "issue358_stage4_local_preparation_readiness_regenerations": ISSUE358_STAGE4_LOCAL_PREPARATION_READINESS_REGENERATIONS,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,

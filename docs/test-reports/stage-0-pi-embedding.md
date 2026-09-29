@@ -1,6 +1,6 @@
 # Stage 0 Pi embedding spike
 
-- Pi packages: `@earendil-works/pi-coding-agent`, `pi-agent-core`, and `pi-ai` 0.84.2
+- Pi packages: `@earendil-works/pi-coding-agent`, `pi-agent-core`, and `pi-ai` 0.86.0
 - Node.js: 22.22.2
 - Profile: local functional test; no VM or network security claim
 - Automated test: `test/pi-embedding.test.ts`
@@ -37,4 +37,4 @@
 
 ## Upgrade gate
 
-Any Pi upgrade must rerun this test or document and review a necessary API contract change as ADR 0098 does for 0.84.2. Discovery execution, loss of native JSONL compatibility, inability to replace built-ins, or loss of runtime-only auth is a design blocker rather than a reason to weaken the test.
+Any Pi upgrade must rerun this test or document and review a necessary API contract change. ADR 0098 remains the historical record for 0.84.2; this report's active embedding result covers 0.86.0. Discovery execution, loss of native JSONL compatibility, inability to replace built-ins, or loss of runtime-only auth is a design blocker rather than a reason to weaken the test.

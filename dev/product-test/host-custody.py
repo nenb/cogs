@@ -932,7 +932,7 @@ class Custody:
         require(descriptor["bundle"] == "cogs-session-product-session"); export_root = "session/sessions/product-session/exports/" + descriptor["bundle"] + "/"
         export_names = {"manifest.json", "session.jsonl", "git-map.json", "skills.json", "warnings.json", "transform-report.json"}
         manifest = json.loads(retained[export_root + "manifest.json"])
-        require(manifest["version"] == "cogs.export/v1alpha2" and manifest["session_id"] == "product-session")
+        require(manifest["version"] == "cogs.export/v1alpha3" and manifest["session_id"] == "product-session")
         require(digest(retained[export_root + "manifest.json"])[7:] == descriptor["manifest_sha256"])
         require({v["path"] for v in manifest["files"]} == export_names - {"manifest.json"} and len(manifest["files"]) == 5)
         for file in manifest["files"]:

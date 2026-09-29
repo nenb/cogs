@@ -9,6 +9,7 @@ import {
 } from "./release-image-set-review-v3.ts";
 import {
   canonicalStage4OfflineReadinessBytes,
+  STAGE2_ISSUE42_CLOSURE_RECORD,
   STAGE4_INDEPENDENT_INVENTORY_SCOPES,
   STAGE4_PROPOSED_RESOURCE_GRAPH,
   STAGE4_READINESS_BLOCKERS,
@@ -562,6 +563,19 @@ function regeneratePackage(): void {
   const imageLock = JSON.parse(readFileSync(resolve(artifactRoot, "image-lock.json"), "utf8"));
   const sourceInventory = JSON.parse(readFileSync(sourceInventoryPath, "utf8"));
   value.blockers = [...STAGE4_READINESS_BLOCKERS];
+  value.claims.candidate_artifact_closure_complete = false;
+  value.claims.selected_runtime_artifacts_authenticated = false;
+  value.claims.issue_42_stage2_evidence_accepted = true;
+  value.stage2_issue42 = structuredClone(STAGE2_ISSUE42_CLOSURE_RECORD);
+  value.issue_359_scope = {
+    issue: "S4-08/#359",
+    openbao: {
+      disposition: "excluded-unclaimed-only",
+      required_for_issue_359: false,
+      required_for_issue_360_361_362_exit_production_release: true,
+      qualification_claimed: false,
+    },
+  };
   value.source = {
     commit_binding_present: false,
     excluded_generated_evidence_outputs: sourceInventory.excluded_generated_evidence_outputs.map(
@@ -579,11 +593,11 @@ function regeneratePackage(): void {
     },
   };
   value.pins.images = {
-    worker: { reference: imageLock.images[0].reference, state: imageLock.images[0].state },
+    worker: { reference: imageLock.images[0].reference, state: "reviewed-historical-source-image-set" },
     proxy: { reference: imageLock.images[1].reference, state: imageLock.images[1].state },
-    sandbox: { reference: imageLock.images[2].reference, state: imageLock.images[2].state },
-    release_image_set_present: imageLock.release_image_set_present,
-    exact_image_closure_satisfied: imageLock.exact_image_closure_satisfied,
+    sandbox: { reference: imageLock.images[2].reference, state: "reviewed-historical-source-image-set" },
+    release_image_set_present: false,
+    exact_image_closure_satisfied: false,
   };
   value.pins.nic = {
     capability_state: "source-capability-present-operator-attestation-only",
@@ -601,7 +615,8 @@ function regeneratePackage(): void {
     eks_node_ami_id: runtimePins.eks_node_image.ami_id,
     eks_node_image_release: runtimePins.eks_node_image.release,
     eks_node_kernel_release: runtimePins.eks_node_image.kernel_release,
-    exact_runtime_artifact_closure_satisfied: true,
+    exact_runtime_artifact_closure_satisfied: false,
+    historical_stage2_containerd: runtimePins.historical_stage2_containerd,
     kata_archive_sha256: runtimePins.runtime.kata.archive_sha256,
     kata_version: runtimePins.runtime.kata.version,
     node_image_state: runtimePins.eks_node_image.pin_state,
@@ -611,14 +626,60 @@ function regeneratePackage(): void {
     runc_fallback: runtimePins.runtime.runc_fallback,
     tcg_fallback: runtimePins.runtime.tcg_fallback,
   };
-  value.campaign_proposal.resource_graph.classes = STAGE4_PROPOSED_RESOURCE_GRAPH.map(
-    ([resource_class, maximum_count, resource_type, size_gib_each]) => ({
-      maximum_count,
+  value.campaign_proposal.access = {
+    eks_endpoint: "private-only",
+    node_inbound_access: "none",
+    administration: "ssm-only-via-trusted-node",
+  };
+  value.campaign_proposal.managed_addons = [
+    "vpc-cni",
+    "kube-proxy",
+    "coredns",
+    "eks-pod-identity-agent",
+    "aws-ebs-csi-driver",
+  ];
+  value.campaign_proposal.spend.alert_email = "byrnen8@tcd.ie";
+  value.campaign_proposal.account_binding = {
+    account_id: "372495030090",
+    account_commitment_sha256: "65eb8fbcacd1a51be6de86ac302df96a98a41c6190a4a161bf720592bf6a2bb7",
+    region: "us-east-1",
+    owner_declared: true,
+    provider_observed: false,
+    state: "owner-declared-provider-unobserved",
+  };
+  value.campaign_proposal.state_custody = {
+    provider_state:
+      "one-owner-declared-state-bucket-desired-custody-survives-infrastructure-destroy;identity-provider-unobserved",
+    retirement:
+      "retained-ebs-explicitly-detach-delete;state-bucket-all-versions-delete-markers-multipart-uploads-lock-residue-retire",
+  };
+  value.identities.roles = value.identities.roles.map((role: JsonObject) => ({
+    ...role,
+    owner_declared: "Nick Byrne",
+    state: "owner-declared-principal-binding-unobserved",
+  }));
+  value.revalidation.issue_42_state = "validated-closed-historical-stage2-only";
+  value.campaign_proposal.resource_graph = {
+    state: "owner-approved-proposal-not-provider-validated",
+    desired_direct_topology_complete: true,
+    provider_projection_complete: false,
+    provider_created_class_set: "incomplete-pending-saved-plan-projection",
+    count_semantics: "desired-direct-counts-and-zero-prohibitions;no-hard-caps;indirect-unresolved",
+    classes: STAGE4_PROPOSED_RESOURCE_GRAPH.map(([resource_class, desired_count, resource_type, size_gib_each]) => ({
+      desired_count,
       resource_class,
       resource_type,
       size_gib_each,
-    }),
-  );
+    })),
+  };
+  value.stop_destroy.retirement_order = [
+    "infrastructure-destroy",
+    "independent-retained-state-custody-inventory",
+    "retained-ebs-and-all-s3-state-residue-retirement",
+    "final-independent-deletion-blind-zero-residue-inventory",
+  ];
+  value.stop_destroy.independent_inventory.custody_inventory_before_retirement = true;
+  value.stop_destroy.independent_inventory.final_zero_inventory_deletion_blind = true;
   value.stop_destroy.independent_inventory.scopes = STAGE4_INDEPENDENT_INVENTORY_SCOPES.map(
     ([resource_class, service, scope]) => ({ resource_class, scope, service, tag_only: false }),
   );

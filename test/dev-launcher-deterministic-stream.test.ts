@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import test from "node:test";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import type { AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai";
+import {
+  type AssistantMessageEvent,
+  type Context,
+  type JsonObject,
+  type Model,
+  normalizeContext,
+  type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import {
   createDeterministicLauncherStream,
@@ -46,26 +53,26 @@ function options(controller = new AbortController(), apiKey = "test-key") {
   return { apiKey, signal: controller.signal };
 }
 
-function normalContext(): Context {
-  return { messages: [normalMessage()] };
+function normalContext(): TranscriptContext {
+  return normalizeContext({ messages: [normalMessage()] });
 }
 
-function unknownContext(prompt = "unrecognized bounded prompt"): Context {
-  return { messages: [userMessage(prompt)] };
+function unknownContext(prompt = "unrecognized bounded prompt"): TranscriptContext {
+  return normalizeContext({ messages: [userMessage(prompt)] });
 }
 
-function abortContext(): Context {
-  return { messages: [userMessage(LAUNCHER_DETERMINISTIC_ABORT_PROMPT)] };
+function abortContext(): TranscriptContext {
+  return normalizeContext({ messages: [userMessage(LAUNCHER_DETERMINISTIC_ABORT_PROMPT)] });
 }
 
-function matchingFinalContext(): Context {
-  return {
+function matchingFinalContext(): TranscriptContext {
+  return normalizeContext({
     messages: [normalMessage(), toolUseMessage(), toolResultMessage()],
-  };
+  });
 }
 
-function completedNormalContext(): Context {
-  return {
+function completedNormalContext(): TranscriptContext {
+  return normalizeContext({
     messages: [
       normalMessage(),
       toolUseMessage(),
@@ -81,7 +88,7 @@ function completedNormalContext(): Context {
         timestamp: TIMESTAMP,
       },
     ],
-  };
+  });
 }
 
 function normalMessage() {
@@ -191,7 +198,7 @@ function stream(clock = () => TIMESTAMP): StreamFn {
 }
 
 async function eventsFor(context: Context, initOptions = options()) {
-  return collect(await stream()(model(), context, initOptions));
+  return collect(await stream()(model(), normalizeContext(context), initOptions));
 }
 
 function assertGenericError(events: AssistantMessageEvent[]): void {
@@ -322,9 +329,9 @@ test("deterministic abort mode accepts exact completed normal transcript only", 
   const controller = new AbortController();
   const pending = await stream()(
     model(),
-    {
+    normalizeContext({
       messages: [...completedNormalContext().messages, userMessage(LAUNCHER_DETERMINISTIC_ABORT_PROMPT)],
-    },
+    }),
     options(controller),
   );
   assert.equal(await collectWithTimeout(pending), "timeout");
@@ -362,7 +369,8 @@ test("deterministic abort mode rejects malformed prior history", async () => {
     { messages: [unknownContext().messages[0], ...completed.slice(1), abort].filter((m) => m !== undefined) },
     { messages: [...completed, { ...abort, content: "other" }] },
   ];
-  for (const item of cases) assertGenericError(await collect(await stream()(model(), item, options())));
+  for (const item of cases)
+    assertGenericError(await collect(await stream()(model(), normalizeContext(item), options())));
 });
 
 test("deterministic abort mode pre-aborted signal terminates immediately without listener", async () => {
@@ -571,7 +579,8 @@ test("deterministic stream accepts only pinned one-text-block user message conte
     { messages: [{ role: "user", content: protoContent, timestamp: TIMESTAMP }] } as never,
     { messages: [{ role: "user", content: [protoBlock], timestamp: TIMESTAMP }] } as never,
   ];
-  for (const item of cases) assertGenericError(await collect(await stream()(model(), item, options())));
+  for (const item of cases)
+    assertGenericError(await collect(await stream()(model(), normalizeContext(item), options())));
   assert.equal(invoked, false);
 });
 
@@ -610,7 +619,7 @@ test("deterministic stream rejects final-turn reorder, extra content, metadata m
     wrongStopReason,
     erroredResult,
   ]) {
-    assertGenericError(await collect(await stream()(model(), badContext, options())));
+    assertGenericError(await collect(await stream()(model(), normalizeContext(badContext), options())));
   }
 });
 
@@ -752,7 +761,7 @@ test("deterministic stream rejects hostile accessors, prototypes, symbols, and t
       return [];
     },
   });
-  const symbolContext = normalContext() as Context & { [key: symbol]: string };
+  const symbolContext = normalContext() as unknown as Context & { [key: symbol]: string };
   symbolContext[Symbol("secret")] = "hidden";
   const protoContext = Object.create({ inherited: true }) as Context;
   Object.assign(protoContext, normalContext());
@@ -829,7 +838,7 @@ test("deterministic stream factory validates and freezes its seam", () => {
   );
 });
 
-function toolUse(id: string, name: string, args: Record<string, unknown>) {
+function toolUse(id: string, name: string, args: JsonObject) {
   return {
     role: "assistant" as const,
     api: LAUNCHER_DETERMINISTIC_API,
@@ -880,7 +889,7 @@ async function s309Events(context: Context) {
   return collect(
     await createDeterministicLauncherStream(Object.freeze({ now: () => TIMESTAMP, s309FixturePort: 3210 }))(
       model(),
-      context,
+      normalizeContext(context),
       options(),
     ),
   );

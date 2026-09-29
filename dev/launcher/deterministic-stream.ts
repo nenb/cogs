@@ -3,6 +3,7 @@ import type {
   Api,
   AssistantMessage,
   Context,
+  JsonObject,
   Model,
   SimpleStreamOptions,
   ToolCall,
@@ -497,7 +498,7 @@ function createToolStream(
   tool: {
     readonly id: string;
     readonly name: string;
-    readonly arguments: Readonly<Record<string, unknown>>;
+    readonly arguments: Readonly<JsonObject>;
   } = Object.freeze({
     id: LAUNCHER_DETERMINISTIC_TOOL_ID,
     name: LAUNCHER_DETERMINISTIC_TOOL_NAME,

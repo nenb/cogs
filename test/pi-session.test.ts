@@ -22,7 +22,7 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { promisify } from "node:util";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type JsonValue as PiJsonValue } from "@earendil-works/pi-ai";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Ajv as AjvCore } from "ajv";
@@ -294,7 +294,7 @@ function hangingStream(aborted: { count: number }): StreamFn {
   };
 }
 
-function oneToolStream(name: string, args: Record<string, unknown>): StreamFn {
+function oneToolStream(name: string, args: Record<string, PiJsonValue>): StreamFn {
   let calls = 0;
   return (model) => {
     calls += 1;

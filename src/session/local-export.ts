@@ -80,10 +80,12 @@ type BundleFile =
   | "manifest.json";
 
 const EXPORT_ROOT = "exports";
-const VERSION = "cogs.export/v1alpha2";
+const VERSION = "cogs.export/v1alpha3";
+const PREVIOUS_VERSION = "cogs.export/v1alpha2";
 const DESCRIPTOR_VERSION = "cogs.export-descriptor/v1alpha1";
 const COGS_VERSION = "0.0.0";
-const PI_VERSION = "0.84.2";
+const PI_VERSION = "0.86.0";
+const PREVIOUS_PI_VERSION = "0.84.2";
 const MAX_BUNDLE_BYTES = 72 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const OPAQUE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -480,10 +482,11 @@ async function verifyExistingBundle(
     ],
     true,
   );
+  const currentVersion = raw.version === VERSION && raw.pi_version === PI_VERSION;
+  const previousVersion = raw.version === PREVIOUS_VERSION && raw.pi_version === PREVIOUS_PI_VERSION;
   if (
-    raw.version !== VERSION ||
+    (!currentVersion && !previousVersion) ||
     raw.cogs_version !== COGS_VERSION ||
-    raw.pi_version !== PI_VERSION ||
     raw.session_id !== sessionId ||
     raw.mode !== "raw" ||
     raw.attachments_included !== false ||
@@ -511,9 +514,9 @@ async function verifyExistingBundle(
   const transform = canonicalTransformExport(bytes.get("transform-report.json"));
   const model = raw.model === undefined ? undefined : snapshotModel(raw.model as { provider: string; id: string });
   const rebuiltManifest = {
-    version: VERSION,
+    version: raw.version,
     cogs_version: COGS_VERSION,
-    pi_version: PI_VERSION,
+    pi_version: raw.pi_version,
     session_id: sessionId,
     created_at: raw.created_at,
     mode: "raw",

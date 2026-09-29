@@ -1656,6 +1656,20 @@ test("bounded event admission rejects proxies/accessors without traps and omits 
   assert.equal(Object.isFrozen(admitted.payload.detail), true);
   assert.deepEqual(admitted.model, { type: "agent_start" });
   assert.deepEqual(admitted.git, { type: "agent_start" });
+  const system = admitPiCallback(
+    {
+      type: "message_start",
+      message: {
+        role: "system",
+        content: "untrusted runtime prompt must not cross the event boundary",
+        sections: { preamble: "hidden" },
+        toolsAdded: [{ name: "bash" }],
+      },
+    },
+    "",
+  );
+  assert.deepEqual(system.model, { type: "message_start", message: { role: "system" } });
+  assert.deepEqual(system.payload.event, { type: "message_start", message: { role: "system" } });
   const broad = Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`unknown-${i}`, proxy]));
   assert.equal(admitPiCallback({ ...broad, type: "agent_start" }, "").kind, "pi_event");
   let deep: unknown = "x";

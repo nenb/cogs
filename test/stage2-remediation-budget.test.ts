@@ -361,6 +361,7 @@ import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,_,_,_=m['_remediation_budget'](); p=b['post_npm_audit_disposition_remediation']
 assert p['base_revision']=='c1bb1669365ad237b544c70872679118e811b69d'
+assert m['POST_NPM_AUDIT_DISPOSITION_TERMINAL_REVISION']=='ea0e814df4a21cc0e307fd5074be4e7377d9bbcf'
 assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(340,1000000,1)
 assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
 head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_npm_audit_disposition_consumption'](b,head)

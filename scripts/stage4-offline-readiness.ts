@@ -19,12 +19,14 @@ const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCor
 const packageSchema = require("../schemas/stage4-offline-readiness-package-v5.json") as object;
 
 export const STAGE4_READINESS_BLOCKERS = Object.freeze([
-  "ISSUE_42_OPEN",
-  "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
+  "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
+  "RELEASE_IMAGE_SET_ABSENT",
   "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
-  "PROPOSED_ACCOUNT_BINDING_ABSENT",
+  "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
+  "ACCOUNT_BINDING_PROVIDER_UNOBSERVED",
   "CURRENT_PRICE_NOT_REVALIDATED",
   "CURRENT_QUOTA_NOT_REVALIDATED",
+  "SAVED_PLAN_DERIVED_CAPS_UNRESOLVED",
   "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
   "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
   "NO_EXECUTABLE_PROVIDER_ROUTE",
@@ -80,8 +82,9 @@ export type Stage4OfflineReadinessVerdict = Readonly<{
   version: "cogs.stage4-offline-readiness-verdict/v5";
   authority: "local-static-stage4-readiness-classifier";
   local_preparation_complete: boolean;
-  candidate_artifact_closure_complete: boolean;
-  selected_runtime_artifacts_authenticated: boolean;
+  issue_42_stage2_evidence_accepted: boolean;
+  candidate_artifact_closure_complete: false;
+  selected_runtime_artifacts_authenticated: false;
   local_preparation_scope: "bounded-package-assembly-and-local-validation-only";
   trusted_render_preparation_complete: boolean;
   exact_image_runtime_closure_satisfied: false;
@@ -139,39 +142,43 @@ const DIGEST_FIELDS: Readonly<Record<Stage4ReadinessArtifactKey, string>> = Obje
 });
 
 export const STAGE4_PROPOSED_RESOURCE_GRAPH = Object.freeze([
-  ["eks-cluster", 1, "regional-control-plane", null],
-  ["eks-managed-addon", 0, "none", null],
+  ["eks-cluster", 1, "regional-private-endpoint", null],
+  ["eks-managed-addon", 5, "exact-approved-set", null],
+  ["eks-access-entry", null, "saved-plan-derived-unresolved", null],
+  ["eks-pod-identity-association", null, "saved-plan-derived-unresolved", null],
   ["vpc", 1, "dedicated-ipv4-only", null],
   ["subnet", 2, "public-no-inbound", null],
-  ["route-table", 2, "campaign-dedicated", null],
-  ["route", 4, "two-local-two-internet-gateway", null],
+  ["route-table", null, "saved-plan-derived-unresolved", null],
+  ["route", null, "saved-plan-derived-unresolved", null],
   ["internet-gateway", 1, "campaign-dedicated", null],
-  ["network-acl", 1, "vpc-default-closed-review", null],
-  ["dhcp-options-association", 1, "vpc-default-closed-review", null],
+  ["network-acl", null, "saved-plan-derived-unresolved", null],
+  ["dhcp-options-association", null, "saved-plan-derived-unresolved", null],
   ["nat-gateway", 0, "prohibited", null],
   ["vpc-endpoint", 0, "prohibited", null],
   ["elastic-ip", 0, "prohibited", null],
   ["load-balancer", 0, "prohibited", null],
   ["target-group", 0, "prohibited", null],
-  ["security-group", 5, "default-cluster-shared-trusted-sandbox", null],
-  ["iam-role", 4, "cluster-trusted-node-sandbox-node-ttl-function", null],
-  ["iam-customer-managed-policy", 4, "one-per-campaign-role", null],
-  ["iam-policy-attachment", 8, "bounded-role-attachments", null],
-  ["instance-profile", 2, "trusted-node-and-sandbox-node", null],
+  ["security-group", null, "saved-plan-derived-unresolved", null],
+  ["iam-role", null, "saved-plan-derived-unresolved", null],
+  ["iam-customer-managed-policy", null, "saved-plan-derived-unresolved", null],
+  ["iam-policy-attachment", null, "saved-plan-derived-unresolved", null],
+  ["instance-profile", null, "saved-plan-derived-unresolved", null],
   ["launch-template", 2, "trusted-and-sandbox-explicit-version", null],
   ["managed-node-group", 2, "trusted-and-sandbox", null],
-  ["autoscaling-group", 2, "managed-node-group-owned", null],
-  ["trusted-node", 1, "c8i-flex.large-on-demand", 30],
-  ["sandbox-node", 1, "c8i-flex.large-on-demand-nested-kvm", 30],
-  ["network-interface", 10, "hard-maximum-provider-managed-and-node", null],
+  ["autoscaling-group", null, "saved-plan-derived-unresolved", null],
+  ["trusted-node", 1, "al2023-c8i-flex.large-on-demand", 30],
+  ["sandbox-node", 1, "al2023-c8i-flex.large-on-demand-nested-kvm", 30],
+  ["network-interface", null, "saved-plan-derived-unresolved", null],
   ["ebs-trusted-root-volume", 1, "encrypted-gp3-delete-on-termination", 30],
   ["ebs-sandbox-root-volume", 1, "encrypted-gp3-delete-on-termination", 30],
   ["ebs-workspace-volume", 1, "encrypted-gp3-retain", 20],
   ["ebs-session-state-volume", 1, "encrypted-gp3-retain", 5],
   ["ebs-snapshot", 0, "prohibited", null],
-  ["kms-key", 1, "symmetric-campaign-storage", null],
-  ["kms-alias", 1, "campaign-key-alias", null],
-  ["log-group", 2, "eks-control-and-ttl-function-30-day", null],
+  ["kms-key", 0, "customer-managed-prohibited", null],
+  ["kms-alias", 0, "customer-managed-prohibited", null],
+  ["log-group", null, "saved-plan-derived-unresolved", null],
+  ["campaign-state-bucket", 1, "s3-provider-state-survives-infrastructure-destroy", null],
+  ["campaign-state-object", 1, "s3-provider-state-survives-infrastructure-destroy", null],
   ["budget", 1, "usd-20-proposal", null],
   ["budget-notification", 3, "usd-5-10-20-proposal", null],
   ["ttl-schedule", 1, "absolute-14400-seconds", null],
@@ -182,6 +189,8 @@ export const STAGE4_PROPOSED_RESOURCE_GRAPH = Object.freeze([
 export const STAGE4_INDEPENDENT_INVENTORY_SCOPES = Object.freeze([
   ["eks-cluster", "eks", "clusters-account-region-service-wide"],
   ["eks-managed-addon", "eks", "addons-for-every-cluster-account-region-service-wide"],
+  ["eks-access-entry", "eks", "access-entries-for-every-cluster-account-region-service-wide"],
+  ["eks-pod-identity-association", "eks", "pod-identity-associations-for-every-cluster-account-region-service-wide"],
   ["vpc", "ec2", "vpcs-account-region-service-wide"],
   ["subnet", "ec2", "subnets-account-region-service-wide"],
   ["route-table", "ec2", "route-tables-account-region-service-wide"],
@@ -213,12 +222,113 @@ export const STAGE4_INDEPENDENT_INVENTORY_SCOPES = Object.freeze([
   ["kms-key", "kms", "keys-account-region-service-wide-all-key-states"],
   ["kms-alias", "kms", "aliases-account-region-service-wide"],
   ["log-group", "logs", "log-groups-account-region-service-wide"],
+  ["campaign-state-bucket", "s3", "exact-owner-declared-state-bucket-after-identity-freeze"],
+  [
+    "campaign-state-object",
+    "s3",
+    "all-versions-delete-markers-multipart-uploads-and-lock-residue-for-exact-owner-declared-state-bucket-after-identity-freeze",
+  ],
   ["budget", "budgets", "budgets-account-service-wide"],
   ["budget-notification", "budgets", "notifications-for-every-budget-account-service-wide"],
   ["ttl-schedule", "scheduler", "schedules-account-region-service-wide"],
   ["ttl-function", "lambda", "functions-account-region-service-wide"],
   ["ttl-function-permission", "lambda", "resource-policies-for-every-function-account-region-service-wide"],
 ] as const);
+
+export const STAGE2_ISSUE42_CLOSURE_RECORD = Object.freeze({
+  version: "cogs.stage2-issue42-historical-closure-record/v1",
+  authority: "exact-historical-closure-record-bound-into-stage4-package-root",
+  source: {
+    revision: "ea0e814df4a21cc0e307fd5074be4e7377d9bbcf",
+    implementation_revision: "ba085947eaee321dfb724d94169d42bc36d397b0",
+    control_revision: "c37baf5c1fbb8f1e335945ad7ac93452d4537c9d",
+    qualification_revision: "2d4b61a63cdb08a92d5fbde9095532fad2383e90",
+    historical_hgq_reopened_or_regenerated: false,
+  },
+  campaign: {
+    run_id: 36522381037,
+    run_attempt: 1,
+    result: "pass",
+    cycle_count: 7,
+    workload_measurements: 21,
+    destroy_attempts: 7,
+    inventory_observations: 8,
+  },
+  package: {
+    available: true,
+    member_count: 6,
+    members: [
+      [
+        "aws-stage2-completion-evidence-v4.json",
+        97209,
+        "2a7d2c91ff0ebfcb0494b0608ee672a5e77efd721de73002c46f6dcd52678acc",
+      ],
+      [
+        "aws-stage2-completion-publication-v2.json",
+        1167,
+        "06a71e0e7c16932f541de46c26e4f45c9aececbd0a25eda977aba3c8b4b763f2",
+      ],
+      ["aws-stage2-completion-report-v4.md", 1792, "20eb48f7148f5cea13d16b2ef7106cc72f4284ccc83275a5f99d560caa76637b"],
+      [
+        "aws-stage2-production-continuation-admission-v1.json",
+        1862,
+        "f39f745970013764708275c337ffe2ec4d52b629ceec176642cb858e8c810910",
+      ],
+      [
+        "aws-stage2-production-continuation-v1.bundle.json",
+        10508,
+        "21a023ba0c4c46670876c74a68746712660c9a9bb9fd37771803c35bab3211d8",
+      ],
+      [
+        "aws-stage2-production-continuation-v1.json",
+        60064,
+        "fb1e316c9c7350ff88a38838fcf076e462d7691b1cf24c8960f331f01fcd61e1",
+      ],
+    ],
+  },
+  validation: {
+    evidence_sha256: "2a7d2c91ff0ebfcb0494b0608ee672a5e77efd721de73002c46f6dcd52678acc",
+    publication_sha256: "06a71e0e7c16932f541de46c26e4f45c9aececbd0a25eda977aba3c8b4b763f2",
+    receipt_sha256: "cf9d9864cf9a16569826c6794aa360c282288f93c3991afe6ec86a259d910ef2",
+    independent_audit_sha256: "d2d9fb4f1bbb8b9c141d9d27457093a0df9853210a2e1bb4eeef161f386c7bd6",
+    final_zero_inventory_sha256: "f6f11122417090d4edb52e756c470ce550296e8a07a7299db01704efbf8237b4",
+    final_zero_total: 0,
+    v4_evidence_validated: true,
+    v4_package_validated: true,
+    readback_byte_equal: true,
+  },
+  artifact_metadata: {
+    continuation: {
+      artifact_id: 11019131881,
+      digest: "sha256:766be26960daa1a773c5573ff95d04baaf389a5f394c0d157e1129b49a21443a",
+    },
+    evidence: {
+      artifact_id: 11028934499,
+      digest: "sha256:1882d69e41120f70d1f7cfb66bcaad3038d1181b47ad96534f452efbd16167f9",
+    },
+    batch_commitment_sha256: "5d50d5a177a3d319d384b6001a4108dab1176aad80582ce44803fed8a5fe7a0e",
+  },
+  validation_methods: {
+    offline_cosign: {
+      succeeded: true,
+      cosign_version: "v3.1.2",
+      cosign_darwin_arm64_sha256: "6e509ae3b7eb6e577378a6748a61035b2e063b26769d1671723fef55c6374cea",
+      trusted_root_sha256: "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e",
+      certificate_identity:
+        "https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
+      certificate_oidc_issuer: "https://token.actions.githubusercontent.com",
+    },
+    bounded_semantic_validation: {
+      succeeded: true,
+      verifier: "injected-verifier-after-separate-offline-cosign-success",
+    },
+    fixed_root_production_cli: {
+      succeeded: false,
+      result: "not-runnable-on-this-host-fixed-linux-paths-absent",
+    },
+  },
+  claims: { issue_42_acceptance_satisfied: true, stage4_authority_granted: false, release_authority_granted: false },
+} as const);
 
 const EXPECTED_IMAGE_REFERENCES = Object.freeze({
   worker: RELEASE_IMAGE_REFERENCES.worker,
@@ -235,13 +345,13 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
   render: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
   repeatedRender: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
-  runtimePins: "1e683ef6513f9f86f7eaead0fd64d949f037afd06043882eb1b6514aa5c4a145",
+  runtimePins: "5af6274efe3f97887af4e255c5a4fb693bef82b659ec26021e307d0443b3aed4",
   values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
-  authenticatedRuntimeArtifacts: "fed63c892b8458efc1165f67fd9f73ced21b30c586afb2f458666f8cd393c237",
-  localValidationNormalized: "624255cce08c267df2649a10dae47dcf94eb6f4d7943d2b7a55e6de2771bf902",
+  authenticatedRuntimeArtifacts: "b02f8939deed156c9afe41c9611f52486f9250d681bd6521b23ce83a659856a0",
+  localValidationNormalized: "cd5ba8a544363d902416380f38f5ffa58bfc868a847db0565027eb1635e8b264",
   renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
-  schemaInventory: "022c53fe7ab3e11c2004a96c29ace00b715d55cf7e83b4743094e811394b01bd",
-  sourceInventoryNormalized: "8ab9e3edb9419c4b0a5a269f29404445f499e675b8dfa4320f29082ad2cceabf",
+  schemaInventory: "e8f20d3ab107010615aac8f83a3bae1a44f64bc2abb06573b342d7b6668eb9b5",
+  sourceInventoryNormalized: "d074a72ec24e906cf4393b2fb4cd83e03a2285eb1a72001c377648ff24dab469",
 });
 /* stage4-readiness-anchor-end */
 
@@ -615,8 +725,8 @@ function exactArtifactSemantics(value: ReadinessPackage, artifacts: ArtifactCopi
     releaseSet?.review_sha256 !== RELEASE_IMAGE_SET_REVIEW_SHA256 ||
     releaseSet?.image_source_sha !== RELEASE_IMAGE_SOURCE_SHA ||
     releaseSet?.workflow_run_id !== RELEASE_IMAGE_WORKFLOW_RUN_ID ||
-    packageImages.release_image_set_present !== true ||
-    packageImages.exact_image_closure_satisfied !== true ||
+    packageImages.release_image_set_present !== false ||
+    packageImages.exact_image_closure_satisfied !== false ||
     packageImageSource?.reviewed_sha !== RELEASE_IMAGE_SOURCE_SHA ||
     packageImageSource?.tree_sha !== RELEASE_IMAGE_SOURCE_TREE_SHA ||
     packageImageSource?.inventory_sha256 !== RELEASE_IMAGE_SOURCE_INVENTORY_SHA256 ||
@@ -653,8 +763,9 @@ function makeVerdict(
     version: "cogs.stage4-offline-readiness-verdict/v5",
     authority: "local-static-stage4-readiness-classifier",
     local_preparation_complete: complete,
-    candidate_artifact_closure_complete: complete,
-    selected_runtime_artifacts_authenticated: complete,
+    issue_42_stage2_evidence_accepted: complete,
+    candidate_artifact_closure_complete: false as const,
+    selected_runtime_artifacts_authenticated: false as const,
     local_preparation_scope: "bounded-package-assembly-and-local-validation-only",
     trusted_render_preparation_complete: complete,
     exact_image_runtime_closure_satisfied: false,
@@ -689,6 +800,8 @@ function bindingRootInput(value: ReadinessPackage): JsonValue {
     pins: value.pins,
     revalidation: value.revalidation as JsonValue,
     source: value.source as JsonValue,
+    stage2_issue42: value.stage2_issue42 as JsonValue,
+    issue_359_scope: value.issue_359_scope as JsonValue,
     stop_destroy: value.stop_destroy as JsonValue,
     version: value.version as JsonValue,
   };
@@ -702,8 +815,8 @@ export function stage4OfflineReadinessBindingRoot(value: ReadinessPackage): stri
 function exactResourceAndInventoryClosure(value: ReadinessPackage): boolean {
   const resourceGraph = record(value.campaign_proposal.resource_graph);
   const inventory = record(value.stop_destroy.independent_inventory);
-  const expectedGraph = STAGE4_PROPOSED_RESOURCE_GRAPH.map(([resourceClass, maximumCount, resourceType, sizeGib]) => ({
-    maximum_count: maximumCount,
+  const expectedGraph = STAGE4_PROPOSED_RESOURCE_GRAPH.map(([resourceClass, desiredCount, resourceType, sizeGib]) => ({
+    desired_count: desiredCount,
     resource_class: resourceClass,
     resource_type: resourceType,
     size_gib_each: sizeGib,
@@ -715,9 +828,11 @@ function exactResourceAndInventoryClosure(value: ReadinessPackage): boolean {
     tag_only: false,
   })) as unknown as JsonValue;
   return (
-    resourceGraph?.closed_world === true &&
-    resourceGraph.undeclared_resource_classes_allowed === false &&
-    resourceGraph.count_semantics === "hard-maximum-proposal" &&
+    resourceGraph?.state === "owner-approved-proposal-not-provider-validated" &&
+    resourceGraph.desired_direct_topology_complete === true &&
+    resourceGraph.provider_projection_complete === false &&
+    resourceGraph.provider_created_class_set === "incomplete-pending-saved-plan-projection" &&
+    resourceGraph.count_semantics === "desired-direct-counts-and-zero-prohibitions;no-hard-caps;indirect-unresolved" &&
     resourceGraph.classes !== undefined &&
     canonicalJson(resourceGraph.classes) === canonicalJson(expectedGraph) &&
     inventory?.tag_only_inventory_allowed === false &&

@@ -13,7 +13,7 @@ Rationale:
 - Supports public-key authentication and explicit authentication method selection.
 - Supports connection/handshake timeout configuration and algorithm overrides.
 - License: MIT, compatible with this repository policy.
-- Transitive production additions are permissive (`MIT`, `BSD-3-Clause`) except for a narrow exact `tweetnacl@0.14.5` `Unlicense` exception inherited through `bcrypt-pbkdf`; this is pinned and scoped in the license checker rather than globally allowing future `Unlicense` packages. The checker also records exact MIT overrides for legacy `licenses[]` metadata in `ssh2`, `cpu-features`, and `buildcheck`.
+- Transitive production additions are permissive (`MIT`, `BSD-3-Clause`) except for path- and version-scoped `Unlicense` exceptions: `tweetnacl@0.14.5` inherited through `bcrypt-pbkdf`, plus the two installed `fast-sha256@1.3.0` paths inherited through Pi 0.86.0. The checker does not globally allow future `Unlicense` packages. It also records exact MIT overrides for legacy `licenses[]` metadata in `ssh2`, `cpu-features`, and `buildcheck`.
 - `ssh2` may use optional native `cpu-features`/`nan` acceleration when install scripts are allowed. If optional native install is unavailable or scripts are ignored, `ssh2` falls back to its JavaScript path; Cogs does not depend on native acceleration for correctness or security in this slice.
 - `npm audit --audit-level=high` is clean for the pinned lockfile at this slice.
 

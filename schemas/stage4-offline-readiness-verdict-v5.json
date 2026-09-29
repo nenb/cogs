@@ -26,7 +26,8 @@
     "blockers",
     "local_preparation_scope",
     "trusted_render_preparation_complete",
-    "exact_image_runtime_closure_satisfied"
+    "exact_image_runtime_closure_satisfied",
+    "issue_42_stage2_evidence_accepted"
   ],
   "properties": {
     "version": {
@@ -101,16 +102,18 @@
     },
     "blockers": {
       "type": "array",
-      "maxItems": 9,
+      "maxItems": 11,
       "uniqueItems": true,
       "items": {
         "enum": [
-          "ISSUE_42_OPEN",
-          "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
+          "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
+          "RELEASE_IMAGE_SET_ABSENT",
           "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
-          "PROPOSED_ACCOUNT_BINDING_ABSENT",
+          "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
+          "ACCOUNT_BINDING_PROVIDER_UNOBSERVED",
           "CURRENT_PRICE_NOT_REVALIDATED",
           "CURRENT_QUOTA_NOT_REVALIDATED",
+          "SAVED_PLAN_DERIVED_CAPS_UNRESOLVED",
           "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
           "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
           "NO_EXECUTABLE_PROVIDER_ROUTE"
@@ -130,6 +133,9 @@
       "type": "boolean"
     },
     "selected_runtime_artifacts_authenticated": {
+      "type": "boolean"
+    },
+    "issue_42_stage2_evidence_accepted": {
       "type": "boolean"
     }
   },
@@ -157,45 +163,27 @@
               "$ref": "#/$defs/sha256"
             },
             "blockers": {
-              "type": "array",
-              "minItems": 9,
-              "maxItems": 9,
-              "uniqueItems": true,
-              "prefixItems": [
-                {
-                  "const": "ISSUE_42_OPEN"
-                },
-                {
-                  "const": "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT"
-                },
-                {
-                  "const": "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED"
-                },
-                {
-                  "const": "PROPOSED_ACCOUNT_BINDING_ABSENT"
-                },
-                {
-                  "const": "CURRENT_PRICE_NOT_REVALIDATED"
-                },
-                {
-                  "const": "CURRENT_QUOTA_NOT_REVALIDATED"
-                },
-                {
-                  "const": "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT"
-                },
-                {
-                  "const": "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT"
-                },
-                {
-                  "const": "NO_EXECUTABLE_PROVIDER_ROUTE"
-                }
-              ],
-              "items": false
+              "const": [
+                "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
+                "RELEASE_IMAGE_SET_ABSENT",
+                "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
+                "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
+                "ACCOUNT_BINDING_PROVIDER_UNOBSERVED",
+                "CURRENT_PRICE_NOT_REVALIDATED",
+                "CURRENT_QUOTA_NOT_REVALIDATED",
+                "SAVED_PLAN_DERIVED_CAPS_UNRESOLVED",
+                "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
+                "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
+                "NO_EXECUTABLE_PROVIDER_ROUTE"
+              ]
             },
             "candidate_artifact_closure_complete": {
-              "const": true
+              "const": false
             },
             "selected_runtime_artifacts_authenticated": {
+              "const": false
+            },
+            "issue_42_stage2_evidence_accepted": {
               "const": true
             }
           },
@@ -230,6 +218,9 @@
               "const": false
             },
             "selected_runtime_artifacts_authenticated": {
+              "const": false
+            },
+            "issue_42_stage2_evidence_accepted": {
               "const": false
             }
           },

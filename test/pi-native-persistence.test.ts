@@ -27,6 +27,14 @@ test("native append frontier is instance-local and includes branches and compact
   assert.equal(fence.state().durable, first);
   a.manager.appendThinkingLevelChange("off");
   a.manager.appendModelChange("synthetic", "model");
+  a.manager.appendUsage("cache_warm", "synthetic", "model", {
+    input: 1,
+    output: 1,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 2,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  });
   a.manager.appendSessionInfo("synthetic");
   a.manager.appendMessage({ role: "user", content: "synthetic", timestamp: 0 });
   a.manager.appendCustomMessageEntry("test", "synthetic", false);
@@ -37,8 +45,8 @@ test("native append frontier is instance-local and includes branches and compact
   a.manager.resetLeaf();
   a.manager.appendCustomEntry("root");
   const last = await fence.commitAtRest();
-  assert.equal(last.entries, 10);
-  assert.equal(last.revision, 10);
+  assert.equal(last.entries, 11);
+  assert.equal(last.revision, 11);
   assert.equal(fence.requireComplete(), last);
   assert.equal(SessionManager.prototype._persist, prototype);
   b.manager.appendCustomEntry("unaffected");

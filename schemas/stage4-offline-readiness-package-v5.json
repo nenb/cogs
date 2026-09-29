@@ -18,7 +18,9 @@
     "stop_destroy",
     "identities",
     "revalidation",
-    "blockers"
+    "blockers",
+    "stage2_issue42",
+    "issue_359_scope"
   ],
   "properties": {
     "version": {
@@ -43,7 +45,10 @@
         "release_eligible",
         "local_preparation_scope",
         "trusted_render_preparation_complete",
-        "exact_image_runtime_closure_satisfied"
+        "exact_image_runtime_closure_satisfied",
+        "candidate_artifact_closure_complete",
+        "selected_runtime_artifacts_authenticated",
+        "issue_42_stage2_evidence_accepted"
       ],
       "properties": {
         "local_preparation_complete": {
@@ -84,6 +89,15 @@
         },
         "exact_image_runtime_closure_satisfied": {
           "const": false
+        },
+        "candidate_artifact_closure_complete": {
+          "const": false
+        },
+        "selected_runtime_artifacts_authenticated": {
+          "const": false
+        },
+        "issue_42_stage2_evidence_accepted": {
+          "const": true
         }
       }
     },
@@ -285,10 +299,10 @@
               "$ref": "#/$defs/reviewedSandboxImage"
             },
             "release_image_set_present": {
-              "const": true
+              "const": false
             },
             "exact_image_closure_satisfied": {
-              "const": true
+              "const": false
             }
           }
         },
@@ -343,7 +357,8 @@
             "containerd_artifact_state",
             "qemu_artifact_sha256",
             "qemu_artifact_state",
-            "exact_runtime_artifact_closure_satisfied"
+            "exact_runtime_artifact_closure_satisfied",
+            "historical_stage2_containerd"
           ],
           "properties": {
             "kata_version": {
@@ -353,7 +368,7 @@
               "const": "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01"
             },
             "containerd_version": {
-              "const": "2.2.1"
+              "const": "2.2.5-1.amzn2023.0.1"
             },
             "qemu_version": {
               "const": "11.0.1"
@@ -380,10 +395,10 @@
               "const": "public-candidate-aws-fields-unresolved"
             },
             "containerd_artifact_sha256": {
-              "const": "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883"
+              "type": "null"
             },
             "containerd_artifact_state": {
-              "const": "authenticated-public-release-selected-candidate"
+              "const": "target-unauthenticated-unobserved-al2023-native-package"
             },
             "qemu_artifact_sha256": {
               "const": "1e4968d9cce98c7cba8f9e3488236cba56993d9747f268d03b0284f3df2b012d"
@@ -392,7 +407,16 @@
               "const": "authenticated-kata-bundled-release-member-selected-candidate"
             },
             "exact_runtime_artifact_closure_satisfied": {
-              "const": true
+              "const": false
+            },
+            "historical_stage2_containerd": {
+              "const": {
+                "artifact_sha256": "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883",
+                "artifact_state": "historical-authenticated-public-release-not-selected",
+                "version": "2.2.1",
+                "selected_runtime": false,
+                "interpretation": "historical-stage2-evidence-only"
+              }
             }
           }
         }
@@ -447,23 +471,22 @@
         "access",
         "data",
         "prohibited_resources",
-        "resource_graph"
+        "resource_graph",
+        "managed_addons",
+        "state_custody"
       ],
       "properties": {
         "state": {
           "const": "proposal-only-not-approved-not-price-or-quota-validated"
         },
         "account_binding": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["state", "account_sha256"],
-          "properties": {
-            "state": {
-              "const": "absent-blocking"
-            },
-            "account_sha256": {
-              "type": "null"
-            }
+          "const": {
+            "account_commitment_sha256": "65eb8fbcacd1a51be6de86ac302df96a98a41c6190a4a161bf720592bf6a2bb7",
+            "account_id": "372495030090",
+            "owner_declared": true,
+            "provider_observed": false,
+            "region": "us-east-1",
+            "state": "owner-declared-provider-unobserved"
           }
         },
         "region": {
@@ -475,7 +498,7 @@
         "spend": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "currency", "cap", "alert_thresholds", "hard_kill_claimed"],
+          "required": ["state", "currency", "cap", "alert_thresholds", "hard_kill_claimed", "alert_email"],
           "properties": {
             "state": {
               "const": "proposal-only-current-price-not-discovered"
@@ -487,24 +510,13 @@
               "const": 20
             },
             "alert_thresholds": {
-              "type": "array",
-              "minItems": 3,
-              "maxItems": 3,
-              "prefixItems": [
-                {
-                  "const": 5
-                },
-                {
-                  "const": 10
-                },
-                {
-                  "const": 20
-                }
-              ],
-              "items": false
+              "const": [5, 10, 20]
             },
             "hard_kill_claimed": {
               "const": false
+            },
+            "alert_email": {
+              "const": "byrnen8@tcd.ie"
             }
           }
         },
@@ -525,803 +537,323 @@
           }
         },
         "access": {
-          "const": "proposed-ssm-only-no-public-ssh-unexecuted"
+          "const": {
+            "eks_endpoint": "private-only",
+            "node_inbound_access": "none",
+            "administration": "ssm-only-via-trusted-node"
+          }
         },
         "data": {
           "const": "synthetic-repositories-identities-credentials-and-sessions-only"
         },
         "prohibited_resources": {
-          "type": "array",
-          "minItems": 12,
-          "maxItems": 12,
-          "prefixItems": [
-            {
-              "const": "gpu"
-            },
-            {
-              "const": "bare-metal"
-            },
-            {
-              "const": "spot"
-            },
-            {
-              "const": "nat-gateway"
-            },
-            {
-              "const": "load-balancer"
-            },
-            {
-              "const": "elastic-ip"
-            },
-            {
-              "const": "efs-workspace"
-            },
-            {
-              "const": "public-ingress"
-            },
-            {
-              "const": "production-data"
-            },
-            {
-              "const": "second-sandbox-node"
-            },
-            {
-              "const": "larger-instance"
-            },
-            {
-              "const": "other-region"
-            }
-          ],
-          "items": false
+          "const": [
+            "gpu",
+            "bare-metal",
+            "spot",
+            "nat-gateway",
+            "load-balancer",
+            "elastic-ip",
+            "efs-workspace",
+            "public-ingress",
+            "production-data",
+            "second-sandbox-node",
+            "larger-instance",
+            "other-region"
+          ]
         },
         "resource_graph": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "closed_world", "undeclared_resource_classes_allowed", "count_semantics", "classes"],
+          "required": [
+            "state",
+            "desired_direct_topology_complete",
+            "provider_projection_complete",
+            "provider_created_class_set",
+            "count_semantics",
+            "classes"
+          ],
           "properties": {
             "state": {
-              "const": "proposal-only-not-provider-validated"
+              "const": "owner-approved-proposal-not-provider-validated"
             },
-            "closed_world": {
+            "desired_direct_topology_complete": {
               "const": true
             },
-            "undeclared_resource_classes_allowed": {
+            "provider_projection_complete": {
               "const": false
             },
+            "provider_created_class_set": {
+              "const": "incomplete-pending-saved-plan-projection"
+            },
             "count_semantics": {
-              "const": "hard-maximum-proposal"
+              "const": "desired-direct-counts-and-zero-prohibitions;no-hard-caps;indirect-unresolved"
             },
             "classes": {
-              "type": "array",
-              "minItems": 38,
-              "maxItems": 38,
-              "uniqueItems": true,
-              "prefixItems": [
+              "const": [
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "eks-cluster"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "regional-control-plane"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "eks-cluster",
+                  "resource_type": "regional-private-endpoint",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "eks-managed-addon"
-                    },
-                    "maximum_count": {
-                      "const": 0
-                    },
-                    "resource_type": {
-                      "const": "none"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 5,
+                  "resource_class": "eks-managed-addon",
+                  "resource_type": "exact-approved-set",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "vpc"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "dedicated-ipv4-only"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "eks-access-entry",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "subnet"
-                    },
-                    "maximum_count": {
-                      "const": 2
-                    },
-                    "resource_type": {
-                      "const": "public-no-inbound"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "eks-pod-identity-association",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "route-table"
-                    },
-                    "maximum_count": {
-                      "const": 2
-                    },
-                    "resource_type": {
-                      "const": "campaign-dedicated"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "vpc",
+                  "resource_type": "dedicated-ipv4-only",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "route"
-                    },
-                    "maximum_count": {
-                      "const": 4
-                    },
-                    "resource_type": {
-                      "const": "two-local-two-internet-gateway"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 2,
+                  "resource_class": "subnet",
+                  "resource_type": "public-no-inbound",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "internet-gateway"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "campaign-dedicated"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "route-table",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "network-acl"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "vpc-default-closed-review"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "route",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "dhcp-options-association"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "vpc-default-closed-review"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "internet-gateway",
+                  "resource_type": "campaign-dedicated",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "nat-gateway"
-                    },
-                    "maximum_count": {
-                      "const": 0
-                    },
-                    "resource_type": {
-                      "const": "prohibited"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "network-acl",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "vpc-endpoint"
-                    },
-                    "maximum_count": {
-                      "const": 0
-                    },
-                    "resource_type": {
-                      "const": "prohibited"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "dhcp-options-association",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "elastic-ip"
-                    },
-                    "maximum_count": {
-                      "const": 0
-                    },
-                    "resource_type": {
-                      "const": "prohibited"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 0,
+                  "resource_class": "nat-gateway",
+                  "resource_type": "prohibited",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "load-balancer"
-                    },
-                    "maximum_count": {
-                      "const": 0
-                    },
-                    "resource_type": {
-                      "const": "prohibited"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 0,
+                  "resource_class": "vpc-endpoint",
+                  "resource_type": "prohibited",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "target-group"
-                    },
-                    "maximum_count": {
-                      "const": 0
-                    },
-                    "resource_type": {
-                      "const": "prohibited"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 0,
+                  "resource_class": "elastic-ip",
+                  "resource_type": "prohibited",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "security-group"
-                    },
-                    "maximum_count": {
-                      "const": 5
-                    },
-                    "resource_type": {
-                      "const": "default-cluster-shared-trusted-sandbox"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 0,
+                  "resource_class": "load-balancer",
+                  "resource_type": "prohibited",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "iam-role"
-                    },
-                    "maximum_count": {
-                      "const": 4
-                    },
-                    "resource_type": {
-                      "const": "cluster-trusted-node-sandbox-node-ttl-function"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 0,
+                  "resource_class": "target-group",
+                  "resource_type": "prohibited",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "iam-customer-managed-policy"
-                    },
-                    "maximum_count": {
-                      "const": 4
-                    },
-                    "resource_type": {
-                      "const": "one-per-campaign-role"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "security-group",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "iam-policy-attachment"
-                    },
-                    "maximum_count": {
-                      "const": 8
-                    },
-                    "resource_type": {
-                      "const": "bounded-role-attachments"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "iam-role",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "instance-profile"
-                    },
-                    "maximum_count": {
-                      "const": 2
-                    },
-                    "resource_type": {
-                      "const": "trusted-node-and-sandbox-node"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "iam-customer-managed-policy",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "launch-template"
-                    },
-                    "maximum_count": {
-                      "const": 2
-                    },
-                    "resource_type": {
-                      "const": "trusted-and-sandbox-explicit-version"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "iam-policy-attachment",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "managed-node-group"
-                    },
-                    "maximum_count": {
-                      "const": 2
-                    },
-                    "resource_type": {
-                      "const": "trusted-and-sandbox"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "instance-profile",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "autoscaling-group"
-                    },
-                    "maximum_count": {
-                      "const": 2
-                    },
-                    "resource_type": {
-                      "const": "managed-node-group-owned"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 2,
+                  "resource_class": "launch-template",
+                  "resource_type": "trusted-and-sandbox-explicit-version",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "trusted-node"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "c8i-flex.large-on-demand"
-                    },
-                    "size_gib_each": {
-                      "const": 30
-                    }
-                  }
+                  "desired_count": 2,
+                  "resource_class": "managed-node-group",
+                  "resource_type": "trusted-and-sandbox",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "sandbox-node"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "c8i-flex.large-on-demand-nested-kvm"
-                    },
-                    "size_gib_each": {
-                      "const": 30
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "autoscaling-group",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "network-interface"
-                    },
-                    "maximum_count": {
-                      "const": 10
-                    },
-                    "resource_type": {
-                      "const": "hard-maximum-provider-managed-and-node"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "trusted-node",
+                  "resource_type": "al2023-c8i-flex.large-on-demand",
+                  "size_gib_each": 30
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-trusted-root-volume"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "encrypted-gp3-delete-on-termination"
-                    },
-                    "size_gib_each": {
-                      "const": 30
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "sandbox-node",
+                  "resource_type": "al2023-c8i-flex.large-on-demand-nested-kvm",
+                  "size_gib_each": 30
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-sandbox-root-volume"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "encrypted-gp3-delete-on-termination"
-                    },
-                    "size_gib_each": {
-                      "const": 30
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "network-interface",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-workspace-volume"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "encrypted-gp3-retain"
-                    },
-                    "size_gib_each": {
-                      "const": 20
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "ebs-trusted-root-volume",
+                  "resource_type": "encrypted-gp3-delete-on-termination",
+                  "size_gib_each": 30
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-session-state-volume"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "encrypted-gp3-retain"
-                    },
-                    "size_gib_each": {
-                      "const": 5
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "ebs-sandbox-root-volume",
+                  "resource_type": "encrypted-gp3-delete-on-termination",
+                  "size_gib_each": 30
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-snapshot"
-                    },
-                    "maximum_count": {
-                      "const": 0
-                    },
-                    "resource_type": {
-                      "const": "prohibited"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "ebs-workspace-volume",
+                  "resource_type": "encrypted-gp3-retain",
+                  "size_gib_each": 20
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "kms-key"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "symmetric-campaign-storage"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "ebs-session-state-volume",
+                  "resource_type": "encrypted-gp3-retain",
+                  "size_gib_each": 5
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "kms-alias"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "campaign-key-alias"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 0,
+                  "resource_class": "ebs-snapshot",
+                  "resource_type": "prohibited",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "log-group"
-                    },
-                    "maximum_count": {
-                      "const": 2
-                    },
-                    "resource_type": {
-                      "const": "eks-control-and-ttl-function-30-day"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 0,
+                  "resource_class": "kms-key",
+                  "resource_type": "customer-managed-prohibited",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "budget"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "usd-20-proposal"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 0,
+                  "resource_class": "kms-alias",
+                  "resource_type": "customer-managed-prohibited",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "budget-notification"
-                    },
-                    "maximum_count": {
-                      "const": 3
-                    },
-                    "resource_type": {
-                      "const": "usd-5-10-20-proposal"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": null,
+                  "resource_class": "log-group",
+                  "resource_type": "saved-plan-derived-unresolved",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ttl-schedule"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "absolute-14400-seconds"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "campaign-state-bucket",
+                  "resource_type": "s3-provider-state-survives-infrastructure-destroy",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ttl-function"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "terminator-128-mib"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "campaign-state-object",
+                  "resource_type": "s3-provider-state-survives-infrastructure-destroy",
+                  "size_gib_each": null
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "maximum_count", "resource_type", "size_gib_each"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ttl-function-permission"
-                    },
-                    "maximum_count": {
-                      "const": 1
-                    },
-                    "resource_type": {
-                      "const": "scheduler-invoke-only"
-                    },
-                    "size_gib_each": {
-                      "type": "null"
-                    }
-                  }
+                  "desired_count": 1,
+                  "resource_class": "budget",
+                  "resource_type": "usd-20-proposal",
+                  "size_gib_each": null
+                },
+                {
+                  "desired_count": 3,
+                  "resource_class": "budget-notification",
+                  "resource_type": "usd-5-10-20-proposal",
+                  "size_gib_each": null
+                },
+                {
+                  "desired_count": 1,
+                  "resource_class": "ttl-schedule",
+                  "resource_type": "absolute-14400-seconds",
+                  "size_gib_each": null
+                },
+                {
+                  "desired_count": 1,
+                  "resource_class": "ttl-function",
+                  "resource_type": "terminator-128-mib",
+                  "size_gib_each": null
+                },
+                {
+                  "desired_count": 1,
+                  "resource_class": "ttl-function-permission",
+                  "resource_type": "scheduler-invoke-only",
+                  "size_gib_each": null
                 }
-              ],
-              "items": false
+              ]
             }
+          }
+        },
+        "managed_addons": {
+          "const": ["vpc-cni", "kube-proxy", "coredns", "eks-pod-identity-agent", "aws-ebs-csi-driver"]
+        },
+        "state_custody": {
+          "const": {
+            "provider_state": "one-owner-declared-state-bucket-desired-custody-survives-infrastructure-destroy;identity-provider-unobserved",
+            "retirement": "retained-ebs-explicitly-detach-delete;state-bucket-all-versions-delete-markers-multipart-uploads-lock-residue-retire"
           }
         }
       }
@@ -1371,7 +903,8 @@
         "cases",
         "destroy_required_after_every_outcome",
         "uncertainty_blocks_success_and_retry",
-        "independent_inventory"
+        "independent_inventory",
+        "retirement_order"
       ],
       "properties": {
         "kind": {
@@ -1381,84 +914,32 @@
           "const": false
         },
         "cases": {
-          "type": "array",
-          "minItems": 6,
-          "maxItems": 6,
-          "prefixItems": [
+          "const": [
             {
-              "type": "object",
-              "$ref": "#/$defs/stopCase",
-              "properties": {
-                "case": {
-                  "const": "apply-failure"
-                },
-                "result": {
-                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
-                }
-              }
+              "case": "apply-failure",
+              "result": "stop-preserve-evidence-require-destroy-and-independent-inventory"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/stopCase",
-              "properties": {
-                "case": {
-                  "const": "bootstrap-failure"
-                },
-                "result": {
-                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
-                }
-              }
+              "case": "bootstrap-failure",
+              "result": "stop-preserve-evidence-require-destroy-and-independent-inventory"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/stopCase",
-              "properties": {
-                "case": {
-                  "const": "test-failure"
-                },
-                "result": {
-                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
-                }
-              }
+              "case": "test-failure",
+              "result": "stop-preserve-evidence-require-destroy-and-independent-inventory"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/stopCase",
-              "properties": {
-                "case": {
-                  "const": "timeout"
-                },
-                "result": {
-                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
-                }
-              }
+              "case": "timeout",
+              "result": "stop-preserve-evidence-require-destroy-and-independent-inventory"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/stopCase",
-              "properties": {
-                "case": {
-                  "const": "interruption"
-                },
-                "result": {
-                  "const": "stop-preserve-evidence-require-destroy-and-independent-inventory"
-                }
-              }
+              "case": "interruption",
+              "result": "stop-preserve-evidence-require-destroy-and-independent-inventory"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/stopCase",
-              "properties": {
-                "case": {
-                  "const": "inventory-uncertainty"
-                },
-                "result": {
-                  "const": "preserve-uncertain-block-success-and-retry"
-                }
-              }
+              "case": "inventory-uncertainty",
+              "result": "preserve-uncertain-block-success-and-retry"
             }
-          ],
-          "items": false
+          ]
         },
         "destroy_required_after_every_outcome": {
           "const": true
@@ -1469,7 +950,14 @@
         "independent_inventory": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "zero_claimed", "scopes", "tag_only_inventory_allowed"],
+          "required": [
+            "state",
+            "zero_claimed",
+            "scopes",
+            "tag_only_inventory_allowed",
+            "custody_inventory_before_retirement",
+            "final_zero_inventory_deletion_blind"
+          ],
           "properties": {
             "state": {
               "const": "required-future-unexecuted"
@@ -1478,740 +966,279 @@
               "const": false
             },
             "scopes": {
-              "type": "array",
-              "minItems": 38,
-              "maxItems": 38,
-              "uniqueItems": true,
-              "prefixItems": [
+              "const": [
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "eks-cluster"
-                    },
-                    "service": {
-                      "const": "eks"
-                    },
-                    "scope": {
-                      "const": "clusters-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "eks-cluster",
+                  "scope": "clusters-account-region-service-wide",
+                  "service": "eks",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "eks-managed-addon"
-                    },
-                    "service": {
-                      "const": "eks"
-                    },
-                    "scope": {
-                      "const": "addons-for-every-cluster-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "eks-managed-addon",
+                  "scope": "addons-for-every-cluster-account-region-service-wide",
+                  "service": "eks",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "vpc"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "vpcs-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "eks-access-entry",
+                  "scope": "access-entries-for-every-cluster-account-region-service-wide",
+                  "service": "eks",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "subnet"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "subnets-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "eks-pod-identity-association",
+                  "scope": "pod-identity-associations-for-every-cluster-account-region-service-wide",
+                  "service": "eks",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "route-table"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "route-tables-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "vpc",
+                  "scope": "vpcs-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "route"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "routes-for-every-route-table-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "subnet",
+                  "scope": "subnets-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "internet-gateway"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "internet-gateways-account-region-service-wide-all-attachment-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "route-table",
+                  "scope": "route-tables-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "network-acl"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "network-acls-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "route",
+                  "scope": "routes-for-every-route-table-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "dhcp-options-association"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "dhcp-options-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "internet-gateway",
+                  "scope": "internet-gateways-account-region-service-wide-all-attachment-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "nat-gateway"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "nat-gateways-account-region-service-wide-all-lifecycle-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "network-acl",
+                  "scope": "network-acls-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "vpc-endpoint"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "vpc-endpoints-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "dhcp-options-association",
+                  "scope": "dhcp-options-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "elastic-ip"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "addresses-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "nat-gateway",
+                  "scope": "nat-gateways-account-region-service-wide-all-lifecycle-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "load-balancer"
-                    },
-                    "service": {
-                      "const": "elasticloadbalancing"
-                    },
-                    "scope": {
-                      "const": "load-balancers-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "vpc-endpoint",
+                  "scope": "vpc-endpoints-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "target-group"
-                    },
-                    "service": {
-                      "const": "elasticloadbalancing"
-                    },
-                    "scope": {
-                      "const": "target-groups-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "elastic-ip",
+                  "scope": "addresses-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "security-group"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "security-groups-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "load-balancer",
+                  "scope": "load-balancers-account-region-service-wide",
+                  "service": "elasticloadbalancing",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "iam-role"
-                    },
-                    "service": {
-                      "const": "iam"
-                    },
-                    "scope": {
-                      "const": "roles-account-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "target-group",
+                  "scope": "target-groups-account-region-service-wide",
+                  "service": "elasticloadbalancing",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "iam-customer-managed-policy"
-                    },
-                    "service": {
-                      "const": "iam"
-                    },
-                    "scope": {
-                      "const": "customer-managed-policies-account-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "security-group",
+                  "scope": "security-groups-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "iam-policy-attachment"
-                    },
-                    "service": {
-                      "const": "iam"
-                    },
-                    "scope": {
-                      "const": "role-and-policy-attachments-account-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "iam-role",
+                  "scope": "roles-account-service-wide",
+                  "service": "iam",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "instance-profile"
-                    },
-                    "service": {
-                      "const": "iam"
-                    },
-                    "scope": {
-                      "const": "instance-profiles-account-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "iam-customer-managed-policy",
+                  "scope": "customer-managed-policies-account-service-wide",
+                  "service": "iam",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "launch-template"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "launch-templates-and-all-versions-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "iam-policy-attachment",
+                  "scope": "role-and-policy-attachments-account-service-wide",
+                  "service": "iam",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "managed-node-group"
-                    },
-                    "service": {
-                      "const": "eks"
-                    },
-                    "scope": {
-                      "const": "nodegroups-for-every-cluster-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "instance-profile",
+                  "scope": "instance-profiles-account-service-wide",
+                  "service": "iam",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "autoscaling-group"
-                    },
-                    "service": {
-                      "const": "autoscaling"
-                    },
-                    "scope": {
-                      "const": "groups-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "launch-template",
+                  "scope": "launch-templates-and-all-versions-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "trusted-node"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "instances-account-region-service-wide-all-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "managed-node-group",
+                  "scope": "nodegroups-for-every-cluster-account-region-service-wide",
+                  "service": "eks",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "sandbox-node"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "instances-account-region-service-wide-all-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "autoscaling-group",
+                  "scope": "groups-account-region-service-wide",
+                  "service": "autoscaling",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "network-interface"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "network-interfaces-account-region-service-wide-all-attachment-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "trusted-node",
+                  "scope": "instances-account-region-service-wide-all-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-trusted-root-volume"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "volumes-account-region-service-wide-all-attachment-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "sandbox-node",
+                  "scope": "instances-account-region-service-wide-all-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-sandbox-root-volume"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "volumes-account-region-service-wide-all-attachment-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "network-interface",
+                  "scope": "network-interfaces-account-region-service-wide-all-attachment-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-workspace-volume"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "volumes-account-region-service-wide-all-attachment-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "ebs-trusted-root-volume",
+                  "scope": "volumes-account-region-service-wide-all-attachment-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-session-state-volume"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "volumes-account-region-service-wide-all-attachment-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "ebs-sandbox-root-volume",
+                  "scope": "volumes-account-region-service-wide-all-attachment-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ebs-snapshot"
-                    },
-                    "service": {
-                      "const": "ec2"
-                    },
-                    "scope": {
-                      "const": "snapshots-owned-by-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "ebs-workspace-volume",
+                  "scope": "volumes-account-region-service-wide-all-attachment-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "kms-key"
-                    },
-                    "service": {
-                      "const": "kms"
-                    },
-                    "scope": {
-                      "const": "keys-account-region-service-wide-all-key-states"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "ebs-session-state-volume",
+                  "scope": "volumes-account-region-service-wide-all-attachment-states",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "kms-alias"
-                    },
-                    "service": {
-                      "const": "kms"
-                    },
-                    "scope": {
-                      "const": "aliases-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "ebs-snapshot",
+                  "scope": "snapshots-owned-by-account-region-service-wide",
+                  "service": "ec2",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "log-group"
-                    },
-                    "service": {
-                      "const": "logs"
-                    },
-                    "scope": {
-                      "const": "log-groups-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "kms-key",
+                  "scope": "keys-account-region-service-wide-all-key-states",
+                  "service": "kms",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "budget"
-                    },
-                    "service": {
-                      "const": "budgets"
-                    },
-                    "scope": {
-                      "const": "budgets-account-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "kms-alias",
+                  "scope": "aliases-account-region-service-wide",
+                  "service": "kms",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "budget-notification"
-                    },
-                    "service": {
-                      "const": "budgets"
-                    },
-                    "scope": {
-                      "const": "notifications-for-every-budget-account-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "log-group",
+                  "scope": "log-groups-account-region-service-wide",
+                  "service": "logs",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ttl-schedule"
-                    },
-                    "service": {
-                      "const": "scheduler"
-                    },
-                    "scope": {
-                      "const": "schedules-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "campaign-state-bucket",
+                  "scope": "exact-owner-declared-state-bucket-after-identity-freeze",
+                  "service": "s3",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ttl-function"
-                    },
-                    "service": {
-                      "const": "lambda"
-                    },
-                    "scope": {
-                      "const": "functions-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "campaign-state-object",
+                  "scope": "all-versions-delete-markers-multipart-uploads-and-lock-residue-for-exact-owner-declared-state-bucket-after-identity-freeze",
+                  "service": "s3",
+                  "tag_only": false
                 },
                 {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["resource_class", "service", "scope", "tag_only"],
-                  "properties": {
-                    "resource_class": {
-                      "const": "ttl-function-permission"
-                    },
-                    "service": {
-                      "const": "lambda"
-                    },
-                    "scope": {
-                      "const": "resource-policies-for-every-function-account-region-service-wide"
-                    },
-                    "tag_only": {
-                      "const": false
-                    }
-                  }
+                  "resource_class": "budget",
+                  "scope": "budgets-account-service-wide",
+                  "service": "budgets",
+                  "tag_only": false
+                },
+                {
+                  "resource_class": "budget-notification",
+                  "scope": "notifications-for-every-budget-account-service-wide",
+                  "service": "budgets",
+                  "tag_only": false
+                },
+                {
+                  "resource_class": "ttl-schedule",
+                  "scope": "schedules-account-region-service-wide",
+                  "service": "scheduler",
+                  "tag_only": false
+                },
+                {
+                  "resource_class": "ttl-function",
+                  "scope": "functions-account-region-service-wide",
+                  "service": "lambda",
+                  "tag_only": false
+                },
+                {
+                  "resource_class": "ttl-function-permission",
+                  "scope": "resource-policies-for-every-function-account-region-service-wide",
+                  "service": "lambda",
+                  "tag_only": false
                 }
-              ],
-              "items": false
+              ]
             },
             "tag_only_inventory_allowed": {
               "const": false
+            },
+            "custody_inventory_before_retirement": {
+              "const": true
+            },
+            "final_zero_inventory_deletion_blind": {
+              "const": true
             }
           }
+        },
+        "retirement_order": {
+          "const": [
+            "infrastructure-destroy",
+            "independent-retained-state-custody-inventory",
+            "retained-ebs-and-all-s3-state-residue-retirement",
+            "final-independent-deletion-blind-zero-residue-inventory"
+          ]
         }
       }
     },
@@ -2227,137 +1254,72 @@
           "const": false
         },
         "roles": {
-          "type": "array",
-          "minItems": 5,
-          "maxItems": 5,
-          "prefixItems": [
+          "const": [
             {
-              "type": "object",
-              "$ref": "#/$defs/absentRole",
-              "properties": {
-                "role": {
-                  "const": "campaign-operator"
-                }
-              }
+              "owner_declared": "Nick Byrne",
+              "principal_binding_sha256": null,
+              "role": "campaign-operator",
+              "state": "owner-declared-principal-binding-unobserved"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/absentRole",
-              "properties": {
-                "role": {
-                  "const": "campaign-approver"
-                }
-              }
+              "owner_declared": "Nick Byrne",
+              "principal_binding_sha256": null,
+              "role": "campaign-approver",
+              "state": "owner-declared-principal-binding-unobserved"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/absentRole",
-              "properties": {
-                "role": {
-                  "const": "budget-approver"
-                }
-              }
+              "owner_declared": "Nick Byrne",
+              "principal_binding_sha256": null,
+              "role": "budget-approver",
+              "state": "owner-declared-principal-binding-unobserved"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/absentRole",
-              "properties": {
-                "role": {
-                  "const": "security-evidence-reviewer"
-                }
-              }
+              "owner_declared": "Nick Byrne",
+              "principal_binding_sha256": null,
+              "role": "security-evidence-reviewer",
+              "state": "owner-declared-principal-binding-unobserved"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/absentRole",
-              "properties": {
-                "role": {
-                  "const": "zero-inventory-observer"
-                }
-              }
+              "owner_declared": "Nick Byrne",
+              "principal_binding_sha256": null,
+              "role": "zero-inventory-observer",
+              "state": "owner-declared-principal-binding-unobserved"
             }
-          ],
-          "items": false
+          ]
         },
         "required_separations": {
-          "type": "array",
-          "minItems": 6,
-          "maxItems": 6,
-          "prefixItems": [
+          "const": [
             {
-              "type": "object",
-              "$ref": "#/$defs/separation",
-              "properties": {
-                "left": {
-                  "const": "campaign-operator"
-                },
-                "right": {
-                  "const": "campaign-approver"
-                }
-              }
+              "left": "campaign-operator",
+              "right": "campaign-approver",
+              "state": "required-not-proven"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/separation",
-              "properties": {
-                "left": {
-                  "const": "campaign-operator"
-                },
-                "right": {
-                  "const": "budget-approver"
-                }
-              }
+              "left": "campaign-operator",
+              "right": "budget-approver",
+              "state": "required-not-proven"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/separation",
-              "properties": {
-                "left": {
-                  "const": "campaign-operator"
-                },
-                "right": {
-                  "const": "security-evidence-reviewer"
-                }
-              }
+              "left": "campaign-operator",
+              "right": "security-evidence-reviewer",
+              "state": "required-not-proven"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/separation",
-              "properties": {
-                "left": {
-                  "const": "campaign-operator"
-                },
-                "right": {
-                  "const": "zero-inventory-observer"
-                }
-              }
+              "left": "campaign-operator",
+              "right": "zero-inventory-observer",
+              "state": "required-not-proven"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/separation",
-              "properties": {
-                "left": {
-                  "const": "campaign-approver"
-                },
-                "right": {
-                  "const": "zero-inventory-observer"
-                }
-              }
+              "left": "campaign-approver",
+              "right": "zero-inventory-observer",
+              "state": "required-not-proven"
             },
             {
-              "type": "object",
-              "$ref": "#/$defs/separation",
-              "properties": {
-                "left": {
-                  "const": "security-evidence-reviewer"
-                },
-                "right": {
-                  "const": "zero-inventory-observer"
-                }
-              }
+              "left": "security-evidence-reviewer",
+              "right": "zero-inventory-observer",
+              "state": "required-not-proven"
             }
-          ],
-          "items": false
+          ]
         }
       }
     },
@@ -2370,7 +1332,7 @@
           "const": true
         },
         "issue_42_state": {
-          "const": "open-blocking"
+          "const": "validated-closed-historical-stage2-only"
         },
         "price_state": {
           "const": "not-discovered-by-this-package"
@@ -2379,111 +1341,159 @@
           "const": "not-discovered-by-this-package"
         },
         "triggers": {
-          "type": "array",
-          "minItems": 20,
-          "maxItems": 20,
-          "uniqueItems": true,
-          "prefixItems": [
-            {
-              "const": "issue-42-closure"
-            },
-            {
-              "const": "source-change"
-            },
-            {
-              "const": "pin-change"
-            },
-            {
-              "const": "price-change"
-            },
-            {
-              "const": "quota-change"
-            },
-            {
-              "const": "campaign-shape-change"
-            },
-            {
-              "const": "helm-chart-change"
-            },
-            {
-              "const": "helm-values-change"
-            },
-            {
-              "const": "renderer-change"
-            },
-            {
-              "const": "helm-tool-identity-or-version-change"
-            },
-            {
-              "const": "validation-procedure-change"
-            },
-            {
-              "const": "security-advisory-or-disposition-expiry"
-            },
-            {
-              "const": "account-binding-change"
-            },
-            {
-              "const": "principal-binding-change"
-            },
-            {
-              "const": "separation-state-change"
-            },
-            {
-              "const": "campaign-approval-change"
-            },
-            {
-              "const": "campaign-envelope-change"
-            },
-            {
-              "const": "campaign-attempt-change"
-            },
-            {
-              "const": "stop-destroy-procedure-change"
-            },
-            {
-              "const": "independent-inventory-scope-or-procedure-change"
-            }
-          ],
-          "items": false
+          "const": [
+            "issue-42-closure",
+            "source-change",
+            "pin-change",
+            "price-change",
+            "quota-change",
+            "campaign-shape-change",
+            "helm-chart-change",
+            "helm-values-change",
+            "renderer-change",
+            "helm-tool-identity-or-version-change",
+            "validation-procedure-change",
+            "security-advisory-or-disposition-expiry",
+            "account-binding-change",
+            "principal-binding-change",
+            "separation-state-change",
+            "campaign-approval-change",
+            "campaign-envelope-change",
+            "campaign-attempt-change",
+            "stop-destroy-procedure-change",
+            "independent-inventory-scope-or-procedure-change"
+          ]
         }
       }
     },
     "blockers": {
-      "type": "array",
-      "minItems": 9,
-      "maxItems": 9,
-      "uniqueItems": true,
-      "prefixItems": [
-        {
-          "const": "ISSUE_42_OPEN"
+      "const": [
+        "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
+        "RELEASE_IMAGE_SET_ABSENT",
+        "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
+        "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
+        "ACCOUNT_BINDING_PROVIDER_UNOBSERVED",
+        "CURRENT_PRICE_NOT_REVALIDATED",
+        "CURRENT_QUOTA_NOT_REVALIDATED",
+        "SAVED_PLAN_DERIVED_CAPS_UNRESOLVED",
+        "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
+        "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
+        "NO_EXECUTABLE_PROVIDER_ROUTE"
+      ]
+    },
+    "stage2_issue42": {
+      "const": {
+        "artifact_metadata": {
+          "batch_commitment_sha256": "5d50d5a177a3d319d384b6001a4108dab1176aad80582ce44803fed8a5fe7a0e",
+          "continuation": {
+            "artifact_id": 11019131881,
+            "digest": "sha256:766be26960daa1a773c5573ff95d04baaf389a5f394c0d157e1129b49a21443a"
+          },
+          "evidence": {
+            "artifact_id": 11028934499,
+            "digest": "sha256:1882d69e41120f70d1f7cfb66bcaad3038d1181b47ad96534f452efbd16167f9"
+          }
         },
-        {
-          "const": "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT"
+        "authority": "exact-historical-closure-record-bound-into-stage4-package-root",
+        "campaign": {
+          "cycle_count": 7,
+          "destroy_attempts": 7,
+          "inventory_observations": 8,
+          "result": "pass",
+          "run_attempt": 1,
+          "run_id": 36522381037,
+          "workload_measurements": 21
         },
-        {
-          "const": "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED"
+        "claims": {
+          "issue_42_acceptance_satisfied": true,
+          "release_authority_granted": false,
+          "stage4_authority_granted": false
         },
-        {
-          "const": "PROPOSED_ACCOUNT_BINDING_ABSENT"
+        "package": {
+          "available": true,
+          "member_count": 6,
+          "members": [
+            [
+              "aws-stage2-completion-evidence-v4.json",
+              97209,
+              "2a7d2c91ff0ebfcb0494b0608ee672a5e77efd721de73002c46f6dcd52678acc"
+            ],
+            [
+              "aws-stage2-completion-publication-v2.json",
+              1167,
+              "06a71e0e7c16932f541de46c26e4f45c9aececbd0a25eda977aba3c8b4b763f2"
+            ],
+            [
+              "aws-stage2-completion-report-v4.md",
+              1792,
+              "20eb48f7148f5cea13d16b2ef7106cc72f4284ccc83275a5f99d560caa76637b"
+            ],
+            [
+              "aws-stage2-production-continuation-admission-v1.json",
+              1862,
+              "f39f745970013764708275c337ffe2ec4d52b629ceec176642cb858e8c810910"
+            ],
+            [
+              "aws-stage2-production-continuation-v1.bundle.json",
+              10508,
+              "21a023ba0c4c46670876c74a68746712660c9a9bb9fd37771803c35bab3211d8"
+            ],
+            [
+              "aws-stage2-production-continuation-v1.json",
+              60064,
+              "fb1e316c9c7350ff88a38838fcf076e462d7691b1cf24c8960f331f01fcd61e1"
+            ]
+          ]
         },
-        {
-          "const": "CURRENT_PRICE_NOT_REVALIDATED"
+        "source": {
+          "control_revision": "c37baf5c1fbb8f1e335945ad7ac93452d4537c9d",
+          "historical_hgq_reopened_or_regenerated": false,
+          "implementation_revision": "ba085947eaee321dfb724d94169d42bc36d397b0",
+          "qualification_revision": "2d4b61a63cdb08a92d5fbde9095532fad2383e90",
+          "revision": "ea0e814df4a21cc0e307fd5074be4e7377d9bbcf"
         },
-        {
-          "const": "CURRENT_QUOTA_NOT_REVALIDATED"
+        "validation": {
+          "evidence_sha256": "2a7d2c91ff0ebfcb0494b0608ee672a5e77efd721de73002c46f6dcd52678acc",
+          "final_zero_inventory_sha256": "f6f11122417090d4edb52e756c470ce550296e8a07a7299db01704efbf8237b4",
+          "final_zero_total": 0,
+          "independent_audit_sha256": "d2d9fb4f1bbb8b9c141d9d27457093a0df9853210a2e1bb4eeef161f386c7bd6",
+          "publication_sha256": "06a71e0e7c16932f541de46c26e4f45c9aececbd0a25eda977aba3c8b4b763f2",
+          "readback_byte_equal": true,
+          "receipt_sha256": "cf9d9864cf9a16569826c6794aa360c282288f93c3991afe6ec86a259d910ef2",
+          "v4_evidence_validated": true,
+          "v4_package_validated": true
         },
-        {
-          "const": "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT"
+        "validation_methods": {
+          "bounded_semantic_validation": {
+            "succeeded": true,
+            "verifier": "injected-verifier-after-separate-offline-cosign-success"
+          },
+          "fixed_root_production_cli": {
+            "result": "not-runnable-on-this-host-fixed-linux-paths-absent",
+            "succeeded": false
+          },
+          "offline_cosign": {
+            "certificate_identity": "https://github.com/nenb/cogs/.github/workflows/stage2-production-campaign.yml@refs/heads/main",
+            "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+            "cosign_darwin_arm64_sha256": "6e509ae3b7eb6e577378a6748a61035b2e063b26769d1671723fef55c6374cea",
+            "cosign_version": "v3.1.2",
+            "succeeded": true,
+            "trusted_root_sha256": "844a1c6de3986c9f02070266b25e0d1a2fa99ceccc89f6b9ad90aae47b62a16e"
+          }
         },
-        {
-          "const": "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT"
-        },
-        {
-          "const": "NO_EXECUTABLE_PROVIDER_ROUTE"
+        "version": "cogs.stage2-issue42-historical-closure-record/v1"
+      }
+    },
+    "issue_359_scope": {
+      "const": {
+        "issue": "S4-08/#359",
+        "openbao": {
+          "disposition": "excluded-unclaimed-only",
+          "required_for_issue_359": false,
+          "required_for_issue_360_361_362_exit_production_release": true,
+          "qualification_claimed": false
         }
-      ],
-      "items": false
+      }
     }
   },
   "$defs": {
@@ -2511,7 +1521,7 @@
     "absentRole": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["role", "principal_binding_sha256", "state"],
+      "required": ["role", "principal_binding_sha256", "state", "owner_declared"],
       "properties": {
         "role": {
           "type": "string",
@@ -2521,7 +1531,10 @@
           "type": "null"
         },
         "state": {
-          "const": "not-present-blocking"
+          "const": "owner-declared-principal-binding-unobserved"
+        },
+        "owner_declared": {
+          "const": "Nick Byrne"
         }
       }
     },
@@ -2552,7 +1565,7 @@
           "const": "ghcr.io/nenb/cogs/worker@sha256:e6f26544a44ffc8cbda6973fb1ac771a7725482f3b722c69e6318ce018260e9e"
         },
         "state": {
-          "const": "reviewed-current-source-image-set"
+          "const": "reviewed-historical-source-image-set"
         }
       }
     },
@@ -2565,7 +1578,7 @@
           "const": "ghcr.io/nenb/cogs/sandbox@sha256:5652f75300f8ec31a50731140ae7bee4d4e205af964044b29c7433b02497231d"
         },
         "state": {
-          "const": "reviewed-current-source-image-set"
+          "const": "reviewed-historical-source-image-set"
         }
       }
     }

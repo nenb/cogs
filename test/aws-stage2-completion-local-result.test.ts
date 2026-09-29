@@ -409,6 +409,14 @@ test("remediation budget has closed whole-file ownership and charges renamed des
   ) as {
     global_gross_line_high: number;
     global_gross_byte_high: number;
+    issue358_stage4_local_preparation: {
+      base_revision: string;
+      gross_lines: number;
+      gross_bytes: number;
+      new_file_high: number;
+      readiness_regenerations: number;
+      paths: string[];
+    };
     owners: Array<{
       name: string;
       gross_line_high: number;
@@ -445,6 +453,24 @@ test("remediation budget has closed whole-file ownership and charges renamed des
   );
   const paths = manifest.owners.flatMap((owner) => owner.paths);
   assert.equal(new Set(paths).size, paths.length);
+  const issue358 = manifest.issue358_stage4_local_preparation;
+  assert.deepEqual(
+    {
+      base_revision: issue358.base_revision,
+      gross_lines: issue358.gross_lines,
+      gross_bytes: issue358.gross_bytes,
+      new_file_high: issue358.new_file_high,
+      readiness_regenerations: issue358.readiness_regenerations,
+    },
+    {
+      base_revision: "ea0e814df4a21cc0e307fd5074be4e7377d9bbcf",
+      gross_lines: 4_000,
+      gross_bytes: 550_000,
+      new_file_high: 0,
+      readiness_regenerations: 0,
+    },
+  );
+  assert.deepEqual(issue358.paths, [...issue358.paths].sort());
   const accountingSource = readFileSync(join(root, "scripts/check-stage2-retained-lines.py"), "utf8");
   assert.match(accountingSource, /diff\.renames=false/u);
   assert.match(accountingSource, /"--no-renames"/u);
@@ -467,6 +493,7 @@ test("remediation budget has closed whole-file ownership and charges renamed des
       "--name-only",
       "-z",
       "242bbefeae5444118d9e97b46597130b509ca253",
+      "ea0e814df4a21cc0e307fd5074be4e7377d9bbcf",
       "--",
       ".",
     ],
