@@ -331,6 +331,7 @@ import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,_,_,_=m['_remediation_budget'](); p=b['post_campaign_admission_miss_remediation']
 assert p['base_revision']=='43f3f5738b2d944df2d6077e69b882db1e2d81d0'
+assert p['terminal_revision']=='c1bb1669365ad237b544c70872679118e811b69d'
 assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(160,1000000,1)
 assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
 head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_campaign_admission_miss_consumption'](b,head)
@@ -340,6 +341,30 @@ scope['_git']=lambda args: '2' if args[:2]==['rev-list','--count'] else real_git
 try: m['_post_campaign_admission_miss_consumption'](b,head)
 except m['LineBudgetError']: pass
 else: raise AssertionError('second descendant accepted')
+`);
+});
+
+test("ADR0370 amendment admits only the exact organization-wide npm accepted risk", () => {
+  const adr = readFileSync("docs/adr/0370-retire-ineligible-approval-and-require-supervised-window.md", "utf8");
+  for (const text of [
+    "GHSA-3wwx-pv8p-q78v",
+    "source `1239932`",
+    "organization-wide production risk",
+    "including Stage 2, Stage 4, release images, promotion, and general production",
+    "until Pi is upgraded to fixed dependency bytes",
+    "340 gross added lines and 1,000,000 gross added line-bytes",
+    "requires no H/G/Q regeneration",
+  ])
+    assert.ok(adr.includes(text), text);
+  runPython(`
+import runpy
+m=runpy.run_path('scripts/check-stage2-retained-lines.py')
+b,_,_,_,_=m['_remediation_budget'](); p=b['post_npm_audit_disposition_remediation']
+assert p['base_revision']=='c1bb1669365ad237b544c70872679118e811b69d'
+assert (p['gross_lines'],p['gross_bytes'],p['readiness_regenerations'])==(340,1000000,1)
+assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
+head=m['_git'](['rev-parse','HEAD']).strip(); lines,raw=m['_post_npm_audit_disposition_consumption'](b,head)
+assert 0 < lines <= 340 and 0 < raw <= 1000000
 `);
 });
 

@@ -64,8 +64,12 @@ POST_EVIDENCE_SCHEMA_FAILURE_TERMINAL_REVISION = "43f3f5738b2d944df2d6077e69b882
 POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH = (250, 1_000_000)
 POST_EVIDENCE_SCHEMA_FAILURE_READINESS_REGENERATIONS = 1
 POST_CAMPAIGN_ADMISSION_MISS_BASE_REVISION = POST_EVIDENCE_SCHEMA_FAILURE_TERMINAL_REVISION
+POST_CAMPAIGN_ADMISSION_MISS_TERMINAL_REVISION = "c1bb1669365ad237b544c70872679118e811b69d"
 POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH = (160, 1_000_000)
 POST_CAMPAIGN_ADMISSION_MISS_READINESS_REGENERATIONS = 1
+POST_NPM_AUDIT_DISPOSITION_BASE_REVISION = POST_CAMPAIGN_ADMISSION_MISS_TERMINAL_REVISION
+POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH = (340, 1_000_000)
+POST_NPM_AUDIT_DISPOSITION_READINESS_REGENERATIONS = 1
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
@@ -467,7 +471,8 @@ def _remediation_budget():
                            "source_limits", "product_test_correction", "post_diagnostic_remediation",
                            "post_authoritative_failure_remediation", "post_segment_two_failure_remediation",
                            "post_admission_window_remediation", "post_evidence_schema_failure_remediation",
-                           "post_campaign_admission_miss_remediation", "owners"})
+                           "post_campaign_admission_miss_remediation", "post_npm_audit_disposition_remediation",
+                           "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
@@ -571,15 +576,29 @@ def _remediation_budget():
         and len(evidence["paths"]) == len(set(evidence["paths"])))
     campaign_miss = data["post_campaign_admission_miss_remediation"]
     _require(isinstance(campaign_miss, dict) and set(campaign_miss) == {
-        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        "base_revision", "terminal_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
         and campaign_miss["base_revision"] == POST_CAMPAIGN_ADMISSION_MISS_BASE_REVISION
+        and campaign_miss["terminal_revision"] == POST_CAMPAIGN_ADMISSION_MISS_TERMINAL_REVISION
         and (campaign_miss["gross_lines"], campaign_miss["gross_bytes"]) == POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH
         and campaign_miss["readiness_regenerations"] == POST_CAMPAIGN_ADMISSION_MISS_READINESS_REGENERATIONS
         and isinstance(campaign_miss["paths"], list)
         and campaign_miss["paths"] == sorted(campaign_miss["paths"])
         and len(campaign_miss["paths"]) == len(set(campaign_miss["paths"])))
+    npm_disposition = data["post_npm_audit_disposition_remediation"]
+    _require(isinstance(npm_disposition, dict) and set(npm_disposition) == {
+        "base_revision", "gross_lines", "gross_bytes", "readiness_regenerations", "paths"}
+        and npm_disposition["base_revision"] == POST_NPM_AUDIT_DISPOSITION_BASE_REVISION
+        and (npm_disposition["gross_lines"], npm_disposition["gross_bytes"]) == POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH
+        and npm_disposition["readiness_regenerations"] == POST_NPM_AUDIT_DISPOSITION_READINESS_REGENERATIONS
+        and isinstance(npm_disposition["paths"], list)
+        and npm_disposition["paths"] == sorted(npm_disposition["paths"])
+        and len(npm_disposition["paths"]) == len(set(npm_disposition["paths"])))
+    for path in npm_disposition["paths"]:
+        _require(isinstance(path, str) and path and "\x00" not in path)
+        candidate = Path(path)
+        _require(not candidate.is_absolute() and ".." not in candidate.parts)
     _require(all(set(plan["paths"]) <= set(paths)
-                 for plan in (post, followup, segment_two, admission, evidence, campaign_miss)))
+                 for plan in (post, followup, segment_two, admission, evidence, campaign_miss, npm_disposition)))
     return data, owners, paths, new_file_highs, forecasts
 
 
@@ -731,10 +750,17 @@ def _post_evidence_schema_failure_consumption(budget, _head):
                                       POST_EVIDENCE_SCHEMA_FAILURE_GROSS_HIGH, False)
 
 
-def _post_campaign_admission_miss_consumption(budget, head):
+def _post_campaign_admission_miss_consumption(budget, _head):
     plan = budget["post_campaign_admission_miss_remediation"]
     return _one_successor_consumption(plan, POST_CAMPAIGN_ADMISSION_MISS_BASE_REVISION,
-                                      head, POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH, True)
+                                      POST_CAMPAIGN_ADMISSION_MISS_TERMINAL_REVISION,
+                                      POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH, False)
+
+
+def _post_npm_audit_disposition_consumption(budget, head):
+    plan = budget["post_npm_audit_disposition_remediation"]
+    return _one_successor_consumption(plan, POST_NPM_AUDIT_DISPOSITION_BASE_REVISION,
+                                      head, POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH, True)
 
 
 def _product_test_consumption_segments(budget):
@@ -908,6 +934,8 @@ def measure():
         remediation_budget, head)
     campaign_miss_lines, campaign_miss_bytes = _post_campaign_admission_miss_consumption(
         remediation_budget, head)
+    npm_disposition_lines, npm_disposition_bytes = _post_npm_audit_disposition_consumption(
+        remediation_budget, head)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -1017,6 +1045,13 @@ def measure():
             "lines": POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH[0],
             "bytes": POST_CAMPAIGN_ADMISSION_MISS_GROSS_HIGH[1]},
         "post_campaign_admission_miss_readiness_regenerations": POST_CAMPAIGN_ADMISSION_MISS_READINESS_REGENERATIONS,
+        "post_npm_audit_disposition_base_revision": POST_NPM_AUDIT_DISPOSITION_BASE_REVISION,
+        "post_npm_audit_disposition_gross_added_lines": npm_disposition_lines,
+        "post_npm_audit_disposition_gross_added_line_bytes": npm_disposition_bytes,
+        "post_npm_audit_disposition_gross_high": {
+            "lines": POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH[0],
+            "bytes": POST_NPM_AUDIT_DISPOSITION_GROSS_HIGH[1]},
+        "post_npm_audit_disposition_readiness_regenerations": POST_NPM_AUDIT_DISPOSITION_READINESS_REGENERATIONS,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,
