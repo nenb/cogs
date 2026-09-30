@@ -719,12 +719,50 @@ export const STAGE4_S408_UNRESOLVED_PROVIDER_CLASSES = Object.freeze([
   "other-provider-or-service-created-resources",
 ] as const);
 
+export const STAGE4_S408_ADMISSION_BLOCKERS = deepFreeze({
+  s407_acceptance: "absent",
+  fresh_issue_specific_approval: "absent",
+  authorized_saved_plan: "absent",
+  provider_discovery: "not-performed",
+});
+
+export const STAGE4_S408_QUALIFICATION_REQUIREMENTS = deepFreeze({
+  identity_binding: {
+    source: "exact-approved-digest-required",
+    render: "exact-approved-digest-required",
+    artifacts: "exact-approved-digest-set-required",
+    live_object_readback: "required",
+  },
+  runtime: {
+    runtime_class: "kata",
+    hypervisor_acceleration: "kvm",
+    distinct_guest_kernel: "required",
+    nested_virtualization: "required",
+    prohibited_fallbacks: ["runc", "qemu-tcg", "trusted-sidecar"],
+  },
+  storage: {
+    volumes: ["workspace", "session"],
+    backing: "ebs",
+    lifecycle: "create-attach-use-detach-delete",
+    exclusive_writer: "required",
+    forced_loss: "required",
+  },
+  cleanup: {
+    trigger: "pass-failure-timeout-or-uncertainty",
+    order: ["stop", "destroy", "custody-inventory", "retained-state-retirement", "final-inventory"],
+    final_inventory: "independent-complete-deletion-blind-zero-required",
+  },
+});
+
 export const STAGE4_S408_CUSTODY_INVENTORY_SCOPES = deepFreeze([
   { service: "s3", scope: "bound-state-all-versions-markers-multipart-locks" },
 ]);
 
 export const STAGE4_S408_INVENTORY_SCOPES = deepFreeze([
-  { service: "ec2", scope: "region-all-addressable-and-network-resources-all-states" },
+  {
+    service: "ec2",
+    scope: "region-all-instances-volumes-snapshots-addresses-network-interfaces-and-network-resources-all-states",
+  },
   { service: "eks", scope: "region-all-clusters-addons-access-associations-and-nodegroups" },
   { service: "elasticloadbalancing", scope: "region-all-load-balancers-and-target-groups" },
   { service: "autoscaling", scope: "region-all-groups" },
@@ -745,6 +783,10 @@ const S408_ZERO_SHA256 = semanticDigest("cogs.stage4/s408-zero-prohibitions/v1",
 const S408_CREATE_SET_SHA256 = semanticDigest("cogs.stage4/s408-create-set/v1", {
   topology_sha256: S408_TOPOLOGY_SHA256,
 });
+export const STAGE4_S408_QUALIFICATION_REQUIREMENTS_SHA256 = semanticDigest(
+  "cogs.stage4/s408-qualification-requirements/v1",
+  STAGE4_S408_QUALIFICATION_REQUIREMENTS,
+);
 
 export const STAGE4_S408_FROZEN_PLAN_PROJECTION = deepFreeze({
   version: "cogs.stage4-s408-frozen-plan-projection/v1",
@@ -786,6 +828,8 @@ export type Stage4S408LifecyclePolicy = Readonly<{
   zero_prohibitions_sha256: string;
   indirect_counts: "unresolved-observation-only-uncapped";
   frozen_plan_sha256: string | null;
+  admission_blockers: typeof STAGE4_S408_ADMISSION_BLOCKERS;
+  qualification_requirements_sha256: string;
   openbao: Readonly<{ deployment: "excluded-for-359"; integration_claimed: false; later_stages: "required" }>;
 }>;
 
@@ -803,6 +847,8 @@ function s408Policy(mode: Stage4S408LifecyclePolicy["mode"]): Stage4S408Lifecycl
     zero_prohibitions_sha256: S408_ZERO_SHA256,
     indirect_counts: "unresolved-observation-only-uncapped",
     frozen_plan_sha256: mode === "default-unresolved" ? null : STAGE4_S408_FROZEN_PLAN_SHA256,
+    admission_blockers: STAGE4_S408_ADMISSION_BLOCKERS,
+    qualification_requirements_sha256: STAGE4_S408_QUALIFICATION_REQUIREMENTS_SHA256,
     openbao: { deployment: "excluded-for-359", integration_claimed: false, later_stages: "required" },
   });
 }
@@ -933,17 +979,43 @@ function s408PayloadValid(
       s408Same(payload.plan_projection as JsonValue, STAGE4_S408_FROZEN_PLAN_PROJECTION)
     );
   }
-  if (phase === "approval-check" || phase === "apply" || phase === "stop") {
+  if (phase === "approval-check") {
     return (
       exactKeys(payload, ["bound_prior_event_sha256", "plan_sha256"]) &&
       payload.bound_prior_event_sha256 === priorSha &&
       payload.plan_sha256 === STAGE4_S408_FROZEN_PLAN_SHA256
     );
   }
+  if (phase === "apply") {
+    return (
+      exactKeys(payload, [
+        "bound_prior_event_sha256",
+        "fixture_observation_bundle_sha256",
+        "plan_sha256",
+        "provider_observation_claimed",
+        "qualification_requirements_sha256",
+      ]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      typeof payload.fixture_observation_bundle_sha256 === "string" &&
+      DIGEST.test(payload.fixture_observation_bundle_sha256) &&
+      payload.plan_sha256 === STAGE4_S408_FROZEN_PLAN_SHA256 &&
+      payload.provider_observation_claimed === false &&
+      payload.qualification_requirements_sha256 === STAGE4_S408_QUALIFICATION_REQUIREMENTS_SHA256
+    );
+  }
+  if (phase === "stop") {
+    return (
+      exactKeys(payload, ["bound_prior_event_sha256", "cleanup_trigger", "plan_sha256"]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      payload.cleanup_trigger === "pass-failure-timeout-or-uncertainty" &&
+      payload.plan_sha256 === STAGE4_S408_FROZEN_PLAN_SHA256
+    );
+  }
   if (phase === "destroy") {
     return (
-      exactKeys(payload, ["bound_prior_event_sha256", "plan_sha256"]) &&
+      exactKeys(payload, ["bound_prior_event_sha256", "destruction_required_for", "plan_sha256"]) &&
       payload.bound_prior_event_sha256 === priorSha &&
+      payload.destruction_required_for === "all-outcomes" &&
       payload.plan_sha256 === STAGE4_S408_FROZEN_PLAN_SHA256
     );
   }

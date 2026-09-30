@@ -22,6 +22,7 @@ import {
 } from "../scripts/stage4-campaign-model.ts";
 import {
   classifyStage4S408Lifecycle,
+  STAGE4_S408_ADMISSION_BLOCKERS,
   STAGE4_S408_CUSTODY_INVENTORY_SCOPES,
   STAGE4_S408_DEFAULT_POLICY,
   STAGE4_S408_FROZEN_FIXTURE_POLICY,
@@ -29,6 +30,8 @@ import {
   STAGE4_S408_FROZEN_PLAN_SHA256,
   STAGE4_S408_INVENTORY_SCOPES,
   STAGE4_S408_LIFECYCLE_PHASES,
+  STAGE4_S408_QUALIFICATION_REQUIREMENTS,
+  STAGE4_S408_QUALIFICATION_REQUIREMENTS_SHA256,
   STAGE4_S408_RETIREMENT_RECORD,
   STAGE4_S408_UNRESOLVED_PROVIDER_CLASSES,
   type Stage4S408LifecycleEvent,
@@ -665,14 +668,25 @@ function s408Journal(
     plan_projection: structuredClone(STAGE4_S408_FROZEN_PLAN_PROJECTION),
     plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
   });
-  for (const phase of ["approval-check", "apply", "stop"] as const) {
-    push(phase, {
-      bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
-      plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
-    });
-  }
+  push("approval-check", {
+    bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+    plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
+  });
+  push("apply", {
+    bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+    fixture_observation_bundle_sha256: digest("s408-fixture-observation-bundle"),
+    plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
+    provider_observation_claimed: false,
+    qualification_requirements_sha256: STAGE4_S408_QUALIFICATION_REQUIREMENTS_SHA256,
+  });
+  push("stop", {
+    bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+    cleanup_trigger: "pass-failure-timeout-or-uncertainty",
+    plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
+  });
   push("destroy", {
     bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+    destruction_required_for: "all-outcomes",
     plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
   });
   push("custody-inventory", {
@@ -716,6 +730,24 @@ function s408Mutate(
   mutation(copy);
   return copy as unknown as Stage4S408LifecycleJournal;
 }
+
+test("S4-08 local requirements bind every Issue #359 acceptance surface without authority", () => {
+  assert.deepEqual(STAGE4_S408_DEFAULT_POLICY.admission_blockers, STAGE4_S408_ADMISSION_BLOCKERS);
+  assert.equal(
+    STAGE4_S408_DEFAULT_POLICY.qualification_requirements_sha256,
+    STAGE4_S408_QUALIFICATION_REQUIREMENTS_SHA256,
+  );
+  assert.deepEqual(STAGE4_S408_QUALIFICATION_REQUIREMENTS.runtime.prohibited_fallbacks, [
+    "runc",
+    "qemu-tcg",
+    "trusted-sidecar",
+  ]);
+  assert.deepEqual(STAGE4_S408_QUALIFICATION_REQUIREMENTS.storage.volumes, ["workspace", "session"]);
+  assert.equal(STAGE4_S408_QUALIFICATION_REQUIREMENTS.storage.exclusive_writer, "required");
+  assert.equal(STAGE4_S408_QUALIFICATION_REQUIREMENTS.storage.forced_loss, "required");
+  assert.equal(STAGE4_S408_QUALIFICATION_REQUIREMENTS.cleanup.trigger, "pass-failure-timeout-or-uncertainty");
+  assert.equal(STAGE4_S408_DEFAULT_POLICY.execution_authorized, false);
+});
 
 test("S4-08 default policy stops after discovery with provider-derived caps unresolved", () => {
   const result = classifyStage4S408Lifecycle(STAGE4_S408_DEFAULT_POLICY, s408Journal(STAGE4_S408_DEFAULT_POLICY, 2));
@@ -814,6 +846,34 @@ test("S4-08 hostile fixture mutations fail closed", () => {
       },
     ],
     [
+      "changed qualification requirements",
+      policy,
+      (copy) => {
+        payload(copy, 4).qualification_requirements_sha256 = digest("other-requirements");
+      },
+    ],
+    [
+      "invented provider observation",
+      policy,
+      (copy) => {
+        payload(copy, 4).provider_observation_claimed = true;
+      },
+    ],
+    [
+      "weakened cleanup trigger",
+      policy,
+      (copy) => {
+        payload(copy, 5).cleanup_trigger = "pass-only";
+      },
+    ],
+    [
+      "weakened destruction coverage",
+      policy,
+      (copy) => {
+        payload(copy, 6).destruction_required_for = "pass-only";
+      },
+    ],
+    [
       "mutable launch template",
       policy,
       (copy) => {
@@ -887,6 +947,19 @@ test("S4-08 hostile fixture mutations fail closed", () => {
       (copy) => {
         payload(copy, 9).tag_only = true;
       },
+    ],
+    [
+      "invented S4-07 acceptance",
+      {
+        ...policy,
+        admission_blockers: { ...policy.admission_blockers, s407_acceptance: "accepted" },
+      } as unknown as Stage4S408LifecyclePolicy,
+      () => {},
+    ],
+    [
+      "invented qualification contract",
+      { ...policy, qualification_requirements_sha256: digest("promoted-requirements") },
+      () => {},
     ],
     [
       "caller-frozen caps",

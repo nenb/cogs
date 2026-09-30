@@ -1097,6 +1097,7 @@
   },
   "issue358_stage4_local_preparation": {
     "base_revision": "ea0e814df4a21cc0e307fd5074be4e7377d9bbcf",
+    "terminal_revision": "bde10a6274f8b5fd47414e43d6a09220c68ae00c",
     "gross_lines": 4000,
     "gross_bytes": 550000,
     "new_file_high": 0,
@@ -1162,6 +1163,26 @@
       "test/stage4-offline-readiness.test.ts",
       "test/stage4-runtime-artifact-closure.test.ts",
       "test/stage4-schema-registry.test.ts"
+    ]
+  },
+  "issue359_stage4_local_preparation": {
+    "base_revision": "bde10a6274f8b5fd47414e43d6a09220c68ae00c",
+    "gross_lines": 4000,
+    "gross_bytes": 550000,
+    "new_file_high": 0,
+    "readiness_regenerations": 0,
+    "paths": [
+      "config/external-review-remediation-budget-v1.json",
+      "docs/operations/stage-4-campaign-offline-models.md",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "docs/test-reports/stage-4-offline-readiness.md",
+      "scripts/check-stage2-retained-lines.py",
+      "scripts/stage4-campaign-model.ts",
+      "scripts/stage4-offline-readiness.ts",
+      "test/stage2-remediation-budget.test.ts",
+      "test/stage4-campaign-model.test.ts"
     ]
   },
   "post_npm_audit_disposition_remediation": {
