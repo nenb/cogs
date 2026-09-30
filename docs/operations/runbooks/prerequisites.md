@@ -8,16 +8,16 @@ This is a requirements checklist, not a discovery script or installation authori
 |---|---|
 | A future environment may provide dedicated trusted/KVM nodes, external network enforcement, CSI block storage, OpenBao, and OTLP. | [Authority: DESIGN §19 pack responsibilities](../../../DESIGN.md#191-pack-responsibilities) |
 | Required campaign and review roles may later be bound to distinct authenticated principals. | [Authority: ownership separation requirements](../ownership.md#initial-ownership-and-approval-register) |
-| Current price, quota, capacity, account suitability, and service availability are unknown and blocking. | [Authority: offline readiness proposal-only envelope](../stage-4-offline-readiness.md#closed-proposal-only-resource-graph) |
+| Current price, quota, capacity, provider confirmation of the owner-declared account, and service availability are unknown and blocking. | [Authority: offline readiness desired topology](../stage-4-offline-readiness.md#closed-proposal-only-resource-graph) |
 
 ## Static contract facts
 
 | Static prerequisite | Specific authority |
 |---|---|
-| Issue #42 blocks cloud entry; closure alone grants no campaign authority. | [Authority: offline readiness current blockers](../stage-4-offline-readiness.md#honest-image-nic-and-runtime-blockers) |
+| Issue #42 is closed as exact historical Stage 2 evidence only; closure grants no campaign authority. | [Authority: offline readiness closure record](../stage-4-offline-readiness.md#canonical-issue-42-stage-2-closure-record) |
 | Campaigns are one-attempt, exact-revision, bounded, destroyed, and independently inventoried. | [Authority: offline readiness one-attempt authority](../stage-4-offline-readiness.md#stopdestroy-and-identities) |
-| Account, principals, envelope, attempt, approval, and executable provider route are absent. | [Authority: offline readiness pure classifier boundary](../stage-4-offline-readiness.md#pure-classifier-boundary) |
-| Runtime pins are Kata `3.32.0` at the fixed archive digest, containerd `2.2.1`, Kata-bundled QEMU `11.0.1`, `io.containerd.kata.v2`, and KVM only. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
+| Account `372495030090` / `us-east-1` is owner-declared but provider-unobserved; concrete principals, envelope, attempt, approval, and executable provider route are absent. | [Authority: offline readiness pure classifier boundary](../stage-4-offline-readiness.md#pure-classifier-boundary) |
+| Runtime pins are Kata `3.32.0` at the fixed archive digest, target AL2023-native containerd `2.2.5-1.amzn2023.0.1` unauthenticated/unobserved, Kata-bundled QEMU `11.0.1`, `io.containerd.kata.v2`, and KVM only; containerd `2.2.1` is historical Stage 2 evidence only. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
 | RuntimeClass is exactly `kata-qemu-cogs`; `runc` and TCG are forbidden; trusted/sandbox placement is disjoint. | [Authority: NIC exact node-group contract](../stage-4-nic-node-group-contract.md#exact-node-group-contract) |
 | Sandbox receives no service-account token, cloud/OpenBao identity, real credential, or CA private key. | [Authority: DESIGN mandatory invariants](../../../DESIGN.md#44-mandatory-invariants) |
 | Egress is explicit HTTP/HTTPS proxy only, externally default-denied, dual-stack covered or IPv6 disabled, and UDP blocked. | [Authority: DESIGN secret-injected egress placement](../../../DESIGN.md#111-placement) |

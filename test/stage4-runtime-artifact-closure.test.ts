@@ -49,18 +49,18 @@ function assertUncertain(input: unknown): void {
   assert.deepEqual(result.blockers, []);
 }
 
-test("committed evidence is deterministic exact local closure with current image identity and no runtime authority", () => {
+test("committed evidence is deterministic exact local closure with historical image identity and no runtime authority", () => {
   assert.deepEqual(bytes(), canonicalStage4RuntimeArtifactBytes(buildStage4RuntimeArtifactEvidence()));
   const result = classifyStage4RuntimeArtifactEvidence(bytes());
-  assert.equal(result.status, "candidate-closure-complete-blocked");
-  assert.equal(result.reason_code, "STAGE4_RUNTIME_ARTIFACT_CANDIDATE_CLOSED_BLOCKED");
-  assert.equal(result.candidate_artifact_closure_complete, true);
-  assert.equal(result.selected_runtime_artifacts_authenticated, true);
+  assert.equal(result.status, "target-runtime-unresolved-blocked");
+  assert.equal(result.reason_code, "STAGE4_RUNTIME_ARTIFACT_TARGET_UNRESOLVED_BLOCKED");
+  assert.equal(result.candidate_artifact_closure_complete, false);
+  assert.equal(result.selected_runtime_artifacts_authenticated, false);
   assert.equal(result.eks_public_candidate_selected, true);
   assert.equal(result.eks_ami_id_resolved, false);
   assert.equal(result.running_kernel_resolved, false);
-  assert.equal(result.release_image_set_present, true);
-  assert.equal(result.exact_image_identity_closure_satisfied, true);
+  assert.equal(result.release_image_set_present, false);
+  assert.equal(result.exact_image_identity_closure_satisfied, false);
   assert.equal(result.campaign_authorized, false);
   assert.equal(result.cloud_execution_observed, false);
   assert.equal(result.provider_truth_observed, false);
@@ -75,19 +75,23 @@ test("committed evidence is deterministic exact local closure with current image
   assert.ok(Object.isFrozen(result.blockers));
 });
 
-test("exact runtime selection is containerd attestation plus Kata-bundled QEMU and guest kernel", () => {
+test("target containerd remains unauthenticated and unobserved while historical Stage 2 and Kata facts stay exact", () => {
   const value = object();
-  assert.deepEqual(value.containerd.artifact, {
-    name: "containerd-static-2.2.1-linux-amd64.tar.gz",
-    url: "https://github.com/containerd/containerd/releases/download/v2.2.1/containerd-static-2.2.1-linux-amd64.tar.gz",
-    size: 33645699,
-    sha256: "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883",
-    checksum_url:
-      "https://github.com/containerd/containerd/releases/download/v2.2.1/containerd-static-2.2.1-linux-amd64.tar.gz.sha256sum",
-    checksum_sha256: "c5037c875eedd79908c006014fc32d7faf8d800412ee26f1ee25dee6c7b18fe4",
+  assert.deepEqual(value.containerd, {
+    package: "containerd-2.2.5-1.amzn2023.0.1",
+    delivery: "al2023-native-package",
+    artifact_sha256: null,
+    authentication_observed: false,
+    runtime_observed: false,
+    state: "target-unauthenticated-unobserved",
   });
-  assert.equal(value.containerd.authentication.certificate_identity.endsWith("@refs/tags/v2.2.1"), true);
-  assert.equal(value.containerd.authentication.verified, true);
+  assert.equal(value.historical_stage2_containerd.version, "2.2.1");
+  assert.equal(
+    value.historical_stage2_containerd.artifact.sha256,
+    "af3e82bac6abed58d45956c653244aa2be583359a9753614278ef652012f2883",
+  );
+  assert.equal(value.historical_stage2_containerd.authentication.verified, true);
+  assert.equal(value.historical_stage2_containerd.selected_runtime, false);
   assert.deepEqual(value.kata.selected_qemu, {
     version: "11.0.1",
     provenance: "kata-bundled-release-member",
@@ -114,7 +118,7 @@ test("public EKS candidate is exact while all AWS-resolved fields remain absent"
   assert.equal(candidate.release_version, "1.35.6-20260728");
   assert.equal(candidate.public_kernel_package, "6.12.94-123.192.amzn2023");
   assert.equal(candidate.baked_containerd_package, "2.2.5-1.amzn2023.0.1");
-  assert.equal(candidate.selected_containerd_override_required, true);
+  assert.equal(candidate.selected_containerd_override_required, false);
   assert.equal(candidate.ami_id, null);
   assert.equal(candidate.running_kernel_release, null);
   assert.equal(candidate.provider_truth_observed, false);
@@ -150,25 +154,25 @@ test("static candidate freeze binds current dependencies and cannot promote reti
       ),
     ),
   );
-  assert.equal(freeze.dependency_lock.pi_version, "0.84.2");
+  assert.equal(freeze.dependency_lock.pi_version, "0.86.0");
   assert.equal(
     freeze.dependency_lock.package_lock_sha256,
-    "42151881d9945740578313e2d3117e3bcac93a26d99a65ece8b18d15631601e1",
+    "8ba952c6392ba81875f2088ac88448ffa85812411f56f110eb6c489d91f46b48",
   );
   assert.equal(
     freeze.dependency_lock.pi_agent_core_sri,
-    "sha512-8Pn3wSCxj0cfo5I6jxQYVB/3uuQRmHhAlEclyjqpOuMEdQMIODHizRogv56FLdbU+dTiGnybeHQ2N+sV1/L2YA==",
+    "sha512-0nGRbPeR2Sx+TXCP+xTNeCoZDegRXshQ9ROWE+wc1XR2l6bARgbelkjiiFwVVJRslbwQa5Hmo/r2JXfAqqkK+A==",
   );
   assert.equal(
     freeze.dependency_lock.pi_ai_sri,
-    "sha512-6MzsrYIYNVlE7SfpbL2yYb67Qo58p/7Q+xWG1RZvoX1P80aRCHSod2/13aFpxkow1lPO2LEh3c495J0Gwmyjig==",
+    "sha512-7jc4tNTBiJrfg+2/nra6JPz2d3OGiGHDKrSVHpnfvsMgMy0uy4noGb7WidDNcqSEAK1S0kcRRTmpYAK66ZlTSw==",
   );
   assert.equal(
     freeze.dependency_lock.pi_coding_agent_sri,
-    "sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA==",
+    "sha512-tzLh/10bPQZbA9shvA8TALT4eSNCifJaDq672MPXHldsvZ9t9lQ8J5Z9CD1d7UZVzG4l85XUZWo6ZCCNhBULxw==",
   );
   assert.deepEqual(freeze.release_images, {
-    state: "reviewed-current-source-image-set",
+    state: "reviewed-historical-source-image-set",
     assertion_sha256: "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332",
     review_sha256: "37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4",
     workflow_run_id: 34774398155,
@@ -178,7 +182,7 @@ test("static candidate freeze binds current dependencies and cannot promote reti
     worker: "ghcr.io/nenb/cogs/worker@sha256:e6f26544a44ffc8cbda6973fb1ac771a7725482f3b722c69e6318ce018260e9e",
     sandbox: "ghcr.io/nenb/cogs/sandbox@sha256:5652f75300f8ec31a50731140ae7bee4d4e205af964044b29c7433b02497231d",
   });
-  assert.equal(object().claims.release_image_set_present, true);
+  assert.equal(object().claims.release_image_set_present, false);
   assert.equal(object().claims.release_eligible, false);
 });
 
@@ -202,9 +206,9 @@ test("evidence compiles under strict schema and rejects unknown fields", () => {
 
 test("hostile artifact, provenance, QEMU, EKS, freeze, and claim drift fail closed", () => {
   const mutations: Array<(value: Record<string, any>) => void> = [
-    (value) => (value.containerd.artifact.sha256 = "0".repeat(64)),
-    (value) => (value.containerd.authentication.certificate_identity = "https://github.com/hostile/workflow"),
-    (value) => (value.containerd.authentication.verified = false),
+    (value) => (value.containerd.artifact_sha256 = "0".repeat(64)),
+    (value) => (value.containerd.authentication_observed = true),
+    (value) => (value.historical_stage2_containerd.selected_runtime = true),
     (value) => (value.kata.artifact.sha256 = "0".repeat(64)),
     (value) => (value.kata.authentication.certificate_identity = "https://hostile.invalid"),
     (value) => (value.kata.selected_qemu.version = "8.2.2"),
@@ -219,7 +223,7 @@ test("hostile artifact, provenance, QEMU, EKS, freeze, and claim drift fail clos
     (value) => (value.static_candidate_freeze.skills.policy = "ambient-skills"),
     (value) =>
       (value.static_candidate_freeze.release_images.worker = value.static_candidate_freeze.release_images.sandbox),
-    (value) => (value.claims.release_image_set_present = false),
+    (value) => (value.claims.release_image_set_present = true),
     (value) => (value.claims.cloud_execution_observed = true),
     (value) => (value.claims.release_eligible = true),
   ];
@@ -237,7 +241,7 @@ test("hostile artifact, provenance, QEMU, EKS, freeze, and claim drift fail clos
 
 test("valid-shape digest substitution with a recomputed binding is semantic drift", () => {
   const value = object();
-  value.containerd.selected_executables[0].sha256 = "a".repeat(64);
+  value.historical_stage2_containerd.selected_executables[0].sha256 = "a".repeat(64);
   const result = classifyStage4RuntimeArtifactEvidence(rebind(value));
   assert.equal(result.reason_code, "STAGE4_RUNTIME_ARTIFACT_SEMANTIC_DRIFT");
   assertUncertain(rebind(value));

@@ -672,3 +672,433 @@ function deepFreeze<T>(value: T): T {
   }
   return value;
 }
+
+/* S4-08 is a provider-free ordering model over caller-supplied JSON fixtures. */
+export const STAGE4_S408_LIFECYCLE_PHASES = Object.freeze([
+  "source",
+  "discovery",
+  "saved-plan",
+  "approval-check",
+  "apply",
+  "stop",
+  "destroy",
+  "custody-inventory",
+  "retained-state-retirement",
+  "final-inventory",
+] as const);
+
+export const STAGE4_S408_DIRECT_PROPOSED_TOPOLOGY = deepFreeze({
+  eks_clusters: 1,
+  managed_addons: 5,
+  vpcs: 1,
+  public_subnets: 2,
+  launch_templates: 2,
+  managed_node_groups: 2,
+  ebs_volumes: 2,
+  retained_s3_buckets: 1,
+  retained_s3_objects: 1,
+});
+
+export const STAGE4_S408_ZERO_PROHIBITIONS = deepFreeze({
+  nat_gateways: 0,
+  vpc_endpoints: 0,
+  elastic_ips: 0,
+  load_balancers: 0,
+  public_inbound_rules: 0,
+  mutable_launch_template_references: 0,
+});
+
+export const STAGE4_S408_UNRESOLVED_PROVIDER_CLASSES = Object.freeze([
+  "internet-gateways-routes-and-route-tables",
+  "security-groups-and-rules",
+  "iam-roles-policies-attachments",
+  "instance-profiles",
+  "auto-scaling-groups",
+  "network-interfaces",
+  "log-groups",
+  "other-provider-or-service-created-resources",
+] as const);
+
+export const STAGE4_S408_CUSTODY_INVENTORY_SCOPES = deepFreeze([
+  { service: "s3", scope: "bound-state-all-versions-markers-multipart-locks" },
+]);
+
+export const STAGE4_S408_INVENTORY_SCOPES = deepFreeze([
+  { service: "ec2", scope: "region-all-addressable-and-network-resources-all-states" },
+  { service: "eks", scope: "region-all-clusters-addons-access-associations-and-nodegroups" },
+  { service: "elasticloadbalancing", scope: "region-all-load-balancers-and-target-groups" },
+  { service: "autoscaling", scope: "region-all-groups" },
+  { service: "iam", scope: "account-all-roles-policies-attachments-and-profiles" },
+  { service: "kms", scope: "region-all-keys-aliases-and-key-states" },
+  { service: "cloudwatch-logs", scope: "region-all-log-groups" },
+  { service: "s3", scope: "account-buckets-and-bound-state-all-versions-markers-multipart-locks" },
+  { service: "budgets", scope: "account-all-budgets-and-notifications" },
+  { service: "scheduler", scope: "region-all-schedules" },
+  { service: "lambda", scope: "region-all-functions-and-resource-policies" },
+]);
+
+const S408_TOPOLOGY_SHA256 = semanticDigest(
+  "cogs.stage4/s408-direct-topology/v1",
+  STAGE4_S408_DIRECT_PROPOSED_TOPOLOGY,
+);
+const S408_ZERO_SHA256 = semanticDigest("cogs.stage4/s408-zero-prohibitions/v1", STAGE4_S408_ZERO_PROHIBITIONS);
+const S408_CREATE_SET_SHA256 = semanticDigest("cogs.stage4/s408-create-set/v1", {
+  topology_sha256: S408_TOPOLOGY_SHA256,
+});
+
+export const STAGE4_S408_FROZEN_PLAN_PROJECTION = deepFreeze({
+  version: "cogs.stage4-s408-frozen-plan-projection/v1",
+  direct_topology_sha256: S408_TOPOLOGY_SHA256,
+  zero_prohibitions_sha256: S408_ZERO_SHA256,
+  create_address_set_sha256: S408_CREATE_SET_SHA256,
+  destroy_address_set_sha256: S408_CREATE_SET_SHA256,
+  launch_template_references: [
+    { node_role: "trusted", template_id: "lt-fixture-trusted", version: 7 },
+    { node_role: "sandbox", template_id: "lt-fixture-sandbox", version: 11 },
+  ],
+  provider_created_counts: "unresolved-observation-only-uncapped",
+});
+export const STAGE4_S408_FROZEN_PLAN_SHA256 = semanticDigest(
+  "cogs.stage4/s408-frozen-plan/v1",
+  STAGE4_S408_FROZEN_PLAN_PROJECTION,
+);
+export const STAGE4_S408_RETIREMENT_RECORD = deepFreeze({
+  ebs: { workspace: "detached-deleted", session: "detached-deleted" },
+  s3: {
+    all_versions: "deleted",
+    all_delete_markers: "deleted",
+    all_multipart_uploads: "aborted",
+    all_object_locks: "removed",
+    bucket: "deleted",
+  },
+});
+
+export type Stage4S408LifecyclePolicy = Readonly<{
+  version: "cogs.stage4-s408-policy/v1";
+  authority: "local-provider-free-ordering-model";
+  campaign_issue: "S4-08/#359";
+  mode: "default-unresolved" | "explicit-hand-built-frozen-fixture";
+  execution_authorized: false;
+  maximum_attempts: 1;
+  retry: "prohibited";
+  continuation: "prohibited";
+  direct_topology_sha256: string;
+  zero_prohibitions_sha256: string;
+  indirect_counts: "unresolved-observation-only-uncapped";
+  frozen_plan_sha256: string | null;
+  openbao: Readonly<{ deployment: "excluded-for-359"; integration_claimed: false; later_stages: "required" }>;
+}>;
+
+function s408Policy(mode: Stage4S408LifecyclePolicy["mode"]): Stage4S408LifecyclePolicy {
+  return deepFreeze({
+    version: "cogs.stage4-s408-policy/v1",
+    authority: "local-provider-free-ordering-model",
+    campaign_issue: "S4-08/#359",
+    mode,
+    execution_authorized: false,
+    maximum_attempts: 1,
+    retry: "prohibited",
+    continuation: "prohibited",
+    direct_topology_sha256: S408_TOPOLOGY_SHA256,
+    zero_prohibitions_sha256: S408_ZERO_SHA256,
+    indirect_counts: "unresolved-observation-only-uncapped",
+    frozen_plan_sha256: mode === "default-unresolved" ? null : STAGE4_S408_FROZEN_PLAN_SHA256,
+    openbao: { deployment: "excluded-for-359", integration_claimed: false, later_stages: "required" },
+  });
+}
+
+export const STAGE4_S408_DEFAULT_POLICY = s408Policy("default-unresolved");
+export const STAGE4_S408_FROZEN_FIXTURE_POLICY = s408Policy("explicit-hand-built-frozen-fixture");
+
+type S408Outcome = "fixture-claimed-success" | "fixture-claimed-failed" | "unknown";
+export type Stage4S408LifecycleEvent = Readonly<{
+  phase: (typeof STAGE4_S408_LIFECYCLE_PHASES)[number];
+  attempt_number: 1;
+  prior_event_sha256: string | null;
+  outcome: S408Outcome;
+  payload: Readonly<Record<string, JsonValue>>;
+}>;
+export type Stage4S408LifecycleJournal = Readonly<{
+  version: "cogs.stage4-s408-journal/v1";
+  policy_sha256: string;
+  attempt_number: 1;
+  retry_count: 0;
+  continuation_count: 0;
+  events: readonly Stage4S408LifecycleEvent[];
+}>;
+
+export type Stage4S408LifecycleVerdict = Readonly<{
+  version: "cogs.stage4-s408-verdict/v1";
+  status: "AWAITING_FIXTURE_EVENT" | "STOPPED_UNRESOLVED" | "MODEL_ORDER_COMPLETE_BLOCKED" | "PRESERVE_UNCERTAIN";
+  reason_code:
+    | "S408_AWAITING_FIXTURE_EVENT"
+    | "S408_UNRESOLVED_DERIVED_CAPS"
+    | "S408_MODEL_ORDER_COMPLETE_BLOCKED"
+    | "S408_PRESERVE_UNCERTAIN";
+  next_phase: (typeof STAGE4_S408_LIFECYCLE_PHASES)[number] | null;
+  policy_valid: boolean;
+  journal_valid: boolean;
+  execution_authorized: false;
+  provider_truth_observed: false;
+  custody_claimed: false;
+  retirement_claimed: false;
+  zero_inventory_claimed: false;
+  retry_authorized: false;
+}>;
+
+function s408Same(left: JsonValue, right: JsonValue): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function s408PolicyValid(value: JsonRecord): value is JsonRecord & Stage4S408LifecyclePolicy {
+  return s408Same(value, STAGE4_S408_DEFAULT_POLICY) || s408Same(value, STAGE4_S408_FROZEN_FIXTURE_POLICY);
+}
+
+export function stage4S408LifecyclePolicySha256(input: unknown): string | null {
+  const value = snapshotJson(input);
+  return value !== null && s408PolicyValid(value) ? semanticDigest("cogs.stage4/s408-policy/v1", value) : null;
+}
+
+export function stage4S408LifecycleEventSha256(input: unknown): string | null {
+  const value = snapshotJson(input);
+  return value === null ? null : semanticDigest("cogs.stage4/s408-event/v1", value);
+}
+
+function s408Object(value: JsonValue | undefined): JsonRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function s408RetainedState(value: JsonValue | undefined): value is JsonRecord {
+  const state = s408Object(value);
+  const bucket = s408Object(state?.bucket);
+  const object = s408Object(state?.object);
+  return Boolean(
+    state &&
+      exactKeys(state, ["bucket", "custody_claimed", "object"]) &&
+      state.custody_claimed === false &&
+      bucket &&
+      exactKeys(bucket, ["bucket_name", "identity_sha256", "kind"]) &&
+      bucket.kind === "aws-s3-bucket" &&
+      typeof bucket.bucket_name === "string" &&
+      typeof bucket.identity_sha256 === "string" &&
+      DIGEST.test(bucket.identity_sha256) &&
+      object &&
+      exactKeys(object, ["bucket_identity_sha256", "bytes_sha256", "identity_sha256", "key", "kind"]) &&
+      object.kind === "aws-s3-object" &&
+      object.bucket_identity_sha256 === bucket.identity_sha256 &&
+      typeof object.key === "string" &&
+      typeof object.bytes_sha256 === "string" &&
+      DIGEST.test(object.bytes_sha256) &&
+      typeof object.identity_sha256 === "string" &&
+      DIGEST.test(object.identity_sha256),
+  );
+}
+
+function s408PayloadValid(
+  phase: Stage4S408LifecycleEvent["phase"],
+  payload: JsonRecord,
+  events: readonly (JsonRecord & Stage4S408LifecycleEvent)[],
+): boolean {
+  const source = s408Object(events[0]?.payload);
+  const discovery = s408Object(events[1]?.payload);
+  const prior = events.at(-1);
+  const priorSha = prior === undefined ? null : stage4S408LifecycleEventSha256(prior);
+  if (phase === "source") {
+    return (
+      exactKeys(payload, ["operator_identity_sha256", "source_sha256"]) &&
+      typeof payload.operator_identity_sha256 === "string" &&
+      DIGEST.test(payload.operator_identity_sha256) &&
+      typeof payload.source_sha256 === "string" &&
+      DIGEST.test(payload.source_sha256)
+    );
+  }
+  if (phase === "discovery") {
+    return (
+      exactKeys(payload, ["discovery_identity_sha256", "indirect_classes", "indirect_counts", "retained_state"]) &&
+      typeof payload.discovery_identity_sha256 === "string" &&
+      DIGEST.test(payload.discovery_identity_sha256) &&
+      payload.discovery_identity_sha256 !== source?.operator_identity_sha256 &&
+      s408Same(
+        payload.indirect_classes as JsonValue,
+        STAGE4_S408_UNRESOLVED_PROVIDER_CLASSES as unknown as JsonValue,
+      ) &&
+      payload.indirect_counts === "unresolved-observation-only-uncapped" &&
+      s408RetainedState(payload.retained_state)
+    );
+  }
+  if (phase === "saved-plan") {
+    return (
+      exactKeys(payload, ["plan_projection", "plan_sha256"]) &&
+      payload.plan_sha256 === STAGE4_S408_FROZEN_PLAN_SHA256 &&
+      s408Same(payload.plan_projection as JsonValue, STAGE4_S408_FROZEN_PLAN_PROJECTION)
+    );
+  }
+  if (phase === "approval-check" || phase === "apply" || phase === "stop") {
+    return (
+      exactKeys(payload, ["bound_prior_event_sha256", "plan_sha256"]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      payload.plan_sha256 === STAGE4_S408_FROZEN_PLAN_SHA256
+    );
+  }
+  if (phase === "destroy") {
+    return (
+      exactKeys(payload, ["bound_prior_event_sha256", "plan_sha256"]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      payload.plan_sha256 === STAGE4_S408_FROZEN_PLAN_SHA256
+    );
+  }
+  if (phase === "custody-inventory") {
+    return (
+      exactKeys(payload, [
+        "bound_prior_event_sha256",
+        "complete_pagination",
+        "custody_claimed",
+        "retained_state",
+        "scopes",
+        "tag_only",
+      ]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      payload.custody_claimed === false &&
+      payload.complete_pagination === true &&
+      payload.tag_only === false &&
+      s408RetainedState(payload.retained_state) &&
+      s408Same(payload.retained_state as JsonValue, discovery?.retained_state as JsonValue) &&
+      s408Same(payload.scopes as JsonValue, STAGE4_S408_CUSTODY_INVENTORY_SCOPES)
+    );
+  }
+  if (phase === "retained-state-retirement") {
+    return (
+      exactKeys(payload, ["bound_prior_event_sha256", "retirement_record"]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      s408Same(payload.retirement_record as JsonValue, STAGE4_S408_RETIREMENT_RECORD)
+    );
+  }
+  return (
+    exactKeys(payload, [
+      "bound_prior_event_sha256",
+      "claimed_identity_independent",
+      "complete_pagination",
+      "observer_identity_sha256",
+      "residue_count",
+      "scopes",
+      "tag_only",
+    ]) &&
+    payload.bound_prior_event_sha256 === priorSha &&
+    payload.claimed_identity_independent === true &&
+    typeof payload.observer_identity_sha256 === "string" &&
+    DIGEST.test(payload.observer_identity_sha256) &&
+    payload.observer_identity_sha256 !== source?.operator_identity_sha256 &&
+    payload.observer_identity_sha256 !== discovery?.discovery_identity_sha256 &&
+    typeof payload.complete_pagination === "boolean" &&
+    typeof payload.tag_only === "boolean" &&
+    typeof payload.residue_count === "number" &&
+    Number.isSafeInteger(payload.residue_count) &&
+    payload.residue_count >= 0 &&
+    s408Same(payload.scopes as JsonValue, STAGE4_S408_INVENTORY_SCOPES)
+  );
+}
+
+function s408JournalValid(policy: Stage4S408LifecyclePolicy, journal: JsonRecord): boolean {
+  if (
+    !exactKeys(journal, [
+      "attempt_number",
+      "continuation_count",
+      "events",
+      "policy_sha256",
+      "retry_count",
+      "version",
+    ]) ||
+    journal.version !== "cogs.stage4-s408-journal/v1" ||
+    journal.policy_sha256 !== stage4S408LifecyclePolicySha256(policy) ||
+    journal.attempt_number !== 1 ||
+    journal.retry_count !== 0 ||
+    journal.continuation_count !== 0 ||
+    !Array.isArray(journal.events) ||
+    journal.events.length > STAGE4_S408_LIFECYCLE_PHASES.length
+  )
+    return false;
+  const accepted: (JsonRecord & Stage4S408LifecycleEvent)[] = [];
+  for (const [index, item] of journal.events.entries()) {
+    const event = s408Object(item);
+    const payload = s408Object(event?.payload);
+    const prior = accepted.at(-1);
+    if (
+      !event ||
+      !payload ||
+      !exactKeys(event, ["attempt_number", "outcome", "payload", "phase", "prior_event_sha256"]) ||
+      event.phase !== STAGE4_S408_LIFECYCLE_PHASES[index] ||
+      event.attempt_number !== 1 ||
+      !["fixture-claimed-success", "fixture-claimed-failed", "unknown"].includes(event.outcome as string) ||
+      event.prior_event_sha256 !== (prior ? stage4S408LifecycleEventSha256(prior) : null) ||
+      !s408PayloadValid(event.phase as Stage4S408LifecycleEvent["phase"], payload, accepted)
+    )
+      return false;
+    accepted.push(event as JsonRecord & Stage4S408LifecycleEvent);
+  }
+  return policy.mode === "explicit-hand-built-frozen-fixture" || accepted.length <= 2;
+}
+
+function s408Verdict(
+  status: Stage4S408LifecycleVerdict["status"],
+  reason_code: Stage4S408LifecycleVerdict["reason_code"],
+  next_phase: Stage4S408LifecycleVerdict["next_phase"],
+  policy_valid: boolean,
+  journal_valid: boolean,
+): Stage4S408LifecycleVerdict {
+  return {
+    version: "cogs.stage4-s408-verdict/v1",
+    status,
+    reason_code,
+    next_phase,
+    policy_valid,
+    journal_valid,
+    execution_authorized: false,
+    provider_truth_observed: false,
+    custody_claimed: false,
+    retirement_claimed: false,
+    zero_inventory_claimed: false,
+    retry_authorized: false,
+  };
+}
+
+export function classifyStage4S408Lifecycle(policyInput: unknown, journalInput: unknown): Stage4S408LifecycleVerdict {
+  const policy = snapshotJson(policyInput);
+  if (!policy || !s408PolicyValid(policy))
+    return s408Verdict("PRESERVE_UNCERTAIN", "S408_PRESERVE_UNCERTAIN", null, false, false);
+  const journal = snapshotJson(journalInput);
+  if (!journal || !s408JournalValid(policy, journal))
+    return s408Verdict("PRESERVE_UNCERTAIN", "S408_PRESERVE_UNCERTAIN", null, true, false);
+  const events = journal.events as unknown as Stage4S408LifecycleEvent[];
+  const firstUncertain = events.findIndex((event) => event.outcome !== "fixture-claimed-success");
+  if (firstUncertain !== -1)
+    return s408Verdict(
+      "PRESERVE_UNCERTAIN",
+      "S408_PRESERVE_UNCERTAIN",
+      firstUncertain >= 4 && events.length < STAGE4_S408_LIFECYCLE_PHASES.length
+        ? (STAGE4_S408_LIFECYCLE_PHASES[events.length] ?? null)
+        : null,
+      true,
+      true,
+    );
+  if (policy.mode === "default-unresolved" && events.length === 2)
+    return s408Verdict("STOPPED_UNRESOLVED", "S408_UNRESOLVED_DERIVED_CAPS", null, true, true);
+  if (events.length < STAGE4_S408_LIFECYCLE_PHASES.length)
+    return s408Verdict(
+      "AWAITING_FIXTURE_EVENT",
+      "S408_AWAITING_FIXTURE_EVENT",
+      STAGE4_S408_LIFECYCLE_PHASES[events.length] ?? null,
+      true,
+      true,
+    );
+  const custody = events[7]?.payload;
+  const inventory = events[9]?.payload;
+  if (
+    custody?.complete_pagination !== true ||
+    custody.tag_only !== false ||
+    inventory?.complete_pagination !== true ||
+    inventory.tag_only !== false ||
+    inventory.residue_count !== 0
+  )
+    return s408Verdict("PRESERVE_UNCERTAIN", "S408_PRESERVE_UNCERTAIN", null, true, true);
+  return s408Verdict("MODEL_ORDER_COMPLETE_BLOCKED", "S408_MODEL_ORDER_COMPLETE_BLOCKED", null, true, true);
+}

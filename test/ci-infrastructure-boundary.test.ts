@@ -6,6 +6,7 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import {
   admitProfile,
   admitRestrictions,
@@ -33,7 +34,7 @@ import {
   SANDBOX_CAPABILITIES,
   SANDBOX_CAPABILITY_MASK,
 } from "../dev/product-test/snapshot-owner.ts";
-import { validateNpmAuditDisposition } from "../scripts/check-npm-audit.ts";
+import { validateNpmAuditResult } from "../scripts/check-npm-audit.ts";
 import { createCogsPiSession } from "../src/pi/session.ts";
 import { createSshBashToolPort } from "../src/ssh/bash-tool.ts";
 import type { CogsExecPort, SshConnectionManager } from "../src/ssh/connection.ts";
@@ -54,56 +55,12 @@ type WorkflowStep = { name?: unknown; run?: unknown };
 type WorkflowJob = { steps?: unknown };
 type Workflow = { jobs?: unknown };
 
-const disposedAudit = () => ({
+const cleanAudit = () => ({
   auditReportVersion: 2,
-  vulnerabilities: {
-    "@earendil-works/pi-coding-agent": {
-      name: "@earendil-works/pi-coding-agent",
-      severity: "moderate",
-      isDirect: true,
-      via: ["undici"],
-      effects: [],
-      range: "0.75.4 - 0.85.1",
-      nodes: ["node_modules/@earendil-works/pi-coding-agent"],
-      fixAvailable: { name: "@earendil-works/pi-coding-agent", version: "0.87.1", isSemVerMajor: true },
-    },
-    undici: {
-      name: "undici",
-      severity: "moderate",
-      isDirect: false,
-      via: [
-        {
-          source: 1239932,
-          name: "undici",
-          dependency: "undici",
-          title:
-            "undici vulnerable to Denial of Service via unhandled error in WebSocket permessage-deflate decompression",
-          url: "https://github.com/advisories/GHSA-3wwx-pv8p-q78v",
-          severity: "moderate",
-          cwe: ["CWE-248"],
-          cvss: { score: 5.9, vectorString: "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H" },
-          range: ">=8.1.0 <8.10.2",
-        },
-      ],
-      effects: ["@earendil-works/pi-coding-agent"],
-      range: "8.1.0 - 8.10.1",
-      nodes: ["node_modules/@earendil-works/pi-coding-agent/node_modules/undici"],
-      fixAvailable: { name: "@earendil-works/pi-coding-agent", version: "0.87.1", isSemVerMajor: true },
-    },
-  },
+  vulnerabilities: {},
   metadata: {
-    vulnerabilities: { info: 0, low: 0, moderate: 2, high: 0, critical: 0, total: 2 },
-    dependencies: { prod: 257, dev: 42, optional: 49, peer: 0, peerOptional: 0, total: 312 },
-  },
-});
-const disposedLock = () => ({
-  packages: {
-    "": { dependencies: { "@earendil-works/pi-coding-agent": "0.84.2" } },
-    "node_modules/@earendil-works/pi-coding-agent": {
-      version: "0.84.2",
-      dependencies: { undici: "8.9.0" },
-    },
-    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici": { version: "8.9.0" },
+    vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 },
+    dependencies: { prod: 243, dev: 15, optional: 64, peer: 0, peerOptional: 0, total: 312 },
   },
 });
 
@@ -127,26 +84,33 @@ function workflowRuns(path: string): Array<{ job: string; step: string; run: str
   return runs;
 }
 
-test("npm audit disposition admits only the exact organization-wide accepted risk", () => {
-  assert.doesNotThrow(() => validateNpmAuditDisposition(disposedAudit(), disposedLock()));
+test("npm audit requires a well-formed zero-finding report", () => {
+  assert.doesNotThrow(() => validateNpmAuditResult(cleanAudit()));
 
-  const extra = structuredClone(disposedAudit());
-  Object.assign(extra.vulnerabilities, { other: { severity: "low" } });
-  assert.throws(() => validateNpmAuditDisposition(extra, disposedLock()));
+  const finding = structuredClone(cleanAudit());
+  Object.assign(finding.vulnerabilities, { undici: { severity: "low" } });
+  assert.throws(() => validateNpmAuditResult(finding));
 
-  const changedSource = structuredClone(disposedAudit());
-  const changedVia = changedSource.vulnerabilities.undici.via.at(0);
-  assert.ok(changedVia);
-  changedVia.source = 1;
-  assert.throws(() => validateNpmAuditDisposition(changedSource, disposedLock()));
+  const nonzeroCount = structuredClone(cleanAudit());
+  nonzeroCount.metadata.vulnerabilities.moderate = 1;
+  nonzeroCount.metadata.vulnerabilities.total = 1;
+  assert.throws(() => validateNpmAuditResult(nonzeroCount));
 
-  const changedLock = structuredClone(disposedLock());
-  changedLock.packages["node_modules/@earendil-works/pi-coding-agent/node_modules/undici"].version = "8.10.2";
-  assert.throws(() => validateNpmAuditDisposition(disposedAudit(), changedLock));
-
-  const changedEdge = structuredClone(disposedLock());
-  changedEdge.packages["node_modules/@earendil-works/pi-coding-agent"].dependencies.undici = "8.10.2";
-  assert.throws(() => validateNpmAuditDisposition(disposedAudit(), changedEdge));
+  const malformedCases: unknown[] = [
+    null,
+    { ...cleanAudit(), auditReportVersion: 3 },
+    { ...cleanAudit(), extra: true },
+    { ...cleanAudit(), vulnerabilities: [] },
+    { ...cleanAudit(), metadata: { vulnerabilities: cleanAudit().metadata.vulnerabilities } },
+    {
+      ...cleanAudit(),
+      metadata: {
+        ...cleanAudit().metadata,
+        dependencies: { ...cleanAudit().metadata.dependencies, total: "312" },
+      },
+    },
+  ];
+  for (const value of malformedCases) assert.throws(() => validateNpmAuditResult(value));
 });
 
 test("parsed workflow run commands cannot invoke infrastructure validation", () => {
@@ -1107,7 +1071,7 @@ retained={'session/egress-audit.wal':m.canonical(r),**{'session/sessions/'+p:b f
 for scope in ['host-private','private-store']: retained[scope+'/'+m.hashlib.sha256(b'synthetic').hexdigest()+'/blobs/sha256/'+bundle[7:]]=b'{}'
 export_root='session/sessions/product-session/exports/cogs-session-product-session/'
 for name,value in {'session.jsonl':native_bytes,'git-map.json':m.canonical({'records':[mapping]}),'skills.json':m.canonical(owner.launch['skills']),'warnings.json':m.canonical({'warnings':[]}),'transform-report.json':m.canonical({'transform':'identity','transformations':0,'sanitized':False})}.items():retained[export_root+name]=value
-manifest={'version':'cogs.export/v1alpha2','session_id':'product-session','skills':owner.launch['skills'],'files':[{'path':p.removeprefix(export_root),'bytes':len(b),'sha256':m.digest(b)[7:]} for p,b in retained.items() if p.startswith(export_root)]}
+manifest={'version':'cogs.export/v1alpha3','session_id':'product-session','skills':owner.launch['skills'],'files':[{'path':p.removeprefix(export_root),'bytes':len(b),'sha256':m.digest(b)[7:]} for p,b in retained.items() if p.startswith(export_root)]}
 retained[export_root+'manifest.json']=m.canonical(manifest)
 e['exported']={'sensitive':True,'bundle':{'mode':'raw','file_count':6,'bundle':'cogs-session-product-session','manifest_sha256':m.digest(m.canonical(manifest))[7:],'total_bytes':sum(len(b) for p,b in retained.items() if p.startswith(export_root))}}
 e['toolResults']=[m.tool_result(entries[0])]
@@ -1212,11 +1176,19 @@ test("product worker gate is inert before lease; deterministic model and missing
   const stream = deterministicStream();
   for (let stage = 0; stage < 4; stage++) {
     const result = await (
-      await stream(model, { messages: [] }, { apiKey: "synthetic-model-key-not-a-provider-credential" })
+      await stream(model, normalizeContext({ messages: [] }), {
+        apiKey: "synthetic-model-key-not-a-provider-credential",
+      })
     ).result();
     assert.equal(result.stopReason, stage === 0 ? "toolUse" : "stop");
     if (stage === 2) assert.ok(JSON.stringify(result).length > 32768);
   }
-  assert.throws(() => stream(model, { messages: [] }, { apiKey: "synthetic-model-key-not-a-provider-credential" }));
-  assert.throws(() => deterministicStream()(model, { messages: [] }, { apiKey: "real-provider-key" }));
+  assert.throws(() =>
+    stream(model, normalizeContext({ messages: [] }), {
+      apiKey: "synthetic-model-key-not-a-provider-credential",
+    }),
+  );
+  assert.throws(() =>
+    deterministicStream()(model, normalizeContext({ messages: [] }), { apiKey: "real-provider-key" }),
+  );
 });

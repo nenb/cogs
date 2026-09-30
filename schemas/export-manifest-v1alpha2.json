@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cogs.dev/schemas/export-manifest-v1alpha2.json",
-  "title": "Cogs local export manifest v1alpha2",
+  "title": "Cogs local export manifest v1alpha2 and v1alpha3",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,13 +17,13 @@
   ],
   "properties": {
     "version": {
-      "const": "cogs.export/v1alpha2"
+      "enum": ["cogs.export/v1alpha2", "cogs.export/v1alpha3"]
     },
     "cogs_version": {
       "const": "0.0.0"
     },
     "pi_version": {
-      "const": "0.84.2"
+      "enum": ["0.84.2", "0.86.0"]
     },
     "session_id": {
       "$ref": "#/$defs/opaqueId"
@@ -149,6 +149,20 @@
       "const": false
     }
   },
+  "oneOf": [
+    {
+      "properties": {
+        "version": { "const": "cogs.export/v1alpha2" },
+        "pi_version": { "const": "0.84.2" }
+      }
+    },
+    {
+      "properties": {
+        "version": { "const": "cogs.export/v1alpha3" },
+        "pi_version": { "const": "0.86.0" }
+      }
+    }
+  ],
   "$defs": {
     "opaqueId": {
       "type": "string",

@@ -16,6 +16,11 @@ const exactLicenseOverrides = new Map<string, { version: string; license: string
   ["node_modules/cpu-features", { version: "0.0.10", license: "MIT" }],
   ["node_modules/ssh2", { version: "1.17.0", license: "MIT" }],
   ["node_modules/tweetnacl", { version: "0.14.5", license: "Unlicense", allowDisallowed: true }],
+  ["node_modules/fast-sha256", { version: "1.3.0", license: "Unlicense", allowDisallowed: true }],
+  [
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/fast-sha256",
+    { version: "1.3.0", license: "Unlicense", allowDisallowed: true },
+  ],
 ]);
 const lock = JSON.parse(readFileSync(resolve(import.meta.dirname, "../package-lock.json"), "utf8")) as {
   packages: Record<string, LockPackage>;
@@ -35,8 +40,6 @@ function isExactDisallowedException(path: string, entry: LockPackage, license: s
     override?.allowDisallowed === true &&
     entry.version === override.version &&
     license === override.license &&
-    path === "node_modules/tweetnacl" &&
-    entry.version === "0.14.5" &&
     license === "Unlicense"
   );
 }
@@ -65,6 +68,15 @@ assert.equal(
   false,
   "tweetnacl Unlicense exception must not apply to other paths",
 );
+for (const path of [
+  "node_modules/fast-sha256",
+  "node_modules/@earendil-works/pi-coding-agent/node_modules/fast-sha256",
+]) {
+  const entry = lock.packages[path];
+  assert.equal(entry?.version, "1.3.0", `${path} Unlicense exception is version-scoped`);
+  assert.equal(isExactDisallowedException(path, entry, licenseFor(path, entry)), true);
+  assert.equal(isExactDisallowedException(path, { ...entry, version: "1.3.1" }, "Unlicense"), false);
+}
 
 assert.deepEqual(missing, [], `production dependencies without declared licenses: ${missing.join(", ")}`);
 assert.deepEqual(disallowed, [], `production dependencies outside the allowlist: ${disallowed.join(", ")}`);

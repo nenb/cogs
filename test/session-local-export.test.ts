@@ -174,6 +174,12 @@ test("local export writes deterministic raw bundle, hashes, schema, modes, and d
     await assert.rejects(exporter.createExport(), /local export unavailable/);
     assert.equal(await readFile(manifestPath, "utf8"), `${JSON.stringify(tampered)}\n`);
     await writeFile(manifestPath, originalManifest);
+    const previousManifest = JSON.parse(originalManifest);
+    previousManifest.version = "cogs.export/v1alpha2";
+    previousManifest.pi_version = "0.84.2";
+    await writeFile(manifestPath, `${JSON.stringify(previousManifest)}\n`);
+    await exporter.createExport();
+    assert.equal(JSON.parse(await readFile(manifestPath, "utf8")).version, "cogs.export/v1alpha3");
     await t.history.flushSettled();
     await t.gitMap.append({
       version: "cogs.git-mapping/v1alpha1",
@@ -198,9 +204,9 @@ test("local export writes deterministic raw bundle, hashes, schema, modes, and d
     const manifestBytes = await readFile(join(bundle, "manifest.json"));
     assert.equal(sha(manifestBytes), later.manifest_sha256);
     const manifest = JSON.parse(manifestBytes.toString("utf8"));
-    assert.equal(manifest.version, "cogs.export/v1alpha2");
+    assert.equal(manifest.version, "cogs.export/v1alpha3");
     assert.equal(manifest.cogs_version, "0.0.0");
-    assert.equal(manifest.pi_version, "0.84.2");
+    assert.equal(manifest.pi_version, "0.86.0");
     assert.equal(manifest.mode, "raw");
     assert.equal(manifest.attachments_included, false);
     assert.deepEqual(

@@ -82,7 +82,7 @@ export function openStrictNativeSession(path: string, sessionDir: string, cwd: s
   return manager;
 }
 
-/** Pi 0.84.2 only. Install on the securely seeded, reopened manager BEFORE createAgentSession.
+/** Pi 0.86.0 only. Install on the securely seeded, reopened manager BEFORE createAgentSession.
  * Own descriptors are immutable; neither prototypes nor native JSONL bytes are patched.
  */
 export function installNativePersistence(
@@ -167,6 +167,7 @@ export function installNativePersistence(
     "appendMessage",
     "appendThinkingLevelChange",
     "appendModelChange",
+    "appendUsage",
     "appendCompaction",
     "appendCustomEntry",
     "appendSessionInfo",

@@ -1,10 +1,10 @@
 # Stage 4 campaign and exit-review offline models
 
-Issues #358 through #362 remain **open and blocked**. This package prepares only local/static schemas, deterministic fixtures, and pure classifiers. Neither a valid draft nor a terminal local model result can close #358, #359, #360, #361, or #362. The templates cannot be promoted into campaign evidence or an exit decision.
+This document describes the preserved **historical Stage 4 campaign-model v1** schemas and fixtures. Their deliberately absent fields and blocked semantics are immutable snapshots; current successor-readiness facts do not mutate or promote them. Issues #358 through #362 remain **open and blocked**. Neither a valid draft nor a terminal local model result can close an issue or become campaign evidence or an exit decision.
 
 No AWS/provider operation, OpenTofu init/plan/apply, SSM operation, EKS or Kubernetes API access, `kubectl`, Helm install/apply, deployment, external-model call, network discovery, current price/quota discovery, or inventory operation is exposed or performed. Upstream NIC is unchanged. Every verdict fixes execution authority, provider/Kubernetes truth, retry authority, Stage 4 exit, and release eligibility to false.
 
-## #358: absent/unapproved approval-envelope draft
+## #358: historical v1 absent/unapproved approval-envelope draft
 
 The strict draft and verdict schemas are:
 
@@ -12,7 +12,7 @@ The strict draft and verdict schemas are:
 - [`stage4-campaign-approval-verdict-v1.json`](../../schemas/stage4-campaign-approval-verdict-v1.json); and
 - pure classifier [`stage4-campaign-approval.ts`](../../scripts/stage4-campaign-approval.ts).
 
-The deterministic fixture is [`approval-draft-blocked-v1.json`](../../test/fixtures/stage4-campaign/approval-draft-blocked-v1.json). It is deliberately the only state representable by this v1 draft authority:
+The deterministic fixture is [`approval-draft-blocked-v1.json`](../../test/fixtures/stage4-campaign/approval-draft-blocked-v1.json). The following are historical v1 semantics, not statements of current successor-readiness state; this is deliberately the only state representable by that v1 draft authority:
 
 - #42 repeated-measurement, destruction-report, and final-zero-inventory evidence is absent;
 - S4-06 acceptance evidence is absent;
@@ -24,7 +24,7 @@ The deterministic fixture is [`approval-draft-blocked-v1.json`](../../test/fixtu
 - resource graph/caps, budget/current-price/current-quota evidence, expiry/duration/TTL, destroy path/state binding, and independent inventory procedure/scope/observer are absent or unapproved; and
 - `attempt_number=1`, `maximum_attempts=1`, `retry=prohibited`, and `execution_authorized=false` are immutable.
 
-Supplying a digest, identity, account, budget, expiry, destroy path, inventory claim, second attempt, approval, or execution authority is rejected. Closure of #42 will require a new evidence-bound authority; this blocked draft is not designed to become an approval by mutation.
+Supplying a digest, identity, account, budget, expiry, destroy path, inventory claim, second attempt, approval, or execution authority is rejected. Issue #42 later closed under a separate exact historical closure record; that fact does not mutate this blocked v1 draft into an approval.
 
 ## #359–#361: campaign plan and claimed-evidence state models
 

@@ -1,3 +1,4 @@
+// biome-ignore assist/source/organizeImports: preserve the historical v1 import block byte-for-byte
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -18,6 +19,24 @@ import {
   stage4CampaignAttemptIdentitySha256,
   stage4CampaignIdentitySha256,
   stage4CampaignPlanSha256,
+} from "../scripts/stage4-campaign-model.ts";
+import {
+  classifyStage4S408Lifecycle,
+  STAGE4_S408_CUSTODY_INVENTORY_SCOPES,
+  STAGE4_S408_DEFAULT_POLICY,
+  STAGE4_S408_FROZEN_FIXTURE_POLICY,
+  STAGE4_S408_FROZEN_PLAN_PROJECTION,
+  STAGE4_S408_FROZEN_PLAN_SHA256,
+  STAGE4_S408_INVENTORY_SCOPES,
+  STAGE4_S408_LIFECYCLE_PHASES,
+  STAGE4_S408_RETIREMENT_RECORD,
+  STAGE4_S408_UNRESOLVED_PROVIDER_CLASSES,
+  type Stage4S408LifecycleEvent,
+  type Stage4S408LifecycleJournal,
+  type Stage4S408LifecyclePolicy,
+  stage4CampaignEvidenceSha256,
+  stage4S408LifecycleEventSha256,
+  stage4S408LifecyclePolicySha256,
 } from "../scripts/stage4-campaign-model.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -595,4 +614,318 @@ test("campaign model rejects getters and proxies without invoking traps", () => 
   });
   assert.equal(classifyStage4CampaignModel(proxy, fixture("s4-08-evidence-empty-v1.json")).plan_valid, false);
   assert.equal(invoked, 0);
+});
+
+function s408RetainedState(): JsonObject {
+  const bucketIdentity = digest("s408-state-bucket");
+  return {
+    custody_claimed: false,
+    bucket: { kind: "aws-s3-bucket", bucket_name: "fixture-stage3-state", identity_sha256: bucketIdentity },
+    object: {
+      kind: "aws-s3-object",
+      bucket_identity_sha256: bucketIdentity,
+      key: "stage3/state.json",
+      bytes_sha256: digest("s408-state-bytes"),
+      identity_sha256: digest("s408-state-object"),
+    },
+  };
+}
+
+function s408Event(
+  events: Stage4S408LifecycleEvent[],
+  phase: Stage4S408LifecycleEvent["phase"],
+  payload: JsonObject,
+): Stage4S408LifecycleEvent {
+  const prior = events.at(-1);
+  return {
+    phase,
+    attempt_number: 1,
+    prior_event_sha256: prior ? stage4S408LifecycleEventSha256(prior) : null,
+    outcome: "fixture-claimed-success",
+    payload,
+  } as Stage4S408LifecycleEvent;
+}
+
+function s408Journal(
+  policy: Stage4S408LifecyclePolicy,
+  phaseCount: number = STAGE4_S408_LIFECYCLE_PHASES.length,
+): Stage4S408LifecycleJournal {
+  const events: Stage4S408LifecycleEvent[] = [];
+  const push = (phase: Stage4S408LifecycleEvent["phase"], payload: JsonObject): void => {
+    events.push(s408Event(events, phase, payload));
+  };
+  push("source", { operator_identity_sha256: digest("s408-operator"), source_sha256: digest("s408-source") });
+  push("discovery", {
+    discovery_identity_sha256: digest("s408-discovery"),
+    indirect_classes: structuredClone(STAGE4_S408_UNRESOLVED_PROVIDER_CLASSES),
+    indirect_counts: "unresolved-observation-only-uncapped",
+    retained_state: s408RetainedState(),
+  });
+  push("saved-plan", {
+    plan_projection: structuredClone(STAGE4_S408_FROZEN_PLAN_PROJECTION),
+    plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
+  });
+  for (const phase of ["approval-check", "apply", "stop"] as const) {
+    push(phase, {
+      bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+      plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
+    });
+  }
+  push("destroy", {
+    bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+    plan_sha256: STAGE4_S408_FROZEN_PLAN_SHA256,
+  });
+  push("custody-inventory", {
+    bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+    complete_pagination: true,
+    custody_claimed: false,
+    retained_state: s408RetainedState(),
+    scopes: structuredClone(STAGE4_S408_CUSTODY_INVENTORY_SCOPES),
+    tag_only: false,
+  });
+  push("retained-state-retirement", {
+    bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+    retirement_record: structuredClone(STAGE4_S408_RETIREMENT_RECORD),
+  });
+  push("final-inventory", {
+    bound_prior_event_sha256: stage4S408LifecycleEventSha256(events.at(-1)),
+    claimed_identity_independent: true,
+    complete_pagination: true,
+    observer_identity_sha256: digest("s408-observer"),
+    residue_count: 0,
+    scopes: structuredClone(STAGE4_S408_INVENTORY_SCOPES),
+    tag_only: false,
+  });
+  const policySha256 = stage4S408LifecyclePolicySha256(policy);
+  assert.ok(policySha256);
+  return {
+    version: "cogs.stage4-s408-journal/v1",
+    policy_sha256: policySha256,
+    attempt_number: 1,
+    retry_count: 0,
+    continuation_count: 0,
+    events: events.slice(0, phaseCount),
+  };
+}
+
+function s408Mutate(
+  journal: Stage4S408LifecycleJournal,
+  mutation: (copy: JsonObject & { events: JsonObject[] }) => void,
+): Stage4S408LifecycleJournal {
+  const copy = structuredClone(journal) as unknown as JsonObject & { events: JsonObject[] };
+  mutation(copy);
+  return copy as unknown as Stage4S408LifecycleJournal;
+}
+
+test("S4-08 default policy stops after discovery with provider-derived caps unresolved", () => {
+  const result = classifyStage4S408Lifecycle(STAGE4_S408_DEFAULT_POLICY, s408Journal(STAGE4_S408_DEFAULT_POLICY, 2));
+  assert.equal(result.status, "STOPPED_UNRESOLVED");
+  assert.equal(result.reason_code, "S408_UNRESOLVED_DERIVED_CAPS");
+  assert.equal(result.next_phase, null);
+  assert.equal(result.execution_authorized, false);
+});
+
+test("S4-08 explicit frozen fixture proves order only and remains blocked", () => {
+  const result = classifyStage4S408Lifecycle(
+    STAGE4_S408_FROZEN_FIXTURE_POLICY,
+    s408Journal(STAGE4_S408_FROZEN_FIXTURE_POLICY),
+  );
+  assert.equal(result.status, "MODEL_ORDER_COMPLETE_BLOCKED");
+  assert.equal(result.reason_code, "S408_MODEL_ORDER_COMPLETE_BLOCKED");
+  for (const field of [
+    "execution_authorized",
+    "provider_truth_observed",
+    "custody_claimed",
+    "retirement_claimed",
+    "zero_inventory_claimed",
+    "retry_authorized",
+  ] as const)
+    assert.equal(result[field], false, field);
+});
+
+test("S4-08 apply failure requires the complete cleanup suffix", () => {
+  const journal = s408Mutate(s408Journal(STAGE4_S408_FROZEN_FIXTURE_POLICY, 5), (copy) => {
+    (copy.events[4] as JsonObject).outcome = "fixture-claimed-failed";
+  });
+  const result = classifyStage4S408Lifecycle(STAGE4_S408_FROZEN_FIXTURE_POLICY, journal);
+  assert.equal(result.status, "PRESERVE_UNCERTAIN");
+  assert.equal(result.next_phase, "stop");
+  assert.equal(result.execution_authorized, false);
+  const denied = s408Mutate(s408Journal(STAGE4_S408_FROZEN_FIXTURE_POLICY, 4), (copy) => {
+    (copy.events[3] as JsonObject).outcome = "fixture-claimed-failed";
+  });
+  assert.equal(classifyStage4S408Lifecycle(STAGE4_S408_FROZEN_FIXTURE_POLICY, denied).next_phase, null);
+});
+
+test("S4-08 hostile fixture mutations fail closed", () => {
+  const policy = STAGE4_S408_FROZEN_FIXTURE_POLICY;
+  const original = s408Journal(policy);
+  const event = (copy: { events: JsonObject[] }, index: number): JsonObject => copy.events[index] as JsonObject;
+  const payload = (copy: { events: JsonObject[] }, index: number): JsonObject =>
+    event(copy, index).payload as JsonObject;
+  const cases: readonly [string, Stage4S408LifecyclePolicy, (copy: JsonObject & { events: JsonObject[] }) => void][] = [
+    [
+      "failed outcome",
+      policy,
+      (copy) => {
+        event(copy, 9).outcome = "fixture-claimed-failed";
+      },
+    ],
+    [
+      "unknown outcome",
+      policy,
+      (copy) => {
+        event(copy, 9).outcome = "unknown";
+      },
+    ],
+    [
+      "incomplete inventory",
+      policy,
+      (copy) => {
+        payload(copy, 7).complete_pagination = false;
+      },
+    ],
+    [
+      "retained-state byte loss",
+      policy,
+      (copy) => {
+        ((payload(copy, 7).retained_state as JsonObject).object as JsonObject).bytes_sha256 = digest("lost");
+      },
+    ],
+    [
+      "residue",
+      policy,
+      (copy) => {
+        payload(copy, 9).residue_count = 1;
+      },
+    ],
+    [
+      "mixed policy digest",
+      policy,
+      (copy) => {
+        copy.policy_sha256 = digest("other-policy");
+      },
+    ],
+    [
+      "changed plan",
+      policy,
+      (copy) => {
+        payload(copy, 4).plan_sha256 = digest("other-plan");
+      },
+    ],
+    [
+      "mutable launch template",
+      policy,
+      (copy) => {
+        const projection = payload(copy, 2).plan_projection as JsonObject;
+        const reference = (projection.launch_template_references as JsonObject[])[0];
+        assert.ok(reference);
+        reference.version = "$Latest";
+      },
+    ],
+    [
+      "discovery identity collapse",
+      policy,
+      (copy) => {
+        payload(copy, 1).discovery_identity_sha256 = digest("s408-operator");
+      },
+    ],
+    [
+      "observer identity collapse",
+      policy,
+      (copy) => {
+        payload(copy, 9).observer_identity_sha256 = digest("s408-discovery");
+      },
+    ],
+    [
+      "retry drift",
+      policy,
+      (copy) => {
+        copy.retry_count = 1;
+      },
+    ],
+    [
+      "attempt drift",
+      policy,
+      (copy) => {
+        event(copy, 5).attempt_number = 2;
+      },
+    ],
+    [
+      "continuation drift",
+      policy,
+      (copy) => {
+        copy.continuation_count = 1;
+      },
+    ],
+    [
+      "skipped phase",
+      policy,
+      (copy) => {
+        copy.events.splice(4, 1);
+      },
+    ],
+    [
+      "duplicate phase",
+      policy,
+      (copy) => {
+        const duplicate = copy.events[3];
+        assert.ok(duplicate);
+        copy.events.splice(4, 0, structuredClone(duplicate));
+      },
+    ],
+    [
+      "incomplete retirement record",
+      policy,
+      (copy) => {
+        ((payload(copy, 8).retirement_record as JsonObject).s3 as JsonObject).all_multipart_uploads = "retained";
+      },
+    ],
+    [
+      "tag-only inventory",
+      policy,
+      (copy) => {
+        payload(copy, 9).tag_only = true;
+      },
+    ],
+    [
+      "caller-frozen caps",
+      { ...policy, caller_frozen_caps: { iam: 3 } } as unknown as Stage4S408LifecyclePolicy,
+      () => {},
+    ],
+  ];
+  for (const [name, changedPolicy, mutate] of cases) {
+    const changed = s408Mutate(original, mutate);
+    const result = classifyStage4S408Lifecycle(changedPolicy, changed);
+    assert.equal(result.status, "PRESERVE_UNCERTAIN", name);
+    assert.equal(result.execution_authorized, false, name);
+    assert.equal(result.retirement_claimed, false, name);
+  }
+});
+
+test("historical Stage 4 v1 semantic digests remain unchanged", () => {
+  const expected = [
+    [
+      "s4-08-plan-blocked-v1.json",
+      "s4-08-evidence-empty-v1.json",
+      "dacca859481c505e871e87f363ca1fab859b6f9d0f455761582f0603ca7f9bf6",
+      "778d5db910e0214a9b43926933ccb8662c62df9feb878e1e7abb97edf4c5de89",
+    ],
+    [
+      "s4-09-plan-blocked-v1.json",
+      "s4-09-evidence-empty-v1.json",
+      "5569a6381a7fdc11d45cfa6ee7f040f2123cb5bb54f0ca2c456a36e3dfde10ba",
+      "eb04d3697c3eefdc6bfd5fefc862bee62fb18f91fbcaf5057cf3cf124951e0f0",
+    ],
+    [
+      "s4-10-plan-blocked-v1.json",
+      "s4-10-evidence-empty-v1.json",
+      "1dc846f581802c4b67056e15a15d68264325281518d5ec2262c2d179dcb1c40e",
+      "001f5035ba90c8a47081384466c1f40c8c3e3c8960683984e068b230f09ef964",
+    ],
+  ] as const;
+  for (const [plan, evidence, planSha, evidenceSha] of expected) {
+    assert.equal(stage4CampaignPlanSha256(fixture(plan)), planSha, plan);
+    assert.equal(stage4CampaignEvidenceSha256(fixture(evidence)), evidenceSha, evidence);
+  }
 });

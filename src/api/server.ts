@@ -1449,7 +1449,7 @@ const gitCore = {
 };
 const toolCore = { toolCallId: "toolId", toolName: ["read", "write", "edit", "bash"] };
 const messageCore = {
-  role: ["user", "assistant", "toolResult", "bashExecution", "custom", "compactionSummary", "branchSummary"],
+  role: ["system", "user", "assistant", "toolResult", "bashExecution", "custom", "compactionSummary", "branchSummary"],
   "toolCallId?": "toolId",
   "toolName?": toolCore.toolName,
   "isError?": "boolean",

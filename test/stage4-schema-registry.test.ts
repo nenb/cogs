@@ -209,8 +209,98 @@ function offlineReadinessPackageSample(): JsonObject {
   ) as JsonObject;
 }
 
+function legacyOfflineReadinessPackage(value: Record<string, any>): void {
+  delete value.stage2_issue42;
+  delete value.issue_359_scope;
+  delete value.claims.candidate_artifact_closure_complete;
+  delete value.claims.selected_runtime_artifacts_authenticated;
+  delete value.claims.issue_42_stage2_evidence_accepted;
+  value.blockers = value.blockers
+    .filter(
+      (blocker: string) =>
+        blocker !== "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED" &&
+        blocker !== "SAVED_PLAN_DERIVED_CAPS_UNRESOLVED",
+    )
+    .map((blocker: string) =>
+      blocker === "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT"
+        ? "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT"
+        : blocker === "ACCOUNT_BINDING_PROVIDER_UNOBSERVED"
+          ? "PROPOSED_ACCOUNT_BINDING_ABSENT"
+          : blocker,
+    );
+  value.blockers.unshift("ISSUE_42_OPEN");
+  value.campaign_proposal.access = "proposed-ssm-only-no-public-ssh-unexecuted";
+  delete value.campaign_proposal.managed_addons;
+  delete value.campaign_proposal.state_custody;
+  delete value.campaign_proposal.spend.alert_email;
+  value.campaign_proposal.resource_graph.state = "proposal-only-not-provider-validated";
+  value.campaign_proposal.resource_graph.count_semantics = "hard-maximum-proposal";
+  value.campaign_proposal.resource_graph.closed_world = true;
+  value.campaign_proposal.resource_graph.undeclared_resource_classes_allowed = false;
+  delete value.campaign_proposal.resource_graph.desired_direct_topology_complete;
+  delete value.campaign_proposal.resource_graph.provider_projection_complete;
+  delete value.campaign_proposal.resource_graph.provider_created_class_set;
+  value.campaign_proposal.account_binding = { state: "absent-blocking", account_sha256: null };
+  delete value.stop_destroy.retirement_order;
+  delete value.stop_destroy.independent_inventory.custody_inventory_before_retirement;
+  delete value.stop_destroy.independent_inventory.final_zero_inventory_deletion_blind;
+  const oldCounts: Record<string, [number, string]> = {
+    "eks-cluster": [1, "regional-control-plane"],
+    "eks-managed-addon": [0, "none"],
+    "route-table": [2, "campaign-dedicated"],
+    route: [4, "two-local-two-internet-gateway"],
+    "network-acl": [1, "vpc-default-closed-review"],
+    "dhcp-options-association": [1, "vpc-default-closed-review"],
+    "security-group": [5, "default-cluster-shared-trusted-sandbox"],
+    "iam-role": [4, "cluster-trusted-node-sandbox-node-ttl-function"],
+    "iam-customer-managed-policy": [4, "one-per-campaign-role"],
+    "iam-policy-attachment": [8, "bounded-role-attachments"],
+    "instance-profile": [2, "trusted-node-and-sandbox-node"],
+    "autoscaling-group": [2, "managed-node-group-owned"],
+    "trusted-node": [1, "c8i-flex.large-on-demand"],
+    "sandbox-node": [1, "c8i-flex.large-on-demand-nested-kvm"],
+    "network-interface": [10, "hard-maximum-provider-managed-and-node"],
+    "kms-key": [1, "symmetric-campaign-storage"],
+    "kms-alias": [1, "campaign-key-alias"],
+    "log-group": [2, "eks-control-and-ttl-function-30-day"],
+  };
+  value.campaign_proposal.resource_graph.classes = value.campaign_proposal.resource_graph.classes
+    .filter(
+      (row: Record<string, any>) =>
+        !row.resource_class.startsWith("campaign-state-") &&
+        row.resource_class !== "eks-access-entry" &&
+        row.resource_class !== "eks-pod-identity-association",
+    )
+    .map(({ desired_count, ...row }: Record<string, any>) => {
+      const replacement = oldCounts[row.resource_class];
+      return {
+        ...row,
+        maximum_count: replacement?.[0] ?? desired_count,
+        resource_type: replacement?.[1] ?? row.resource_type,
+      };
+    });
+  value.stop_destroy.independent_inventory.scopes = value.stop_destroy.independent_inventory.scopes.filter(
+    (row: Record<string, any>) =>
+      !row.resource_class.startsWith("campaign-state-") &&
+      row.resource_class !== "eks-access-entry" &&
+      row.resource_class !== "eks-pod-identity-association",
+  );
+  for (const role of value.identities.roles) {
+    delete role.owner_declared;
+    role.state = "not-present-blocking";
+  }
+  value.revalidation.issue_42_state = "open-blocking";
+  const historical = value.pins.runtime.historical_stage2_containerd;
+  value.pins.runtime.containerd_version = historical.version;
+  value.pins.runtime.containerd_artifact_sha256 = historical.artifact_sha256;
+  value.pins.runtime.containerd_artifact_state = "authenticated-public-release-selected-candidate";
+  value.pins.runtime.exact_runtime_artifact_closure_satisfied = true;
+  delete value.pins.runtime.historical_stage2_containerd;
+}
+
 function offlineReadinessPackageV4Sample(): JsonObject {
   const value = offlineReadinessPackageSample() as Record<string, any>;
+  legacyOfflineReadinessPackage(value);
   value.version = "cogs.stage4-offline-readiness-package/v4";
   value.source.image_source = {
     reviewed_sha: "d3ddb987ceeec0bae0fa2d89fdc134187a0d1de3",
@@ -228,7 +318,18 @@ function offlineReadinessPackageV4Sample(): JsonObject {
   };
   value.pins.images.release_image_set_present = false;
   value.pins.images.exact_image_closure_satisfied = false;
-  value.blockers.splice(2, 0, "RELEASE_IMAGE_SET_ABSENT");
+  value.blockers = [
+    "ISSUE_42_OPEN",
+    "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
+    "RELEASE_IMAGE_SET_ABSENT",
+    "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
+    "PROPOSED_ACCOUNT_BINDING_ABSENT",
+    "CURRENT_PRICE_NOT_REVALIDATED",
+    "CURRENT_QUOTA_NOT_REVALIDATED",
+    "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
+    "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
+    "NO_EXECUTABLE_PROVIDER_ROUTE",
+  ];
   return value;
 }
 
@@ -359,7 +460,22 @@ function offlineReadinessVerdictV4Sample(): JsonObject {
 function offlineReadinessVerdictSample(): JsonObject {
   const value = offlineReadinessVerdictV4Sample() as Record<string, any>;
   value.version = "cogs.stage4-offline-readiness-verdict/v5";
-  value.blockers = value.blockers.filter((blocker: string) => blocker !== "RELEASE_IMAGE_SET_ABSENT");
+  value.blockers = [
+    "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
+    "RELEASE_IMAGE_SET_ABSENT",
+    "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
+    "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
+    "ACCOUNT_BINDING_PROVIDER_UNOBSERVED",
+    "CURRENT_PRICE_NOT_REVALIDATED",
+    "CURRENT_QUOTA_NOT_REVALIDATED",
+    "SAVED_PLAN_DERIVED_CAPS_UNRESOLVED",
+    "SEPARATED_CAMPAIGN_IDENTITIES_ABSENT",
+    "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
+    "NO_EXECUTABLE_PROVIDER_ROUTE",
+  ];
+  value.issue_42_stage2_evidence_accepted = true;
+  value.candidate_artifact_closure_complete = false;
+  value.selected_runtime_artifacts_authenticated = false;
   return value;
 }
 
@@ -375,17 +491,41 @@ function authenticatedRuntimeArtifactSample(): JsonObject {
   ) as JsonObject;
 }
 
+function legacyAuthenticatedContainerd(value: Record<string, any>): void {
+  value.containerd = value.historical_stage2_containerd;
+  delete value.containerd.selected_runtime;
+  delete value.containerd.interpretation;
+  delete value.historical_stage2_containerd;
+  value.eks_node_image_candidate.selected_containerd_override_required = true;
+  value.claims.candidate_artifact_closure_complete = true;
+  value.claims.selected_runtime_artifacts_authenticated = true;
+  value.blockers = value.blockers
+    .filter((blocker: string) => blocker !== "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED")
+    .map((blocker: string) =>
+      blocker === "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT" ? "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT" : blocker,
+    );
+}
+
 function authenticatedRuntimeArtifactV3Sample(): JsonObject {
   const value = authenticatedRuntimeArtifactSample() as Record<string, any>;
+  legacyAuthenticatedContainerd(value);
   value.version = "cogs.stage4-authenticated-runtime-artifact-evidence/v3";
+  value.static_candidate_freeze.dependency_lock.pi_version = "0.84.2";
   delete value.static_candidate_freeze.release_images;
   value.claims.release_image_set_present = false;
-  value.blockers.splice(1, 0, "RELEASE_IMAGE_SET_ABSENT");
+  value.blockers = [
+    "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT",
+    "RELEASE_IMAGE_SET_ABSENT",
+    "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED",
+    "ENVOY_UPSTREAM_SIGNATURE_UNAVAILABLE",
+    "CAMPAIGN_ENVELOPE_AND_APPROVAL_ABSENT",
+  ];
   return value;
 }
 
 function authenticatedRuntimeArtifactV1Sample(): JsonObject {
   const value = authenticatedRuntimeArtifactSample() as Record<string, any>;
+  legacyAuthenticatedContainerd(value);
   value.version = "cogs.stage4-authenticated-runtime-artifact-evidence/v1";
   delete value.static_candidate_freeze.release_images;
   delete value.static_candidate_freeze.openbao.retired_at;
@@ -413,6 +553,7 @@ function authenticatedRuntimeArtifactV1Sample(): JsonObject {
 
 function authenticatedRuntimeArtifactV2Sample(): JsonObject {
   const value = authenticatedRuntimeArtifactSample() as Record<string, any>;
+  legacyAuthenticatedContainerd(value);
   value.version = "cogs.stage4-authenticated-runtime-artifact-evidence/v2";
   const historical = authenticatedRuntimeArtifactV1Sample() as Record<string, any>;
   value.static_candidate_freeze.dependency_lock = historical.static_candidate_freeze.dependency_lock;
