@@ -53,6 +53,19 @@ A qualification failure skips only the remaining qualification claims and moves 
 
 Evidence rows are bounded categorical metadata plus SHA-256 references only. Phase values are closed issue-specific enums; arbitrary execution/provider-like phase tokens are not representable. They contain no resource IDs, account IDs, commands, targets, URLs, logs, prompts, source, credentials, provider payloads, callbacks, or arbitrary diagnostics. Producer categories and digests are claims, not provenance, independence, custody, execution, or provider truth. Safe snapshots reject Proxies before traps, accessors without invoking them, inherited properties, oversized strings/keys/property sets before descriptor-value traversal, and non-exact artifact-root fields.
 
+### #359 provider-free lifecycle preparation
+
+The same pure driver also exports a separately namespaced `cogs.stage4-s408-*` lifecycle model. It is local-only preparation for Issue #359 and does not alter the historical Stage 4 v1 schemas, fixtures, or semantic digests. Its default policy stops after source and discovery fixtures because provider-created counts remain unresolved and uncapped. A separate explicit hand-built frozen fixture can exercise ordering only; it is not a provider plan and remains `MODEL_ORDER_COMPLETE_BLOCKED` even after every row.
+
+Both policies bind blockers stating that S4-07 acceptance, fresh Issue #359 approval, an authorized saved plan, and provider discovery are absent. They also bind an exact qualification-requirements digest covering:
+
+- exact approved source, render, and artifact identities plus live-object readback;
+- Kata with KVM acceleration, nested virtualization, a distinct guest kernel, and no `runc`, QEMU TCG, or trusted-sidecar fallback;
+- EBS workspace and session create/attach/use/detach/delete lifecycle, exclusive-writer behavior, and forced-loss behavior; and
+- mandatory `stop -> destroy -> custody-inventory -> retained-state-retirement -> final-inventory` after pass, failure, timeout, or uncertainty.
+
+The fixture apply row carries only a digest of synthetic fixture observations and must state `provider_observation_claimed=false`. It cannot stand in for AWS, EKS, Kata, EBS, or live-object evidence. Stop and destroy rows bind cleanup for every outcome. The custody inventory binds all retained S3 versions, delete markers, multipart uploads, and locks before retirement. Final inventory is complete, deletion-blind, non-tag-only, identity-separated, and spans account/region EC2 including EBS and ENI, EKS, load balancers, Auto Scaling, IAM, KMS, logs, S3, budgets, schedules, and Lambda. The classifier nevertheless fixes provider truth, custody, retirement, zero inventory, retry authority, and execution authority to false. OpenBao is excluded only from #359 and remains required for later stages.
+
 ## #362: strict blocked exit-review templates
 
 The matrix/report templates and classifier are:
