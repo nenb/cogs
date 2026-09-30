@@ -1466,3 +1466,290 @@ export function classifyStage4S409Lifecycle(policyInput: unknown, journalInput: 
     return s409Verdict("MODEL_ORDER_COMPLETE_BLOCKED", "S409_MODEL_ORDER_COMPLETE_BLOCKED", null, true, true);
   return s409Verdict("AWAITING_FIXTURE_EVENT", "S409_AWAITING_FIXTURE_EVENT", state.next, true, true);
 }
+
+/* S4-10 remains a provider-free, non-observing model over synthetic fixtures. */
+export const STAGE4_S410_LIFECYCLE_PHASES = Object.freeze([
+  "source",
+  "admission",
+  "startup-measurements",
+  "workload-measurements",
+  "capacity-cost-observation",
+  "failure-injection",
+  "stop",
+  "destroy",
+  "independent-inventory",
+] as const);
+
+export const STAGE4_S410_ADMISSION_BLOCKERS = deepFreeze({
+  accepted_s409_evidence: "absent",
+  fresh_issue_specific_approval: "absent",
+  authorized_saved_plan: "absent",
+  authenticated_release_image_set: "absent",
+  provider_discovery: "not-performed",
+  agreed_startup_percentile_or_reviewed_exception: "absent",
+});
+
+export const STAGE4_S410_QUALIFICATION_REQUIREMENTS = deepFreeze({
+  performance_measurements: {
+    required: [
+      "startup-p50",
+      "startup-p95",
+      "startup-p99",
+      "first-tool",
+      "storage-attach",
+      "cold-pulls-and-scale",
+      "idle",
+      "git-and-build",
+      "proxy",
+      "recycle",
+    ],
+    startup_threshold_ms: 30_000,
+    selected_startup_percentile: "fresh-approval-required-absent",
+    reviewed_exception: "absent",
+  },
+  recovery_injections: {
+    required: ["worker", "sandbox", "proxy", "node", "openbao", "otlp", "storage", "wal", "policy", "recycle"],
+    prompt_replay: "prohibited",
+  },
+  capacity_cost: {
+    observations: "bounded-actual-only",
+    extrapolated_support_claims: "prohibited",
+  },
+  cleanup: {
+    trigger: "pass-failure-timeout-or-uncertainty",
+    order: ["stop", "destroy", "independent-inventory"],
+    final_inventory: "independent-complete-deletion-blind-zero-required",
+  },
+});
+
+export const STAGE4_S410_QUALIFICATION_REQUIREMENTS_SHA256 = semanticDigest(
+  "cogs.stage4/s410-qualification-requirements/v1",
+  STAGE4_S410_QUALIFICATION_REQUIREMENTS,
+);
+
+export const STAGE4_S410_POLICY = deepFreeze({
+  version: "cogs.stage4-s410-policy/v1",
+  authority: "local-provider-free-ordering-model",
+  campaign_issue: "S4-10/#361",
+  execution_authorized: false,
+  maximum_attempts: 1,
+  retry: "prohibited",
+  continuation: "prohibited",
+  admission_blockers: STAGE4_S410_ADMISSION_BLOCKERS,
+  qualification_requirements_sha256: STAGE4_S410_QUALIFICATION_REQUIREMENTS_SHA256,
+});
+
+export type Stage4S410Policy = typeof STAGE4_S410_POLICY;
+type S410Phase = (typeof STAGE4_S410_LIFECYCLE_PHASES)[number];
+type S410Outcome = "fixture-claimed-success" | "fixture-claimed-failed" | "unknown";
+export type Stage4S410Event = Readonly<{
+  phase: S410Phase;
+  attempt_number: 1;
+  prior_event_sha256: string | null;
+  outcome: S410Outcome;
+  payload: Readonly<Record<string, JsonValue>>;
+}>;
+export type Stage4S410Journal = Readonly<{
+  version: "cogs.stage4-s410-journal/v1";
+  policy_sha256: string;
+  attempt_number: 1;
+  retry_count: 0;
+  continuation_count: 0;
+  events: readonly Stage4S410Event[];
+}>;
+export type Stage4S410Verdict = Readonly<{
+  version: "cogs.stage4-s410-verdict/v1";
+  status: "AWAITING_FIXTURE_EVENT" | "MODEL_ORDER_COMPLETE_BLOCKED" | "PRESERVE_UNCERTAIN";
+  reason_code: "S410_AWAITING_FIXTURE_EVENT" | "S410_MODEL_ORDER_COMPLETE_BLOCKED" | "S410_PRESERVE_UNCERTAIN";
+  next_phase: S410Phase | null;
+  policy_valid: boolean;
+  journal_valid: boolean;
+  execution_authorized: false;
+  provider_truth_observed: false;
+  kubernetes_truth_observed: false;
+  performance_claimed: false;
+  recovery_claimed: false;
+  capacity_cost_claimed: false;
+  cleanup_observed: false;
+  zero_inventory_claimed: false;
+  retry_authorized: false;
+}>;
+
+export function stage4S410PolicySha256(input: unknown): string | null {
+  const value = snapshotJson(input);
+  return value !== null && s408Same(value, STAGE4_S410_POLICY)
+    ? semanticDigest("cogs.stage4/s410-policy/v1", value)
+    : null;
+}
+
+export function stage4S410EventSha256(input: unknown): string | null {
+  const value = snapshotJson(input);
+  return value === null ? null : semanticDigest("cogs.stage4/s410-event/v1", value);
+}
+
+function s410QualificationPhase(phase: S410Phase): boolean {
+  return STAGE4_S410_LIFECYCLE_PHASES.indexOf(phase) >= 1 && STAGE4_S410_LIFECYCLE_PHASES.indexOf(phase) <= 5;
+}
+
+function s410PayloadValid(
+  phase: S410Phase,
+  payload: JsonRecord,
+  priorSha: string | null,
+  operator: JsonRecord | null,
+): boolean {
+  if (phase === "source")
+    return (
+      exactKeys(payload, ["operator_identity_sha256", "source_sha256"]) &&
+      typeof payload.operator_identity_sha256 === "string" &&
+      DIGEST.test(payload.operator_identity_sha256) &&
+      typeof payload.source_sha256 === "string" &&
+      DIGEST.test(payload.source_sha256)
+    );
+  if (s410QualificationPhase(phase))
+    return (
+      exactKeys(payload, [
+        "bound_prior_event_sha256",
+        "fixture_claim_sha256",
+        "provider_observation_claimed",
+        "qualification_requirements_sha256",
+      ]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      typeof payload.fixture_claim_sha256 === "string" &&
+      DIGEST.test(payload.fixture_claim_sha256) &&
+      payload.provider_observation_claimed === false &&
+      payload.qualification_requirements_sha256 === STAGE4_S410_QUALIFICATION_REQUIREMENTS_SHA256
+    );
+  if (phase === "stop")
+    return (
+      exactKeys(payload, ["bound_prior_event_sha256", "cleanup_trigger"]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      payload.cleanup_trigger === "pass-failure-timeout-or-uncertainty"
+    );
+  if (phase === "destroy")
+    return (
+      exactKeys(payload, ["bound_prior_event_sha256", "destruction_required_for"]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      payload.destruction_required_for === "all-outcomes"
+    );
+  return (
+    exactKeys(payload, [
+      "bound_prior_event_sha256",
+      "campaign_tag_filter_used",
+      "claimed_identity_independent",
+      "complete_pagination",
+      "deleted_ids_used",
+      "observer_identity_sha256",
+      "planned_addresses_used",
+      "residue_count",
+      "scopes",
+    ]) &&
+    payload.bound_prior_event_sha256 === priorSha &&
+    payload.campaign_tag_filter_used === false &&
+    payload.claimed_identity_independent === true &&
+    payload.complete_pagination === true &&
+    payload.deleted_ids_used === false &&
+    typeof payload.observer_identity_sha256 === "string" &&
+    DIGEST.test(payload.observer_identity_sha256) &&
+    payload.observer_identity_sha256 !== operator?.operator_identity_sha256 &&
+    payload.planned_addresses_used === false &&
+    payload.residue_count === 0 &&
+    s408Same(payload.scopes as JsonValue, STAGE4_S408_INVENTORY_SCOPES)
+  );
+}
+
+function s410NextPhase(phase: S410Phase, outcome: S410Outcome): S410Phase | null {
+  if (phase === "source") return outcome === "fixture-claimed-success" ? "admission" : "stop";
+  if (s410QualificationPhase(phase) && outcome !== "fixture-claimed-success") return "stop";
+  if (phase === "stop") return "destroy";
+  if (phase === "destroy") return "independent-inventory";
+  if (phase === "independent-inventory") return null;
+  const index = STAGE4_S410_LIFECYCLE_PHASES.indexOf(phase);
+  return STAGE4_S410_LIFECYCLE_PHASES[index + 1] ?? null;
+}
+
+function s410JournalValid(journal: JsonRecord): { valid: boolean; next: S410Phase | null; uncertain: boolean } {
+  if (
+    !exactKeys(journal, [
+      "attempt_number",
+      "continuation_count",
+      "events",
+      "policy_sha256",
+      "retry_count",
+      "version",
+    ]) ||
+    journal.version !== "cogs.stage4-s410-journal/v1" ||
+    journal.policy_sha256 !== stage4S410PolicySha256(STAGE4_S410_POLICY) ||
+    journal.attempt_number !== 1 ||
+    journal.retry_count !== 0 ||
+    journal.continuation_count !== 0 ||
+    !Array.isArray(journal.events) ||
+    journal.events.length > STAGE4_S410_LIFECYCLE_PHASES.length
+  )
+    return { valid: false, next: null, uncertain: true };
+  let expected: S410Phase | null = "source";
+  let prior: JsonRecord | null = null;
+  let operator: JsonRecord | null = null;
+  let uncertain = false;
+  for (const item of journal.events) {
+    const event = s408Object(item);
+    const payload = s408Object(event?.payload);
+    const priorSha = prior === null ? null : stage4S410EventSha256(prior);
+    if (
+      expected === null ||
+      event === null ||
+      payload === null ||
+      !exactKeys(event, ["attempt_number", "outcome", "payload", "phase", "prior_event_sha256"]) ||
+      event.phase !== expected ||
+      event.attempt_number !== 1 ||
+      !["fixture-claimed-success", "fixture-claimed-failed", "unknown"].includes(event.outcome as string) ||
+      event.prior_event_sha256 !== priorSha ||
+      !s410PayloadValid(expected, payload, priorSha, operator)
+    )
+      return { valid: false, next: null, uncertain: true };
+    if (expected === "source") operator = payload;
+    if (event.outcome !== "fixture-claimed-success") uncertain = true;
+    expected = s410NextPhase(expected, event.outcome as S410Outcome);
+    prior = event;
+  }
+  return { valid: true, next: expected, uncertain };
+}
+
+function s410Verdict(
+  status: Stage4S410Verdict["status"],
+  reason_code: Stage4S410Verdict["reason_code"],
+  next_phase: S410Phase | null,
+  policy_valid: boolean,
+  journal_valid: boolean,
+): Stage4S410Verdict {
+  return {
+    version: "cogs.stage4-s410-verdict/v1",
+    status,
+    reason_code,
+    next_phase,
+    policy_valid,
+    journal_valid,
+    execution_authorized: false,
+    provider_truth_observed: false,
+    kubernetes_truth_observed: false,
+    performance_claimed: false,
+    recovery_claimed: false,
+    capacity_cost_claimed: false,
+    cleanup_observed: false,
+    zero_inventory_claimed: false,
+    retry_authorized: false,
+  };
+}
+
+export function classifyStage4S410Lifecycle(policyInput: unknown, journalInput: unknown): Stage4S410Verdict {
+  const policy = snapshotJson(policyInput);
+  if (policy === null || !s408Same(policy, STAGE4_S410_POLICY))
+    return s410Verdict("PRESERVE_UNCERTAIN", "S410_PRESERVE_UNCERTAIN", null, false, false);
+  const journal = snapshotJson(journalInput);
+  if (journal === null) return s410Verdict("PRESERVE_UNCERTAIN", "S410_PRESERVE_UNCERTAIN", null, true, false);
+  const state = s410JournalValid(journal);
+  if (!state.valid) return s410Verdict("PRESERVE_UNCERTAIN", "S410_PRESERVE_UNCERTAIN", null, true, false);
+  if (state.uncertain) return s410Verdict("PRESERVE_UNCERTAIN", "S410_PRESERVE_UNCERTAIN", state.next, true, true);
+  if (state.next === null)
+    return s410Verdict("MODEL_ORDER_COMPLETE_BLOCKED", "S410_MODEL_ORDER_COMPLETE_BLOCKED", null, true, true);
+  return s410Verdict("AWAITING_FIXTURE_EVENT", "S410_AWAITING_FIXTURE_EVENT", state.next, true, true);
+}

@@ -1210,6 +1210,26 @@
   },
   "issue360_stage4_local_preparation": {
     "base_revision": "b267295582494b35131ad28bf62143f1dadf8056",
+    "terminal_revision": "4a8846616249470f0ba25a12f44034e701f32761",
+    "gross_lines": 4000,
+    "gross_bytes": 550000,
+    "new_file_high": 0,
+    "readiness_regenerations": 0,
+    "paths": [
+      "config/external-review-remediation-budget-v1.json",
+      "docs/operations/stage-4-campaign-offline-models.md",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "scripts/check-stage2-retained-lines.py",
+      "scripts/stage4-campaign-model.ts",
+      "scripts/stage4-offline-readiness.ts",
+      "test/stage2-remediation-budget.test.ts",
+      "test/stage4-campaign-model.test.ts"
+    ]
+  },
+  "issue361_stage4_local_preparation": {
+    "base_revision": "4a8846616249470f0ba25a12f44034e701f32761",
     "gross_lines": 4000,
     "gross_bytes": 550000,
     "new_file_high": 0,

@@ -74,6 +74,14 @@ The policy binds one exact requirements digest for actual CNI, ext-authz, audit-
 
 Synthetic fixture rows follow `source -> dependency admission -> denial checks -> Stage 3 functional check -> API-key sample check -> stop -> destroy -> independent inventory`. Each qualification row states `provider_observation_claimed=false`; its digest is not proof that a check ran. Failure or uncertainty skips remaining qualification rows only and requires the complete terminal suffix. Inventory rejects planned-address, deleted-ID, and campaign-tag filters and requires a distinct claimed observer, complete pagination, the full S4-08 service-wide scope, and zero residue. Even a complete synthetic order remains `MODEL_ORDER_COMPLETE_BLOCKED`, with conformance, functional execution, Kubernetes/provider truth, cleanup, zero inventory, retry, and execution authority all false.
 
+### #361 provider-free lifecycle preparation
+
+A separately namespaced `cogs.stage4-s410-*` pure lifecycle model prepares Issue #361 without changing S4-09 or historical Stage 4 v1 semantics. Accepted S4-09 evidence, fresh Issue #361 approval, an authorized saved plan, an authenticated release-image set, provider discovery, and the agreed startup percentile or a reviewed exception all remain explicitly absent. The model grants no execution, retry, provider, Kubernetes, campaign, production, or release authority.
+
+The exact requirements digest binds startup p50/p95/p99, first-tool, storage-attach, cold-pull/scale, idle, Git/build, proxy, and recycle measurements; the 30-second startup threshold while leaving the governed percentile unselected; worker, sandbox, proxy, node, OpenBao, OTLP, storage, WAL, policy, and recycle failure injection with prompt replay prohibited; and bounded actual cost/capacity observations without extrapolated support claims.
+
+Synthetic fixture rows follow `source -> admission -> startup measurements -> workload measurements -> capacity/cost observation -> failure injection -> stop -> destroy -> independent inventory`. Every observation row states `provider_observation_claimed=false`. Source or qualification failure, timeout-equivalent uncertainty, or unknown outcome skips remaining qualification rows only and requires the complete `stop -> destroy -> independent-inventory` suffix. Final inventory reuses the complete S4-08 service-wide scope, forbids planned-address, deleted-ID, and campaign-tag filters, requires complete pagination and a distinct claimed observer, and requires zero residue. Even a complete synthetic order remains `MODEL_ORDER_COMPLETE_BLOCKED`, with performance, recovery, cost/capacity, cleanup, zero inventory, provider/Kubernetes truth, retry, and execution claims false.
+
 ## #362: strict blocked exit-review templates
 
 The matrix/report templates and classifier are:
