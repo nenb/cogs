@@ -35,7 +35,7 @@ export const STAGE4_STATIC_MANIFEST_HELM = Object.freeze({
   version: "v4.1.1+g5caf004",
 });
 export const STAGE4_STATIC_MANIFEST_INPUTS = Object.freeze({
-  chartInventorySha256: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
+  chartInventorySha256: "1973af955fdb9a57490ef18ab5d06a9618a0e3db968916c1e19ea73700e85c0d",
   nicContractSha256: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
 });
 

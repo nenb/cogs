@@ -99,8 +99,8 @@ jobs:
       BUILDKIT_IMAGE: docker.io/moby/buildkit@sha256:6eceb8971ce4fceb3daca562832642706238b7eea72941fcf9896c93c3c4a53e
       SYFT_IMAGE: docker.io/anchore/syft@sha256:bd5357d2cd087f03af748dac24df48bfbc1723080d78f75f69aca1f2d429060e
       TRIVY_IMAGE: docker.io/aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436
-      TRIVY_DATABASE: ghcr.io/aquasecurity/trivy-db:2@sha256:bf4e0ac6ba84af6985086f394f50849a0d59b52110706b1d4ba946df91e433d7
-      TRIVY_JAVA_DATABASE: ghcr.io/aquasecurity/trivy-java-db:1@sha256:b19c281ec798816f854d5f875a132563117c5c5dd905be42ca3600aa8a6d1dc3
+      TRIVY_DATABASE: ghcr.io/aquasecurity/trivy-db:2@sha256:ee125526c30cd6dc49f231200eb0ff9cb5dace2e895b72ab4fbca7a371b39008
+      TRIVY_JAVA_DATABASE: ghcr.io/aquasecurity/trivy-java-db:1@sha256:5375f27d8aaa33b670dffc81debbfe25018fe91a43bff8db677eed55b1e75b2a
       COSIGN_IMAGE: ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb
       # release-image-set-tool-pins:generated-end
       CERTIFICATE_IDENTITY: https://github.com/nenb/cogs/.github/workflows/release-images.yml@refs/heads/main
@@ -414,6 +414,22 @@ jobs:
             jq -e --arg subject "$subject" \
               --from-file "$CONTEXT/scripts/validate-trivy-image-report.jq" \
               "$WORK/$role.vulnerabilities.json" >/dev/null
+            if [[ "$role" == worker ]]; then
+              now=$(date -u +%s)
+              not_before=$(date -u -d '2026-09-30T12:22:00.000Z' +%s)
+              expires=$(date -u -d '2026-10-14T00:00:00.000Z' +%s)
+              test "$now" -ge "$not_before" && test "$now" -lt "$expires"
+              jq -e '
+                ([.Results[] | (.Vulnerabilities // [])[] |
+                  select(.Severity == "HIGH" or .Severity == "CRITICAL") |
+                  {id:.VulnerabilityID,package:.PkgName,path:.PkgPath,version:.InstalledVersion,severity:.Severity,fixed:.FixedVersion}] | sort_by(.id)) == [
+                    {id:"CVE-2026-102276",package:"brace-expansion",path:"opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json",version:"5.0.9",severity:"HIGH",fixed:"5.0.10, 3.0.7, 2.1.5, 1.1.19"},
+                    {id:"CVE-2026-102278",package:"brace-expansion",path:"opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json",version:"5.0.9",severity:"HIGH",fixed:"5.0.11, 3.0.8, 2.1.6, 1.1.20"}
+                  ]' "$WORK/$role.vulnerabilities.json" >/dev/null
+              jq -cn '{state:"temporary-exact-disposition",count:2,findings:["CVE-2026-102276","CVE-2026-102278"],package:"brace-expansion",version:"5.0.9",path:"opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json",authority:"docs/operations/runbooks/cve-response.md#temporary-pi-0860-brace-expansion-availability-risk-disposition",not_before:"2026-09-30T12:22:00.000Z",expires_at:"2026-10-14T00:00:00.000Z"}' > "$WORK/$role.accepted-high-critical.json"
+            else
+              jq -cn '{state:"none",count:0,findings:[],package:null,version:null,path:null,authority:null,not_before:null,expires_at:null}' > "$WORK/$role.accepted-high-critical.json"
+            fi
             if [[ "$role" == sandbox ]]; then
               jq -e '.Metadata.OS.Family == "ubuntu" and .Metadata.OS.Name == "24.04"' \
                 "$WORK/$role.vulnerabilities.json" >/dev/null
@@ -445,10 +461,11 @@ jobs:
                 fixed_available: ([$all[] | select(((.FixedVersion // "") | length) > 0)] | length),
                 unfixed: ([$all[] | select(((.FixedVersion // "") | length) == 0)] | length)
               }' "$WORK/$role.vulnerabilities.json" > "$WORK/$role.vulnerability-counts.json"
-            if ! jq -e '
+            if ! jq -e --arg role "$role" '
               .total == (.unknown + .low + .medium + .high + .critical) and
               .total == (.fixed_available + .unfixed) and
-              .high == 0 and .critical == 0' "$WORK/$role.vulnerability-counts.json" >/dev/null; then
+              .critical == 0 and
+              (if $role == "worker" then .high == 2 else .high == 0 end)' "$WORK/$role.vulnerability-counts.json" >/dev/null; then
               jq -r --arg role "$role" '
                 "VULNERABILITY_GATE_BLOCKED role=\($role) total=\(.total) unknown=\(.unknown) low=\(.low) medium=\(.medium) high=\(.high) critical=\(.critical) fixed_available=\(.fixed_available) unfixed=\(.unfixed)"' \
                 "$WORK/$role.vulnerability-counts.json" >&2
@@ -599,6 +616,8 @@ jobs:
             --slurpfile source "$WORK/source.json" \
             --slurpfile worker_counts "$WORK/worker.vulnerability-counts.json" \
             --slurpfile sandbox_counts "$WORK/sandbox.vulnerability-counts.json" \
+            --slurpfile worker_accepted "$WORK/worker.accepted-high-critical.json" \
+            --slurpfile sandbox_accepted "$WORK/sandbox.accepted-high-critical.json" \
             --arg worker_digest "$worker_digest" \
             --arg sandbox_digest "$sandbox_digest" \
             --arg worker_child "$worker_child" \
@@ -623,7 +642,7 @@ jobs:
             --arg issuer "$CERTIFICATE_OIDC_ISSUER" \
             --argjson run_id '${{ github.run_id }}' \
             --arg sha "$REVIEWED_SHA" '
-            def image($role; $repository; $digest; $child; $dockerfile; $dockerfile_sha; $provenance_sha; $sbom_sha; $vulnerabilities_sha; $counts):
+            def image($role; $repository; $digest; $child; $dockerfile; $dockerfile_sha; $provenance_sha; $sbom_sha; $vulnerabilities_sha; $counts; $accepted):
               {
                 role:$role,
                 registry_repository:$repository,
@@ -640,13 +659,14 @@ jobs:
                   severities:["UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL"],
                   ignore_unfixed:false,
                   suppressions:false,
+                  accepted_high_critical:$accepted,
                   workflow_recorded_report_contract:{schema_version:2,artifact_name_exact_subject:true,repo_digest_exact_subject:true,artifact_type:"container_image",os_metadata_present:true,results_nonempty:true,all_results_shape_validated:true,allowed_result_classes:["os-pkgs","lang-pkgs"],result_target_type_nonempty:true,os_package_type_matches_os_family:true,vulnerabilities_null_or_array:true,vulnerability_shapes_validated:true,os_package_target_present:true},
                   counts:$counts,
-                  gate:{policy:"block-high-critical",severities:["HIGH","CRITICAL"],includes_unfixed:true,finding_count:($counts.high + $counts.critical),outcome:"pass"},
+                  gate:{policy:"block-unaccepted-high-critical",severities:["HIGH","CRITICAL"],includes_unfixed:true,finding_count:($counts.high + $counts.critical - $accepted.count),outcome:"pass"},
                   disposition:{
                     unknown:{count:$counts.unknown,semantics:"recorded-non-gating-review-required-not-approved"},
                     low_medium:{count:($counts.low + $counts.medium),semantics:"recorded-non-gating-not-release-approval"},
-                    high_critical:{count:($counts.high + $counts.critical),semantics:"image-set-assertion-blocking-including-unfixed"}
+                    high_critical:{count:($counts.high + $counts.critical),semantics:(if $accepted.count == 0 then "image-set-assertion-blocking-including-unfixed" else "temporary-exact-availability-risk-disposition" end)}
                   }
                 },
                 signature:{workflow_recorded_keyless:true,workflow_recorded_digest_signed:true,workflow_recorded_verified:true,certificate_identity:$identity,certificate_oidc_issuer:$issuer}
@@ -661,8 +681,8 @@ jobs:
               transport_policy:{tag_format:"candidate-<full-40-character-commit>-<run-id>-<run-attempt>",run_unique:true,retained_after_workflow:true,transport_only:true,final_tags_written:false,mutable_release_alias_written:false,image_set_record:"canonical-successful-workflow-artifact-with-exact-digest-references",consumer_requirement:"separately-reviewed-assertion-record-and-both-exact-digests"},
               tools:{buildx_client:{version:$buildx_version,linux_amd64_sha256:$buildx_sha256},buildkit_image:$buildkit,syft_image:$syft,trivy_image:$trivy,trivy_database:$trivy_database,trivy_java_database:$trivy_java_database,cosign_image:$cosign},
               images:[
-                image("worker";"ghcr.io/nenb/cogs/worker";$worker_digest;$worker_child;"images/worker/Dockerfile";$worker_dockerfile_sha;$worker_provenance_sha;$worker_sbom_sha;$worker_vulnerabilities_sha;$worker_counts[0]),
-                image("sandbox";"ghcr.io/nenb/cogs/sandbox";$sandbox_digest;$sandbox_child;"images/sandbox/Dockerfile";$sandbox_dockerfile_sha;$sandbox_provenance_sha;$sandbox_sbom_sha;$sandbox_vulnerabilities_sha;$sandbox_counts[0])
+                image("worker";"ghcr.io/nenb/cogs/worker";$worker_digest;$worker_child;"images/worker/Dockerfile";$worker_dockerfile_sha;$worker_provenance_sha;$worker_sbom_sha;$worker_vulnerabilities_sha;$worker_counts[0];$worker_accepted[0]),
+                image("sandbox";"ghcr.io/nenb/cogs/sandbox";$sandbox_digest;$sandbox_child;"images/sandbox/Dockerfile";$sandbox_dockerfile_sha;$sandbox_provenance_sha;$sandbox_sbom_sha;$sandbox_vulnerabilities_sha;$sandbox_counts[0];$sandbox_accepted[0])
               ],
               claims:{workflow_recorded_exact_protected_default_branch_source:true,workflow_recorded_image_set_complete:true,workflow_recorded_buildkit_provenance_attached:true,workflow_recorded_sbom_attached:true,workflow_recorded_vulnerability_gate_passed:true,workflow_recorded_keyless_signatures_verified:true,static_parser_cryptographic_verification_performed:false,cloud_execution_observed:false,kubernetes_execution_observed:false,provider_execution_observed:false,external_model_execution_observed:false,runtime_qualification_observed:false,readiness_promoted:false,production_ready:false,release_eligible:false},
               blockers:["RUNTIME_CONFORMANCE_NOT_EXECUTED","READINESS_PROMOTION_REQUIRES_SEPARATE_REVIEW","RELEASE_ELIGIBILITY_UNCHANGED_FALSE"],

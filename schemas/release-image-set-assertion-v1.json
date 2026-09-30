@@ -136,10 +136,10 @@
           "const": "docker.io/aquasec/trivy@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436"
         },
         "trivy_database": {
-          "const": "ghcr.io/aquasecurity/trivy-db:2@sha256:bf4e0ac6ba84af6985086f394f50849a0d59b52110706b1d4ba946df91e433d7"
+          "const": "ghcr.io/aquasecurity/trivy-db:2@sha256:ee125526c30cd6dc49f231200eb0ff9cb5dace2e895b72ab4fbca7a371b39008"
         },
         "trivy_java_database": {
-          "const": "ghcr.io/aquasecurity/trivy-java-db:1@sha256:b19c281ec798816f854d5f875a132563117c5c5dd905be42ca3600aa8a6d1dc3"
+          "const": "ghcr.io/aquasecurity/trivy-java-db:1@sha256:5375f27d8aaa33b670dffc81debbfe25018fe91a43bff8db677eed55b1e75b2a"
         },
         "cosign_image": {
           "const": "ghcr.io/sigstore/cosign/cosign@sha256:be924970ba7438c22e18067dec5637946d6566eac711f5bedd1584e7137008fb"
@@ -263,10 +263,31 @@
         "unknown": { "type": "integer", "minimum": 0, "maximum": 1000000 },
         "low": { "type": "integer", "minimum": 0, "maximum": 1000000 },
         "medium": { "type": "integer", "minimum": 0, "maximum": 1000000 },
-        "high": { "const": 0 },
+        "high": { "type": "integer", "minimum": 0, "maximum": 2 },
         "critical": { "const": 0 },
         "fixed_available": { "type": "integer", "minimum": 0, "maximum": 1000000 },
         "unfixed": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+      }
+    },
+    "acceptedHighCritical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "count", "findings", "package", "version", "path", "authority", "not_before", "expires_at"],
+      "properties": {
+        "state": { "enum": ["none", "temporary-exact-disposition"] },
+        "count": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "findings": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["CVE-2026-102276", "CVE-2026-102278"] }
+        },
+        "package": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "path": { "type": ["string", "null"] },
+        "authority": { "type": ["string", "null"] },
+        "not_before": { "type": ["string", "null"] },
+        "expires_at": { "type": ["string", "null"] }
       }
     },
     "image": {
@@ -382,6 +403,7 @@
             },
             "ignore_unfixed": { "const": false },
             "suppressions": { "const": false },
+            "accepted_high_critical": { "$ref": "#/$defs/acceptedHighCritical" },
             "workflow_recorded_report_contract": {
               "type": "object",
               "additionalProperties": false,
@@ -428,7 +450,7 @@
               "additionalProperties": false,
               "required": ["policy", "severities", "includes_unfixed", "finding_count", "outcome"],
               "properties": {
-                "policy": { "const": "block-high-critical" },
+                "policy": { "enum": ["block-high-critical", "block-unaccepted-high-critical"] },
                 "severities": {
                   "type": "array",
                   "minItems": 2,
@@ -469,8 +491,13 @@
                   "additionalProperties": false,
                   "required": ["count", "semantics"],
                   "properties": {
-                    "count": { "const": 0 },
-                    "semantics": { "const": "image-set-assertion-blocking-including-unfixed" }
+                    "count": { "type": "integer", "minimum": 0, "maximum": 2 },
+                    "semantics": {
+                      "enum": [
+                        "image-set-assertion-blocking-including-unfixed",
+                        "temporary-exact-availability-risk-disposition"
+                      ]
+                    }
                   }
                 }
               }

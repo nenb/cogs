@@ -7,8 +7,8 @@ umask 077
 printf '%s\n' 'OpenBao 2.6.1 is retired; no admitted replacement' >&2
 exit 2
 
-ENVOY_IMAGE="envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
-ENVOY_DIGEST="sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
+ENVOY_IMAGE="docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"
+ENVOY_DIGEST="sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"
 OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
@@ -149,7 +149,7 @@ chmod 0500 "${ENVOY_BIN_DIR}/envoy"
 bounded 30s docker rm -f "${ENVOY_CONTAINER}" >/dev/null
 ENVOY_CONTAINER=""
 ENVOY_VERSION_OUTPUT="$(bounded 30s "${ENVOY_BIN_DIR}/envoy" --version)"
-printf '%s\n' "${ENVOY_VERSION_OUTPUT}" | grep -F "1.38.3" >/dev/null
+printf '%s\n' "${ENVOY_VERSION_OUTPUT}" | grep -F "1.38.4" >/dev/null
 
 if [ -e "${TRUST_PATH}" ]; then
   echo "disposable CI trust anchor path already exists" >&2

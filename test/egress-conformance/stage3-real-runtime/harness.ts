@@ -30,7 +30,10 @@ const outputDirectory = resolve(process.argv[2] ?? "docs/security-evidence/gener
 const sourceRevision = requiredEnv("COGS_SOURCE_REVISION", /^[a-f0-9]{40}$/);
 const openBaoOrigin = origin(requiredEnv("COGS_OPENBAO_ADDR", /^http:\/\/127\.0\.0\.1:[0-9]+$/));
 const envoyExecutable = requiredEnv("COGS_ENVOY_EXECUTABLE", /^\//);
-const envoyImage = requiredEnv("COGS_ENVOY_IMAGE", /^envoyproxy\/envoy:v1\.38\.3@sha256:[a-f0-9]{64}$/);
+const envoyImage = requiredEnv(
+  "COGS_ENVOY_IMAGE",
+  /^docker\.io\/envoyproxy\/envoy:distroless-v1\.38\.4@sha256:[a-f0-9]{64}$/,
+);
 const envoyDigest = requiredEnv("COGS_ENVOY_IMAGE_DIGEST", /^sha256:[a-f0-9]{64}$/);
 assert.equal(envoyImage.endsWith(envoyDigest), true);
 const openBaoImage = requiredEnv("COGS_OPENBAO_IMAGE", /^quay\.io\/openbao\/openbao:2\.6\.1@sha256:[a-f0-9]{64}$/);
@@ -48,7 +51,7 @@ const openBaoDigest = openBaoImage.slice(openBaoImage.indexOf("@") + 1);
 const openBaoActualPort = Number(new URL(openBaoOrigin).port);
 assert.equal(Number.isInteger(openBaoActualPort) && openBaoActualPort >= 1 && openBaoActualPort <= 65535, true);
 const openBaoVersion = "2.6.1";
-const envoyVersion = "1.38.3";
+const envoyVersion = "1.38.4";
 const sessionId = "stage3-real-runtime";
 const userId = "ci-user";
 const integrationId = "stage3-localhost";
@@ -266,7 +269,7 @@ export function assertValidRealRuntimeSidecar(value: unknown): asserts value is 
   exactKeys(sidecar.components.envoy, ["binary_sha256", "image_digest", "version"]);
   exactKeys(sidecar.components.openbao, ["image_digest", "version"]);
   exactKeys(sidecar.components.runtime_manager, ["mode"]);
-  assert.equal(sidecar.components.envoy.version, "1.38.3");
+  assert.equal(sidecar.components.envoy.version, "1.38.4");
   assert.match(sidecar.components.envoy.image_digest, /^sha256:[a-f0-9]{64}$/);
   assert.match(sidecar.components.envoy.binary_sha256, /^sha256:[a-f0-9]{64}$/);
   assert.equal(sidecar.components.openbao.version, "2.6.1");
@@ -419,7 +422,7 @@ async function main(): Promise<void> {
         .digest("hex")}`,
   );
   const version = await phase("verify_envoy_version", () => run(envoyExecutable, ["--version"], 10_000));
-  assert.match(version.stdout, /1\.38\.3/);
+  assert.match(version.stdout, /1\.38\.4/);
 
   try {
     const pki = await phase("initialize_openbao", () => initializeOpenBao());

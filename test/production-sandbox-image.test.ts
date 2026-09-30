@@ -20,19 +20,19 @@ const packages = [
   "bash=5.2.21-2ubuntu4",
   "ca-certificates=20260601~24.04.1",
   "git=1:2.43.0-1ubuntu7.3",
-  "openssh-client=1:9.6p1-3ubuntu13.18",
-  "openssh-server=1:9.6p1-3ubuntu13.18",
-  "openssl=3.0.13-0ubuntu3.12",
+  "openssh-client=1:9.6p1-3ubuntu13.19",
+  "openssh-server=1:9.6p1-3ubuntu13.19",
+  "openssl=3.0.13-0ubuntu3.16",
   "python3=3.12.3-0ubuntu2.1",
 ] as const;
 
 const bootstrapArtifacts = [
   {
     package: "openssl",
-    version: "3.0.13-0ubuntu3.12",
+    version: "3.0.13-0ubuntu3.16",
     architecture: "amd64",
-    sha256: "321b30ad5a1c3783cb3d73ae439f824f6d3874d76a93a62f4a984959b490aa7b",
-    path: "pool/main/o/openssl/openssl_3.0.13-0ubuntu3.12_amd64.deb",
+    sha256: "675b84971ffd4467707008c25ef7520f90ea7c23ef27b7a76b0dccf1d7c4dc3f",
+    path: "pool/main/o/openssl/openssl_3.0.13-0ubuntu3.16_amd64.deb",
   },
   {
     package: "ca-certificates",
@@ -130,9 +130,9 @@ test("sandbox image uses the exact amd64 Ubuntu 24.04 base and signed fixed snap
   assert.match(dockerfile, /URIs: http:\/\/security\.ubuntu\.com\/ubuntu\//u);
   assert.match(dockerfile, /Suites: noble-security/u);
   assert.equal((dockerfile.match(/Components: main universe/gu) ?? []).length, 2);
-  assert.equal((dockerfile.match(/Snapshot: 20260801T000000Z/gu) ?? []).length, 2);
+  assert.equal((dockerfile.match(/Snapshot: 20260930T000000Z/gu) ?? []).length, 2);
   assert.equal((dockerfile.match(/Signed-By: \/usr\/share\/keyrings\/ubuntu-archive-keyring\.gpg/gu) ?? []).length, 2);
-  assert.match(dockerfile, /APT::Snapshot "20260801T000000Z";/u);
+  assert.match(dockerfile, /APT::Snapshot "20260930T000000Z";/u);
   assert.match(dockerfile, /APT::Update::Error-Mode=any/u);
   assert.match(dockerfile, /Acquire::Retries "0";/u);
   assert.match(dockerfile, /Acquire::AllowInsecureRepositories "false";/u);
@@ -144,7 +144,7 @@ test("sandbox image uses the exact amd64 Ubuntu 24.04 base and signed fixed snap
   for (const artifact of bootstrapArtifacts) {
     assert.ok(
       dockerfile.includes(
-        `ADD --checksum=sha256:${artifact.sha256} \\\n  https://snapshot.ubuntu.com/ubuntu/20260801T000000Z/${artifact.path}`,
+        `ADD --checksum=sha256:${artifact.sha256} \\\n  https://snapshot.ubuntu.com/ubuntu/20260930T000000Z/${artifact.path}`,
       ),
       artifact.package,
     );
@@ -198,7 +198,7 @@ test("conformance clients and network probes cannot re-enter production and rema
 test("sandbox labels describe an external Kata requirement without claiming isolation from image bytes", () => {
   for (const label of [
     'dev.cogs.profile="kata-sandbox-guest"',
-    'dev.cogs.package-policy="ubuntu-noble-snapshot-20260801-production-core-v1"',
+    'dev.cogs.package-policy="ubuntu-noble-snapshot-20260930-production-core-v2"',
     'dev.cogs.isolation-authority="external-runtime-required"',
     'dev.cogs.credentials="proxy-capability-only-no-upstream-secrets"',
     'dev.cogs.skills-inputs="external-read-only"',

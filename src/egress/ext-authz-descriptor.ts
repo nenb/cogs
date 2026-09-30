@@ -15,7 +15,7 @@ const manifestPath = resolve(
 const descriptorPath = resolve(
   fileURLToPath(new URL("../../third_party/envoy-ext-authz-v1.38.3/ext_authz.descriptor.pb", import.meta.url)),
 );
-const manifestSha256 = "a55f0670e871111d688fe41bf9d14325151cbc1844dcd773b6488e1ef5d5b500";
+const manifestSha256 = "b719ad676bf3cc717eff3d5fa09eedb484d7181f2ea6660e5991778b5e84e3aa";
 const manifestSize = 11_823;
 const descriptorSha256 = "f380ca351c3aa52c40b70c1cfe11378ec514b670060139e6c3ac92baa22051dd";
 const descriptorSize = 44_227;
@@ -137,7 +137,7 @@ function verifyManifest(value: unknown, version: (specifier: string) => string):
   const loader = object(manifest.loader);
   const options = object(loader.options);
   if (
-    loader.grpc_js_version !== "1.14.4" ||
+    loader.grpc_js_version !== "1.14.5" ||
     loader.proto_loader_version !== "0.8.1" ||
     loader.method !== "loadFileDescriptorSetFromBuffer" ||
     loader.service_path !== servicePath ||
@@ -154,7 +154,7 @@ function verifyManifest(value: unknown, version: (specifier: string) => string):
   ) {
     throw new Error("bad loader manifest");
   }
-  if (version("@grpc/grpc-js/package.json") !== "1.14.4" || version("@grpc/proto-loader/package.json") !== "0.8.1") {
+  if (version("@grpc/grpc-js/package.json") !== "1.14.5" || version("@grpc/proto-loader/package.json") !== "0.8.1") {
     throw new Error("bad package version");
   }
 }

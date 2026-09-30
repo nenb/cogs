@@ -8,15 +8,15 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 # checksum-constrained before their Package/Version/Architecture identities are checked.
 # They supply only enough trust to reach Ubuntu's signed snapshot service; the exact same
 # direct versions are then configured normally by APT from authenticated InRelease data.
-ADD --checksum=sha256:321b30ad5a1c3783cb3d73ae439f824f6d3874d76a93a62f4a984959b490aa7b \
-  https://snapshot.ubuntu.com/ubuntu/20260801T000000Z/pool/main/o/openssl/openssl_3.0.13-0ubuntu3.12_amd64.deb \
+ADD --checksum=sha256:675b84971ffd4467707008c25ef7520f90ea7c23ef27b7a76b0dccf1d7c4dc3f \
+  https://snapshot.ubuntu.com/ubuntu/20260930T000000Z/pool/main/o/openssl/openssl_3.0.13-0ubuntu3.16_amd64.deb \
   /tmp/cogs-bootstrap-openssl.deb
 ADD --checksum=sha256:6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50 \
-  https://snapshot.ubuntu.com/ubuntu/20260801T000000Z/pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb \
+  https://snapshot.ubuntu.com/ubuntu/20260930T000000Z/pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb \
   /tmp/cogs-bootstrap-ca-certificates.deb
 
 RUN test "$(dpkg-deb -f /tmp/cogs-bootstrap-openssl.deb Package)" = openssl \
-    && test "$(dpkg-deb -f /tmp/cogs-bootstrap-openssl.deb Version)" = 3.0.13-0ubuntu3.12 \
+    && test "$(dpkg-deb -f /tmp/cogs-bootstrap-openssl.deb Version)" = 3.0.13-0ubuntu3.16 \
     && test "$(dpkg-deb -f /tmp/cogs-bootstrap-openssl.deb Architecture)" = amd64 \
     && test "$(dpkg-deb -f /tmp/cogs-bootstrap-ca-certificates.deb Package)" = ca-certificates \
     && test "$(dpkg-deb -f /tmp/cogs-bootstrap-ca-certificates.deb Version)" = '20260601~24.04.1' \
@@ -37,14 +37,14 @@ RUN printf '%s\n' \
       'Suites: noble noble-updates' \
       'Components: main universe' \
       'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
-      'Snapshot: 20260801T000000Z' \
+      'Snapshot: 20260930T000000Z' \
       '' \
       'Types: deb' \
       'URIs: http://security.ubuntu.com/ubuntu/' \
       'Suites: noble-security' \
       'Components: main universe' \
       'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
-      'Snapshot: 20260801T000000Z' \
+      'Snapshot: 20260930T000000Z' \
       > /etc/apt/sources.list.d/ubuntu.sources \
     && printf '%s\n' \
       'Acquire::Retries "0";' \
@@ -52,16 +52,16 @@ RUN printf '%s\n' \
       'Acquire::AllowDowngradeToInsecureRepositories "false";' \
       'APT::Get::AllowUnauthenticated "false";' \
       'APT::Get::Assume-Yes "false";' \
-      'APT::Snapshot "20260801T000000Z";' \
+      'APT::Snapshot "20260930T000000Z";' \
       > /etc/apt/apt.conf.d/99cogs-snapshot-policy \
     && apt-get -o APT::Update::Error-Mode=any update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
       bash=5.2.21-2ubuntu4 \
       ca-certificates=20260601~24.04.1 \
       git=1:2.43.0-1ubuntu7.3 \
-      openssh-client=1:9.6p1-3ubuntu13.18 \
-      openssh-server=1:9.6p1-3ubuntu13.18 \
-      openssl=3.0.13-0ubuntu3.12 \
+      openssh-client=1:9.6p1-3ubuntu13.19 \
+      openssh-server=1:9.6p1-3ubuntu13.19 \
+      openssl=3.0.13-0ubuntu3.16 \
       python3=3.12.3-0ubuntu2.1 \
     && test -z "$(dpkg --audit)" \
     && readonly forbidden_packages=(bind9-dnsutils curl iproute2 iptables netcat-openbsd nftables nodejs npm openjdk-21-jre-headless python3-httpx python3-pip python3-requests socat) \
@@ -87,7 +87,7 @@ COPY --chown=root:root --chmod=0555 images/sandbox/capture-inputs.py /usr/local/
 LABEL org.opencontainers.image.source="https://github.com/nenb/cogs" \
       org.opencontainers.image.licenses="Apache-2.0" \
       dev.cogs.profile="kata-sandbox-guest" \
-      dev.cogs.package-policy="ubuntu-noble-snapshot-20260801-production-core-v1" \
+      dev.cogs.package-policy="ubuntu-noble-snapshot-20260930-production-core-v2" \
       dev.cogs.isolation-authority="external-runtime-required" \
       dev.cogs.credentials="proxy-capability-only-no-upstream-secrets" \
       dev.cogs.skills-inputs="external-read-only"

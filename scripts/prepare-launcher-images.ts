@@ -10,7 +10,9 @@ export const LAUNCHER_REQUIRED_IMAGES = Object.freeze([ENVOY_IMAGE]);
 function digestRef(image: string): string {
   const at = image.indexOf("@sha256:");
   if (at < 1 || !/^sha256:[a-f0-9]{64}$/u.test(image.slice(at + 1))) throw new Error("invalid launcher image pin");
-  return `${image.slice(0, at).replace(/:[^/:@]+$/u, "")}@${image.slice(at + 1)}`;
+  const repository = image.slice(0, at).replace(/:[^/:@]+$/u, "");
+  const dockerRepository = repository.startsWith("docker.io/") ? repository.slice("docker.io/".length) : repository;
+  return `${dockerRepository}@${image.slice(at + 1)}`;
 }
 
 export function verifyImageInspect(image: string, inspectJson: string): void {

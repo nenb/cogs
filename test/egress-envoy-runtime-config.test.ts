@@ -384,7 +384,7 @@ test("supports basic and api-key credentials from integration-scoped callback", 
   assert.match(text, /response_trailers_mutations.*x-api-key/u);
 });
 
-// Independent literal-only interpretation of v1.38.3 SubstitutionFormatParser::parse:
+// Independent literal-only interpretation of v1.38.4 SubstitutionFormatParser::parse:
 // every percent must be paired; anything else would invoke command parsing.
 function literalHeaderBytes(format: string): string {
   let bytes = "";
@@ -738,7 +738,7 @@ function sizedPlan(count: number, authorities: number): CogsEgressRoutePlan {
   });
 }
 
-// Exact Envoy v1.38.3, commit 0ebfcfe5b0484b89ca85b761da9e05ce75dbda8d:
+// Exact Envoy v1.38.4, commit ef2d997c1b022cf8b849a1d3521fbf234d79ca26:
 // api/envoy/config/core/v3/protocol.proto (Http2ProtocolOptions, field 21):
 // max_header_field_size_kb has PGV gte 64/lte 256. HCM config.cc and upstream
 // http/config.cc reject an explicit field bound above their aggregate. Omitting it
@@ -1191,7 +1191,7 @@ test("pinned Envoy applies production-rendered controls to duplicate final/H2-tr
   });
 
   for (const [image, digest] of [
-    [ENVOY_IMAGE, "5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"],
+    [ENVOY_IMAGE, "b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"],
     [RESPONSE_PROBE_NODE_IMAGE, "8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f"],
   ] as const) {
     const inspected = await docker(["image", "inspect", image, "--format", "{{json .RepoDigests}}"]);
@@ -1207,7 +1207,7 @@ test("pinned Envoy applies production-rendered controls to duplicate final/H2-tr
     "--version",
   ]);
   const version = await docker(["start", "--attach", versionContainer]);
-  assert.match(version.stdout, /0ebfcfe5b0484b89ca85b761da9e05ce75dbda8d\/1\.38\.3\/Clean\/RELEASE/u);
+  assert.match(version.stdout, /ef2d997c1b022cf8b849a1d3521fbf234d79ca26\/1\.38\.4\/Clean\/RELEASE/u);
 
   const fixturePath = join(root, "fixture.mjs");
   const clientPath = join(root, "client.mjs");
@@ -1392,7 +1392,7 @@ test("pinned Envoy validates and bounds silent accept pressure without WAL/crede
     createHash("sha256")
       .update(await readFile(executable))
       .digest("hex"),
-    "affffb8d08a14fdc375b1f7dd8d0f3004eacdf51ce07f5636d7e168a01c6b373",
+    "c994c452de131f59c9ec9f4a2fffcc65039f250a38b6279870bb95dac21db0fa",
   );
   const exec = promisify(execFile);
   const root = await mkdtemp(join(tmpdir(), "cogs-envoy-bounds-"));

@@ -288,7 +288,7 @@
               "required": ["reference", "state"],
               "properties": {
                 "reference": {
-                  "const": "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb"
+                  "const": "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"
                 },
                 "state": {
                   "const": "exact-static-input-not-runtime-observed"

@@ -287,9 +287,9 @@ test("release tool manifest generates the exact schema and rejects every indepen
 
 test("reviewed Aqua DB observations bind exact local digests, OCI types, metadata, and exclusive expiry", () => {
   const osReference =
-    "ghcr.io/aquasecurity/trivy-db:2@sha256:bf4e0ac6ba84af6985086f394f50849a0d59b52110706b1d4ba946df91e433d7";
+    "ghcr.io/aquasecurity/trivy-db:2@sha256:ee125526c30cd6dc49f231200eb0ff9cb5dace2e895b72ab4fbca7a371b39008";
   const javaReference =
-    "ghcr.io/aquasecurity/trivy-java-db:1@sha256:b19c281ec798816f854d5f875a132563117c5c5dd905be42ca3600aa8a6d1dc3";
+    "ghcr.io/aquasecurity/trivy-java-db:1@sha256:5375f27d8aaa33b670dffc81debbfe25018fe91a43bff8db677eed55b1e75b2a";
   assert.equal(RELEASE_IMAGE_SET_PINS.tools.trivy_database, osReference);
   assert.equal(RELEASE_IMAGE_SET_PINS.tools.trivy_java_database, javaReference);
   const publication = readFileSync(resolve(root, "docs/operations/release-image-publication.md"), "utf8");
@@ -309,6 +309,12 @@ test("reviewed Aqua DB observations bind exact local digests, OCI types, metadat
     "2026-09-14T13:10:01.590129203Z",
     "2026-09-13T01:12:19.368599386Z",
     "2026-09-16T01:12:19.368599236Z",
+    "sha256:b69876f34902d74dc300971ed1a1e77fe772b1cd96a07c636341ad59919985d8",
+    "sha256:c01afbb79ec18e02bea705c0ee3f7d705e12bf97e54b7b65e681e40f55c4062d",
+    "2026-09-30T13:11:13.714761705Z",
+    "2026-10-01T13:11:13.714761431Z",
+    "2026-09-30T00:59:00.480851969Z",
+    "2026-10-03T00:59:00.480851829Z",
   ]) {
     assert.ok(publication.includes(reviewedValue), reviewedValue);
   }
@@ -386,6 +392,55 @@ function runStep(job: WorkflowJob, marker: string): string {
   assert.ok(source, marker);
   return source;
 }
+
+test("release assertion admits only the exact temporary worker availability disposition", () => {
+  const accepted = structuredClone(receiptFixture()) as {
+    images: Array<{ vulnerabilities: Record<string, unknown> }>;
+  };
+  const worker = accepted.images[0];
+  assert.ok(worker);
+  worker.vulnerabilities.accepted_high_critical = {
+    state: "temporary-exact-disposition",
+    count: 2,
+    findings: ["CVE-2026-102276", "CVE-2026-102278"],
+    package: "brace-expansion",
+    version: "5.0.9",
+    path: "opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json",
+    authority:
+      "docs/operations/runbooks/cve-response.md#temporary-pi-0860-brace-expansion-availability-risk-disposition",
+    not_before: "2026-09-30T12:22:00.000Z",
+    expires_at: "2026-10-14T00:00:00.000Z",
+  };
+  worker.vulnerabilities.counts = {
+    total: 9,
+    unknown: 1,
+    low: 2,
+    medium: 4,
+    high: 2,
+    critical: 0,
+    fixed_available: 5,
+    unfixed: 4,
+  };
+  worker.vulnerabilities.gate = {
+    policy: "block-unaccepted-high-critical",
+    severities: ["HIGH", "CRITICAL"],
+    includes_unfixed: true,
+    finding_count: 0,
+    outcome: "pass",
+  };
+  worker.vulnerabilities.disposition = {
+    unknown: { count: 1, semantics: "recorded-non-gating-review-required-not-approved" },
+    low_medium: { count: 6, semantics: "recorded-non-gating-not-release-approval" },
+    high_critical: { count: 2, semantics: "temporary-exact-availability-risk-disposition" },
+  };
+  assert.doesNotThrow(() => finalizeReleaseImageSetAssertion(accepted));
+
+  const drift = structuredClone(accepted);
+  const driftWorker = drift.images[0];
+  assert.ok(driftWorker);
+  (driftWorker.vulnerabilities.accepted_high_critical as { findings: string[] }).findings[1] = "CVE-OTHER";
+  assert.throws(() => finalizeReleaseImageSetAssertion(drift), /schema drift|disposition drift/u);
+});
 
 test("release workflow has one manual protected-main authority and least-privilege effect job", () => {
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
@@ -959,7 +1014,11 @@ test("release workflow preserves evidence gates and removes all direct-build int
   assert.match(workflowSource, /--skip-java-db-update/u);
   assert.match(workflowSource, /--skip-version-check/u);
   assert.match(workflowSource, /test -f "\$CACHE\/java-db\/trivy-java\.db"/u);
-  assert.match(workflowSource, /\.high == 0 and \.critical == 0/u);
+  assert.match(workflowSource, /if \$role == "worker" then \.high == 2 else \.high == 0 end/u);
+  assert.match(workflowSource, /CVE-2026-102276/u);
+  assert.match(workflowSource, /CVE-2026-102278/u);
+  assert.match(workflowSource, /block-unaccepted-high-critical/u);
+  assert.match(workflowSource, /2026-10-14T00:00:00\.000Z/u);
   assert.match(workflowSource, /VULNERABILITY_GATE_BLOCKED role=/u);
   assert.match(workflowSource, /image-set-assertion-blocking-including-unfixed/u);
   assert.match(workflowSource, /--from-file "\$CONTEXT\/scripts\/validate-trivy-image-report\.jq"/u);

@@ -62,12 +62,12 @@ const workerDockerfile = readFileSync(resolve(root, "images/worker/Dockerfile"),
 const nodeWorkerImage =
   "docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e";
 const workerFinalImage =
-  "gcr.io/distroless/nodejs22-debian13:nonroot@sha256:4e4fb0ce55fd73901600796ef079a9490369d2515d7da31633a91608c82ca13b";
+  "gcr.io/distroless/base-nossl-debian13:nonroot@sha256:8c563c1fb5e120606f0d85733049775faed6192e2bd2223ef283a5393eec22b9";
 const mitmproxySuite = readFileSync(
   resolve(root, "test/egress-conformance/proxy-adapters/mitmproxy/suite-smoke.ts"),
   "utf8",
 );
-assert.match(ENVOY_IMAGE, /^envoyproxy\/envoy:v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
+assert.match(ENVOY_IMAGE, /^docker\.io\/envoyproxy\/envoy:distroless-v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
 assert.ok(
   ciWorkflow.includes(`ENVOY_IMAGE: ${ENVOY_IMAGE}`) || ciWorkflow.includes(`ENVOY_IMAGE: "${ENVOY_IMAGE}"`),
   "CI must scan and inventory the exact Envoy candidate pin",
@@ -80,11 +80,35 @@ assert.ok(
   workerDockerfile.includes(`FROM --platform=linux/amd64 ${ENVOY_IMAGE} AS envoy-runtime`),
   "worker must source the selected Envoy candidate from its exact pinned Linux/amd64 stage",
 );
+assert.doesNotMatch(
+  workerDockerfile,
+  /snapshot\.ubuntu\.com|apt-get|\blibssl3=|\bopenssl=/u,
+  "Envoy source stage must remain the exact upstream distroless image without local package mutation",
+);
+assert.match(
+  ciWorkflow,
+  /name: Scan exact pinned Envoy distroless candidate[\s\S]*?image-ref: \$\{\{ env\.ENVOY_IMAGE \}\}[\s\S]*?ignore-unfixed: false/u,
+  "CI must scan the exact selected Envoy candidate without suppressing unfixed findings",
+);
+assert.match(
+  ciWorkflow,
+  /name: Generate exact Envoy candidate SBOM[\s\S]*?image: \$\{\{ env\.ENVOY_IMAGE \}\}/u,
+  "CI must inventory the exact selected Envoy candidate",
+);
+assert.match(
+  ciWorkflow,
+  /sha256sum[^\n]*envoy-source[\s\S]*?c994c452de131f59c9ec9f4a2fffcc65039f250a38b6279870bb95dac21db0fa[\s\S]*?cmp --silent[^\n]*envoy-source[^\n]*envoy-worker/u,
+  "CI must bind the selected Envoy bytes to the exact hash and the final worker",
+);
 assert.ok(
   workerDockerfile.includes(`FROM --platform=linux/amd64 ${workerFinalImage} AS worker`),
   "worker must retain the reviewed minimal nonroot final base pin",
 );
 assert.match(workerDockerfile, /COPY --from=node-runtime[^\n]*\/usr\/local\/bin\/node \/nodejs\/bin\/node/u);
+assert.match(
+  workerDockerfile,
+  /COPY --from=node-runtime[^\n]*libstdc\+\+\.so\.6[^\n]*libstdc\+\+\.so\.6\.0\.30[^\n]*libgcc_s\.so\.1/u,
+);
 assert.match(workerDockerfile, /COPY --from=envoy-runtime[^\n]*\/usr\/local\/bin\/envoy \/usr\/local\/bin\/envoy/u);
 assert.match(workerDockerfile, /process\.version !== 'v22\.22\.2'/u);
 assert.match(workerDockerfile, /CMD \["\/opt\/cogs\/dist\/src\/main\.js"\]/u);
@@ -197,7 +221,7 @@ for (const conformanceRoot of [
 }
 for (const label of [
   'dev.cogs.profile="kata-sandbox-guest"',
-  'dev.cogs.package-policy="ubuntu-noble-snapshot-20260801-production-core-v1"',
+  'dev.cogs.package-policy="ubuntu-noble-snapshot-20260930-production-core-v2"',
   'dev.cogs.isolation-authority="external-runtime-required"',
   'dev.cogs.credentials="proxy-capability-only-no-upstream-secrets"',
   'dev.cogs.skills-inputs="external-read-only"',
@@ -211,7 +235,7 @@ assert.ok(
   "sandbox image must use the exact Ubuntu 24.04 OCI index and require Linux/amd64",
 );
 assert.equal(
-  (sandboxDockerfile.match(/Snapshot: 20260801T000000Z/g) ?? []).length,
+  (sandboxDockerfile.match(/Snapshot: 20260930T000000Z/g) ?? []).length,
   2,
   "sandbox image must fix noble archive and security stanzas to the same Ubuntu snapshot",
 );
@@ -223,8 +247,8 @@ assert.ok(
 );
 for (const [sha256, path] of [
   [
-    "321b30ad5a1c3783cb3d73ae439f824f6d3874d76a93a62f4a984959b490aa7b",
-    "pool/main/o/openssl/openssl_3.0.13-0ubuntu3.12_amd64.deb",
+    "675b84971ffd4467707008c25ef7520f90ea7c23ef27b7a76b0dccf1d7c4dc3f",
+    "pool/main/o/openssl/openssl_3.0.13-0ubuntu3.16_amd64.deb",
   ],
   [
     "6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50",
@@ -233,7 +257,7 @@ for (const [sha256, path] of [
 ] as const) {
   assert.ok(sandboxDockerfile.includes(`ADD --checksum=sha256:${sha256}`), `bootstrap checksum ${sha256}`);
   assert.ok(
-    sandboxDockerfile.includes(`https://snapshot.ubuntu.com/ubuntu/20260801T000000Z/${path}`),
+    sandboxDockerfile.includes(`https://snapshot.ubuntu.com/ubuntu/20260930T000000Z/${path}`),
     `official bootstrap URL ${path}`,
   );
 }
@@ -266,6 +290,25 @@ for (const forbiddenProductionRoot of [
     `production sandbox must not request ${forbiddenProductionRoot}`,
   );
 }
+assert.equal(
+  (ciWorkflow.match(/CVE-2026-102276/gu) ?? []).length,
+  1,
+  "worker CI must admit the first exact temporary brace-expansion finding once",
+);
+assert.equal(
+  (ciWorkflow.match(/CVE-2026-102278/gu) ?? []).length,
+  1,
+  "worker CI must admit the second exact temporary brace-expansion finding once",
+);
+assert.ok(ciWorkflow.includes("trivyignores: .cogs-worker-trivyignore.yaml"));
+assert.match(
+  ciWorkflow,
+  /name: Scan worker image[\s\S]*?ignore-unfixed: false[\s\S]*?name: Scan sandbox image[\s\S]*?ignore-unfixed: false/u,
+  "production image CI must include unfixed HIGH/CRITICAL findings",
+);
+assert.ok(ciWorkflow.includes("2026-10-14T00:00:00.000Z"));
+assert.ok(!ciWorkflow.includes("CVE-2026-75804"), "fixed OpenSSL findings must not be ignored");
+assert.ok(!ciWorkflow.includes("CVE-2026-84782"), "fixed OpenSSL findings must not be ignored");
 assert.ok(!ciWorkflow.includes("OPENBAO_IMAGE"), "retired OpenBao must not be scanned as an active CI image");
 assert.ok(
   !ciWorkflow.includes("trivyignores: .trivyignore-openbao"),

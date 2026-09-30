@@ -6,7 +6,7 @@ import { ENVOY_IMAGE, ENVOY_IMAGE_DIGEST, ENVOY_VERSION } from "./image.ts";
 test("Envoy candidate identity is an exact version and multi-platform digest pin", () => {
   assert.match(ENVOY_VERSION, /^\d+\.\d+\.\d+$/);
   assert.match(ENVOY_IMAGE_DIGEST, /^sha256:[a-f0-9]{64}$/);
-  assert.equal(ENVOY_IMAGE, `envoyproxy/envoy:v${ENVOY_VERSION}@${ENVOY_IMAGE_DIGEST}`);
+  assert.equal(ENVOY_IMAGE, `docker.io/envoyproxy/envoy:distroless-v${ENVOY_VERSION}@${ENVOY_IMAGE_DIGEST}`);
 });
 
 test("zero-response completions remain explicit only with valid intent identity", () => {

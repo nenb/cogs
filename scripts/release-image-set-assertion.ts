@@ -117,9 +117,50 @@ function assertImageSetAssertionSemantics(value: unknown): asserts value is Json
     if (total !== unknown + low + medium + high + critical || total !== fixed + unfixed) {
       throw new Error(`${role}: vulnerability count partitions do not cover every finding`);
     }
+    const acceptedValue = vulnerabilities.accepted_high_critical;
+    let acceptedCount = 0;
+    if (acceptedValue !== undefined) {
+      const accepted = asObject(acceptedValue, `${role} accepted HIGH/CRITICAL disposition`) as JsonObject;
+      const expected =
+        role === "worker"
+          ? {
+              state: "temporary-exact-disposition",
+              count: 2,
+              findings: ["CVE-2026-102276", "CVE-2026-102278"],
+              package: "brace-expansion",
+              version: "5.0.9",
+              path: "opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json",
+              authority:
+                "docs/operations/runbooks/cve-response.md#temporary-pi-0860-brace-expansion-availability-risk-disposition",
+              not_before: "2026-09-30T12:22:00.000Z",
+              expires_at: "2026-10-14T00:00:00.000Z",
+            }
+          : {
+              state: "none",
+              count: 0,
+              findings: [],
+              package: null,
+              version: null,
+              path: null,
+              authority: null,
+              not_before: null,
+              expires_at: null,
+            };
+      if (canonicalJson(accepted) !== canonicalJson(expected)) {
+        throw new Error(`${role}: accepted HIGH/CRITICAL disposition drift`);
+      }
+      acceptedCount = expected.count;
+    }
     const gate = asObject(vulnerabilities.gate, `${role} gate`);
-    if (high !== 0 || critical !== 0 || gate.finding_count !== high + critical || gate.outcome !== "pass") {
-      throw new Error(`${role}: HIGH/CRITICAL gate must pass with no fixed or unfixed gating finding`);
+    const expectedGatePolicy = acceptedValue === undefined ? "block-high-critical" : "block-unaccepted-high-critical";
+    if (
+      critical !== 0 ||
+      high !== acceptedCount ||
+      gate.policy !== expectedGatePolicy ||
+      gate.finding_count !== high + critical - acceptedCount ||
+      gate.outcome !== "pass"
+    ) {
+      throw new Error(`${role}: unaccepted HIGH/CRITICAL gate did not pass exactly`);
     }
     const disposition = asObject(vulnerabilities.disposition, `${role} disposition`);
     const unknownDisposition = asObject(disposition.unknown, `${role} unknown disposition`);
@@ -128,7 +169,11 @@ function assertImageSetAssertionSemantics(value: unknown): asserts value is Json
     if (
       unknownDisposition.count !== unknown ||
       lowMediumDisposition.count !== low + medium ||
-      highCriticalDisposition.count !== high + critical
+      highCriticalDisposition.count !== high + critical ||
+      highCriticalDisposition.semantics !==
+        (acceptedCount === 0
+          ? "image-set-assertion-blocking-including-unfixed"
+          : "temporary-exact-availability-risk-disposition")
     ) {
       throw new Error(`${role}: explicit dispositions do not partition severity findings`);
     }

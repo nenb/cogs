@@ -826,7 +826,7 @@ test("trusted composition defers triggered cleanup until startup quiesces", asyn
                   path: "/redacted/envoy",
                   sha256: `sha256:${"3".repeat(64)}`,
                   image:
-                    "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
+                    "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7",
                   cleanup: "owned" as const,
                 });
               },
@@ -1625,7 +1625,8 @@ function seams(calls: string[], captured: Record<string, unknown>): Partial<Trus
       return Object.freeze({
         path: "/redacted/envoy",
         sha256: `sha256:${"3".repeat(64)}`,
-        image: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
+        image:
+          "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7",
         cleanup: "owned" as const,
       });
     },
