@@ -1174,3 +1174,295 @@ export function classifyStage4S408Lifecycle(policyInput: unknown, journalInput: 
     return s408Verdict("PRESERVE_UNCERTAIN", "S408_PRESERVE_UNCERTAIN", null, true, true);
   return s408Verdict("MODEL_ORDER_COMPLETE_BLOCKED", "S408_MODEL_ORDER_COMPLETE_BLOCKED", null, true, true);
 }
+
+/* S4-09 remains a provider-free, non-observing model over synthetic fixtures. */
+export const STAGE4_S409_LIFECYCLE_PHASES = Object.freeze([
+  "source",
+  "dependency-admission",
+  "guest-network-denial",
+  "guest-surface-denial",
+  "guest-material-denial",
+  "stage3-functional",
+  "api-key-sample-check",
+  "stop",
+  "destroy",
+  "independent-inventory",
+] as const);
+
+export const STAGE4_S409_ADMISSION_BLOCKERS = deepFreeze({
+  accepted_s408_evidence: "absent",
+  fresh_issue_specific_approval: "absent",
+  authorized_saved_plan: "absent",
+  authenticated_release_image_set: "absent",
+  provider_discovery: "not-performed",
+});
+
+export const STAGE4_S409_OPENBAO_CANDIDATE = deepFreeze({
+  version: "2.7.0",
+  image_index_sha256: "71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315",
+  amd64_manifest_sha256: "6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4",
+  repository_evidence_bound: false,
+  release_image_present: false,
+  campaign_authority_granted: false,
+});
+
+export const STAGE4_S409_QUALIFICATION_REQUIREMENTS = deepFreeze({
+  dependencies: {
+    required_actual: ["cni", "ext-authz", "audit-wal", "openbao", "egress-proxy", "otlp"],
+    mandatory_stub_count: 0,
+  },
+  guest_root_denials: {
+    network: ["ipv4", "ipv6", "udp", "quic", "dns"],
+    surfaces: ["api", "metadata", "admin", "cross-session", "storage"],
+    material: ["kubernetes", "cloud", "openbao", "integration-model-secret", "ca-private-key"],
+  },
+  functional_scenario: {
+    inherited_stage: "stage3",
+    required_actual: ["kata", "ebs", "openbao", "otlp"],
+    prompt_replay: "prohibited",
+  },
+  model_credentials: {
+    api_key_samples: "separate-authorization-required-absent",
+    subscription_oauth: "disabled",
+  },
+  cleanup: {
+    trigger: "pass-failure-timeout-or-uncertainty",
+    order: ["stop", "destroy", "independent-inventory"],
+    final_inventory: "independent-complete-deletion-blind-zero-required",
+  },
+});
+
+export const STAGE4_S409_QUALIFICATION_REQUIREMENTS_SHA256 = semanticDigest(
+  "cogs.stage4/s409-qualification-requirements/v1",
+  STAGE4_S409_QUALIFICATION_REQUIREMENTS,
+);
+
+export const STAGE4_S409_POLICY = deepFreeze({
+  version: "cogs.stage4-s409-policy/v1",
+  authority: "local-provider-free-ordering-model",
+  campaign_issue: "S4-09/#360",
+  execution_authorized: false,
+  maximum_attempts: 1,
+  retry: "prohibited",
+  continuation: "prohibited",
+  admission_blockers: STAGE4_S409_ADMISSION_BLOCKERS,
+  openbao_candidate: STAGE4_S409_OPENBAO_CANDIDATE,
+  qualification_requirements_sha256: STAGE4_S409_QUALIFICATION_REQUIREMENTS_SHA256,
+});
+
+export type Stage4S409Policy = typeof STAGE4_S409_POLICY;
+type S409Phase = (typeof STAGE4_S409_LIFECYCLE_PHASES)[number];
+type S409Outcome = "fixture-claimed-success" | "fixture-claimed-failed" | "unknown";
+export type Stage4S409Event = Readonly<{
+  phase: S409Phase;
+  attempt_number: 1;
+  prior_event_sha256: string | null;
+  outcome: S409Outcome;
+  payload: Readonly<Record<string, JsonValue>>;
+}>;
+export type Stage4S409Journal = Readonly<{
+  version: "cogs.stage4-s409-journal/v1";
+  policy_sha256: string;
+  attempt_number: 1;
+  retry_count: 0;
+  continuation_count: 0;
+  events: readonly Stage4S409Event[];
+}>;
+export type Stage4S409Verdict = Readonly<{
+  version: "cogs.stage4-s409-verdict/v1";
+  status: "AWAITING_FIXTURE_EVENT" | "MODEL_ORDER_COMPLETE_BLOCKED" | "PRESERVE_UNCERTAIN";
+  reason_code: "S409_AWAITING_FIXTURE_EVENT" | "S409_MODEL_ORDER_COMPLETE_BLOCKED" | "S409_PRESERVE_UNCERTAIN";
+  next_phase: S409Phase | null;
+  policy_valid: boolean;
+  journal_valid: boolean;
+  execution_authorized: false;
+  provider_truth_observed: false;
+  kubernetes_truth_observed: false;
+  conformance_claimed: false;
+  functional_scenario_claimed: false;
+  cleanup_observed: false;
+  zero_inventory_claimed: false;
+  retry_authorized: false;
+}>;
+
+export function stage4S409PolicySha256(input: unknown): string | null {
+  const value = snapshotJson(input);
+  return value !== null && s408Same(value, STAGE4_S409_POLICY)
+    ? semanticDigest("cogs.stage4/s409-policy/v1", value)
+    : null;
+}
+
+export function stage4S409EventSha256(input: unknown): string | null {
+  const value = snapshotJson(input);
+  return value === null ? null : semanticDigest("cogs.stage4/s409-event/v1", value);
+}
+
+function s409QualificationPhase(phase: S409Phase): boolean {
+  return STAGE4_S409_LIFECYCLE_PHASES.indexOf(phase) >= 1 && STAGE4_S409_LIFECYCLE_PHASES.indexOf(phase) <= 6;
+}
+
+function s409PayloadValid(
+  phase: S409Phase,
+  payload: JsonRecord,
+  priorSha: string | null,
+  operator: JsonRecord | null,
+): boolean {
+  if (phase === "source") {
+    return (
+      exactKeys(payload, ["operator_identity_sha256", "source_sha256"]) &&
+      typeof payload.operator_identity_sha256 === "string" &&
+      DIGEST.test(payload.operator_identity_sha256) &&
+      typeof payload.source_sha256 === "string" &&
+      DIGEST.test(payload.source_sha256)
+    );
+  }
+  if (s409QualificationPhase(phase)) {
+    return (
+      exactKeys(payload, [
+        "bound_prior_event_sha256",
+        "fixture_claim_sha256",
+        "provider_observation_claimed",
+        "qualification_requirements_sha256",
+      ]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      typeof payload.fixture_claim_sha256 === "string" &&
+      DIGEST.test(payload.fixture_claim_sha256) &&
+      payload.provider_observation_claimed === false &&
+      payload.qualification_requirements_sha256 === STAGE4_S409_QUALIFICATION_REQUIREMENTS_SHA256
+    );
+  }
+  if (phase === "stop") {
+    return (
+      exactKeys(payload, ["bound_prior_event_sha256", "cleanup_trigger"]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      payload.cleanup_trigger === "pass-failure-timeout-or-uncertainty"
+    );
+  }
+  if (phase === "destroy") {
+    return (
+      exactKeys(payload, ["bound_prior_event_sha256", "destruction_required_for"]) &&
+      payload.bound_prior_event_sha256 === priorSha &&
+      payload.destruction_required_for === "all-outcomes"
+    );
+  }
+  return (
+    exactKeys(payload, [
+      "bound_prior_event_sha256",
+      "campaign_tag_filter_used",
+      "claimed_identity_independent",
+      "complete_pagination",
+      "deleted_ids_used",
+      "observer_identity_sha256",
+      "planned_addresses_used",
+      "residue_count",
+      "scopes",
+    ]) &&
+    payload.bound_prior_event_sha256 === priorSha &&
+    payload.campaign_tag_filter_used === false &&
+    payload.claimed_identity_independent === true &&
+    payload.complete_pagination === true &&
+    payload.deleted_ids_used === false &&
+    typeof payload.observer_identity_sha256 === "string" &&
+    DIGEST.test(payload.observer_identity_sha256) &&
+    payload.observer_identity_sha256 !== operator?.operator_identity_sha256 &&
+    payload.planned_addresses_used === false &&
+    payload.residue_count === 0 &&
+    s408Same(payload.scopes as JsonValue, STAGE4_S408_INVENTORY_SCOPES)
+  );
+}
+
+function s409NextPhase(phase: S409Phase, outcome: S409Outcome): S409Phase | null {
+  if (phase === "source") return outcome === "fixture-claimed-success" ? "dependency-admission" : "stop";
+  if (s409QualificationPhase(phase) && outcome !== "fixture-claimed-success") return "stop";
+  if (phase === "stop") return "destroy";
+  if (phase === "destroy") return "independent-inventory";
+  if (phase === "independent-inventory") return null;
+  const index = STAGE4_S409_LIFECYCLE_PHASES.indexOf(phase);
+  return STAGE4_S409_LIFECYCLE_PHASES[index + 1] ?? null;
+}
+
+function s409JournalValid(journal: JsonRecord): { valid: boolean; next: S409Phase | null; uncertain: boolean } {
+  if (
+    !exactKeys(journal, [
+      "attempt_number",
+      "continuation_count",
+      "events",
+      "policy_sha256",
+      "retry_count",
+      "version",
+    ]) ||
+    journal.version !== "cogs.stage4-s409-journal/v1" ||
+    journal.policy_sha256 !== stage4S409PolicySha256(STAGE4_S409_POLICY) ||
+    journal.attempt_number !== 1 ||
+    journal.retry_count !== 0 ||
+    journal.continuation_count !== 0 ||
+    !Array.isArray(journal.events) ||
+    journal.events.length > STAGE4_S409_LIFECYCLE_PHASES.length
+  )
+    return { valid: false, next: null, uncertain: true };
+  let expected: S409Phase | null = "source";
+  let prior: JsonRecord | null = null;
+  let operator: JsonRecord | null = null;
+  let uncertain = false;
+  for (const item of journal.events) {
+    const event = s408Object(item);
+    const payload = s408Object(event?.payload);
+    const priorSha = prior === null ? null : stage4S409EventSha256(prior);
+    if (
+      expected === null ||
+      event === null ||
+      payload === null ||
+      !exactKeys(event, ["attempt_number", "outcome", "payload", "phase", "prior_event_sha256"]) ||
+      event.phase !== expected ||
+      event.attempt_number !== 1 ||
+      !["fixture-claimed-success", "fixture-claimed-failed", "unknown"].includes(event.outcome as string) ||
+      event.prior_event_sha256 !== priorSha ||
+      !s409PayloadValid(expected, payload, priorSha, operator)
+    )
+      return { valid: false, next: null, uncertain: true };
+    if (expected === "source") operator = payload;
+    if (event.outcome !== "fixture-claimed-success") uncertain = true;
+    expected = s409NextPhase(expected, event.outcome as S409Outcome);
+    prior = event;
+  }
+  return { valid: true, next: expected, uncertain };
+}
+
+function s409Verdict(
+  status: Stage4S409Verdict["status"],
+  reason_code: Stage4S409Verdict["reason_code"],
+  next_phase: S409Phase | null,
+  policy_valid: boolean,
+  journal_valid: boolean,
+): Stage4S409Verdict {
+  return {
+    version: "cogs.stage4-s409-verdict/v1",
+    status,
+    reason_code,
+    next_phase,
+    policy_valid,
+    journal_valid,
+    execution_authorized: false,
+    provider_truth_observed: false,
+    kubernetes_truth_observed: false,
+    conformance_claimed: false,
+    functional_scenario_claimed: false,
+    cleanup_observed: false,
+    zero_inventory_claimed: false,
+    retry_authorized: false,
+  };
+}
+
+export function classifyStage4S409Lifecycle(policyInput: unknown, journalInput: unknown): Stage4S409Verdict {
+  const policy = snapshotJson(policyInput);
+  if (policy === null || !s408Same(policy, STAGE4_S409_POLICY))
+    return s409Verdict("PRESERVE_UNCERTAIN", "S409_PRESERVE_UNCERTAIN", null, false, false);
+  const journal = snapshotJson(journalInput);
+  if (journal === null) return s409Verdict("PRESERVE_UNCERTAIN", "S409_PRESERVE_UNCERTAIN", null, true, false);
+  const state = s409JournalValid(journal);
+  if (!state.valid) return s409Verdict("PRESERVE_UNCERTAIN", "S409_PRESERVE_UNCERTAIN", null, true, false);
+  if (state.uncertain) return s409Verdict("PRESERVE_UNCERTAIN", "S409_PRESERVE_UNCERTAIN", state.next, true, true);
+  if (state.next === null)
+    return s409Verdict("MODEL_ORDER_COMPLETE_BLOCKED", "S409_MODEL_ORDER_COMPLETE_BLOCKED", null, true, true);
+  return s409Verdict("AWAITING_FIXTURE_EVENT", "S409_AWAITING_FIXTURE_EVENT", state.next, true, true);
+}
