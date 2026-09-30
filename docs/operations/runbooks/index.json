@@ -116,7 +116,7 @@
       "id": "cve-response",
       "path": "docs/operations/runbooks/cve-response.md",
       "title": "Draft node and runtime CVE response runbook",
-      "content_sha256": "a6b64ba9a951a894056edf9d663373c630642c3a67c156ea98493f993c8417ff",
+      "content_sha256": "d072f7cd6d6fc37ad319175210c3137a43e61922ff44d56076f44c58afc6fa41",
       "status": "draft-local-static-only",
       "evidence_contract": "future-operations-reference-v1"
     },
