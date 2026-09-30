@@ -22,6 +22,7 @@ import {
 } from "../scripts/stage4-campaign-model.ts";
 import {
   classifyStage4S408Lifecycle,
+  classifyStage4S409Lifecycle,
   STAGE4_S408_ADMISSION_BLOCKERS,
   STAGE4_S408_CUSTODY_INVENTORY_SCOPES,
   STAGE4_S408_DEFAULT_POLICY,
@@ -34,12 +35,22 @@ import {
   STAGE4_S408_QUALIFICATION_REQUIREMENTS_SHA256,
   STAGE4_S408_RETIREMENT_RECORD,
   STAGE4_S408_UNRESOLVED_PROVIDER_CLASSES,
+  STAGE4_S409_ADMISSION_BLOCKERS,
+  STAGE4_S409_LIFECYCLE_PHASES,
+  STAGE4_S409_OPENBAO_CANDIDATE,
+  STAGE4_S409_POLICY,
+  STAGE4_S409_QUALIFICATION_REQUIREMENTS,
+  STAGE4_S409_QUALIFICATION_REQUIREMENTS_SHA256,
   type Stage4S408LifecycleEvent,
   type Stage4S408LifecycleJournal,
   type Stage4S408LifecyclePolicy,
+  type Stage4S409Event,
+  type Stage4S409Journal,
   stage4CampaignEvidenceSha256,
   stage4S408LifecycleEventSha256,
   stage4S408LifecyclePolicySha256,
+  stage4S409EventSha256,
+  stage4S409PolicySha256,
 } from "../scripts/stage4-campaign-model.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -973,6 +984,240 @@ test("S4-08 hostile fixture mutations fail closed", () => {
     assert.equal(result.status, "PRESERVE_UNCERTAIN", name);
     assert.equal(result.execution_authorized, false, name);
     assert.equal(result.retirement_claimed, false, name);
+  }
+});
+
+function s409Event(
+  events: Stage4S409Event[],
+  phase: Stage4S409Event["phase"],
+  outcome: Stage4S409Event["outcome"],
+): Stage4S409Event {
+  const prior = events.at(-1);
+  const bound = prior ? stage4S409EventSha256(prior) : null;
+  let payload: JsonObject;
+  if (phase === "source") {
+    payload = { operator_identity_sha256: digest("s409-operator"), source_sha256: digest("s409-source") };
+  } else if (STAGE4_S409_LIFECYCLE_PHASES.indexOf(phase) >= 1 && STAGE4_S409_LIFECYCLE_PHASES.indexOf(phase) <= 6) {
+    payload = {
+      bound_prior_event_sha256: bound,
+      fixture_claim_sha256: digest(`s409:${phase}`),
+      provider_observation_claimed: false,
+      qualification_requirements_sha256: STAGE4_S409_QUALIFICATION_REQUIREMENTS_SHA256,
+    };
+  } else if (phase === "stop") {
+    payload = { bound_prior_event_sha256: bound, cleanup_trigger: "pass-failure-timeout-or-uncertainty" };
+  } else if (phase === "destroy") {
+    payload = { bound_prior_event_sha256: bound, destruction_required_for: "all-outcomes" };
+  } else {
+    payload = {
+      bound_prior_event_sha256: bound,
+      campaign_tag_filter_used: false,
+      claimed_identity_independent: true,
+      complete_pagination: true,
+      deleted_ids_used: false,
+      observer_identity_sha256: digest("s409-observer"),
+      planned_addresses_used: false,
+      residue_count: 0,
+      scopes: structuredClone(STAGE4_S408_INVENTORY_SCOPES),
+    };
+  }
+  return { phase, attempt_number: 1, prior_event_sha256: bound, outcome, payload } as Stage4S409Event;
+}
+
+function s409Journal(
+  failurePhase?: Stage4S409Event["phase"],
+  failureOutcome: Stage4S409Event["outcome"] = "fixture-claimed-failed",
+): Stage4S409Journal {
+  const phases = failurePhase
+    ? [
+        ...STAGE4_S409_LIFECYCLE_PHASES.slice(0, STAGE4_S409_LIFECYCLE_PHASES.indexOf(failurePhase) + 1),
+        ...STAGE4_S409_LIFECYCLE_PHASES.slice(7),
+      ]
+    : [...STAGE4_S409_LIFECYCLE_PHASES];
+  const events: Stage4S409Event[] = [];
+  for (const phase of phases)
+    events.push(s409Event(events, phase, phase === failurePhase ? failureOutcome : "fixture-claimed-success"));
+  const policySha256 = stage4S409PolicySha256(STAGE4_S409_POLICY);
+  assert.ok(policySha256);
+  return {
+    version: "cogs.stage4-s409-journal/v1",
+    policy_sha256: policySha256,
+    attempt_number: 1,
+    retry_count: 0,
+    continuation_count: 0,
+    events,
+  };
+}
+
+function s409Mutate(
+  journal: Stage4S409Journal,
+  mutation: (copy: JsonObject & { events: JsonObject[] }) => void,
+): Stage4S409Journal {
+  const copy = structuredClone(journal) as unknown as JsonObject & { events: JsonObject[] };
+  mutation(copy);
+  return copy as unknown as Stage4S409Journal;
+}
+
+test("S4-09 binds actual-dependency, denial, functional, credential, and OpenBao requirements without authority", () => {
+  assert.deepEqual(STAGE4_S409_POLICY.admission_blockers, STAGE4_S409_ADMISSION_BLOCKERS);
+  assert.equal(STAGE4_S409_POLICY.execution_authorized, false);
+  assert.equal(STAGE4_S409_OPENBAO_CANDIDATE.version, "2.7.0");
+  assert.equal(STAGE4_S409_OPENBAO_CANDIDATE.repository_evidence_bound, false);
+  assert.equal(STAGE4_S409_OPENBAO_CANDIDATE.release_image_present, false);
+  assert.deepEqual(STAGE4_S409_QUALIFICATION_REQUIREMENTS.dependencies.required_actual, [
+    "cni",
+    "ext-authz",
+    "audit-wal",
+    "openbao",
+    "egress-proxy",
+    "otlp",
+  ]);
+  assert.equal(STAGE4_S409_QUALIFICATION_REQUIREMENTS.dependencies.mandatory_stub_count, 0);
+  assert.deepEqual(STAGE4_S409_QUALIFICATION_REQUIREMENTS.guest_root_denials.network, [
+    "ipv4",
+    "ipv6",
+    "udp",
+    "quic",
+    "dns",
+  ]);
+  assert.equal(STAGE4_S409_QUALIFICATION_REQUIREMENTS.model_credentials.subscription_oauth, "disabled");
+});
+
+test("S4-09 synthetic complete order remains blocked with every observation claim false", () => {
+  const result = classifyStage4S409Lifecycle(STAGE4_S409_POLICY, s409Journal());
+  assert.equal(result.status, "MODEL_ORDER_COMPLETE_BLOCKED");
+  assert.equal(result.next_phase, null);
+  for (const field of [
+    "execution_authorized",
+    "provider_truth_observed",
+    "kubernetes_truth_observed",
+    "conformance_claimed",
+    "functional_scenario_claimed",
+    "cleanup_observed",
+    "zero_inventory_claimed",
+    "retry_authorized",
+  ] as const)
+    assert.equal(result[field], false, field);
+});
+
+test("S4-09 source or qualification uncertainty requires the complete mandatory cleanup suffix", () => {
+  for (const [phase, outcome] of [
+    ["source", "fixture-claimed-failed"],
+    ["source", "unknown"],
+    ["guest-network-denial", "fixture-claimed-failed"],
+  ] as const) {
+    const full = s409Journal(phase, outcome);
+    const failureIndex = full.events.findIndex((event) => event.phase === phase);
+    const partial = { ...full, events: full.events.slice(0, failureIndex + 1) };
+    const awaiting = classifyStage4S409Lifecycle(STAGE4_S409_POLICY, partial);
+    assert.equal(awaiting.status, "PRESERVE_UNCERTAIN", `${phase}:${outcome}`);
+    assert.equal(awaiting.next_phase, "stop", `${phase}:${outcome}`);
+    const complete = classifyStage4S409Lifecycle(STAGE4_S409_POLICY, full);
+    assert.equal(complete.status, "PRESERVE_UNCERTAIN", `${phase}:${outcome}`);
+    assert.equal(complete.next_phase, null, `${phase}:${outcome}`);
+    assert.equal(complete.zero_inventory_claimed, false, `${phase}:${outcome}`);
+  }
+});
+
+test("S4-09 hostile authority, requirement, observation, cleanup, and inventory mutations fail closed", () => {
+  const original = s409Journal();
+  const event = (copy: { events: JsonObject[] }, index: number): JsonObject => copy.events[index] as JsonObject;
+  const payload = (copy: { events: JsonObject[] }, index: number): JsonObject =>
+    event(copy, index).payload as JsonObject;
+  const cases: readonly [string, unknown, (copy: JsonObject & { events: JsonObject[] }) => void][] = [
+    ["promoted execution", { ...STAGE4_S409_POLICY, execution_authorized: true }, () => {}],
+    [
+      "invented S4-08 acceptance",
+      {
+        ...STAGE4_S409_POLICY,
+        admission_blockers: { ...STAGE4_S409_ADMISSION_BLOCKERS, accepted_s408_evidence: "accepted" },
+      },
+      () => {},
+    ],
+    [
+      "changed requirement digest",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 1).qualification_requirements_sha256 = digest("other");
+      },
+    ],
+    [
+      "invented provider observation",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 4).provider_observation_claimed = true;
+      },
+    ],
+    [
+      "skipped denial",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        copy.events.splice(2, 1);
+      },
+    ],
+    [
+      "retry",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        copy.retry_count = 1;
+      },
+    ],
+    [
+      "pass-only cleanup",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 7).cleanup_trigger = "pass-only";
+      },
+    ],
+    [
+      "pass-only destroy",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 8).destruction_required_for = "pass-only";
+      },
+    ],
+    [
+      "planned-address inventory",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 9).planned_addresses_used = true;
+      },
+    ],
+    [
+      "deleted-id inventory",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 9).deleted_ids_used = true;
+      },
+    ],
+    [
+      "tag-only inventory",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 9).campaign_tag_filter_used = true;
+      },
+    ],
+    [
+      "residue",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 9).residue_count = 1;
+      },
+    ],
+    [
+      "collapsed observer",
+      STAGE4_S409_POLICY,
+      (copy) => {
+        payload(copy, 9).observer_identity_sha256 = digest("s409-operator");
+      },
+    ],
+  ];
+  for (const [name, policy, mutate] of cases) {
+    const changed = s409Mutate(original, mutate);
+    const result = classifyStage4S409Lifecycle(policy, changed);
+    assert.equal(result.status, "PRESERVE_UNCERTAIN", name);
+    assert.equal(result.journal_valid, false, name);
+    assert.equal(result.execution_authorized, false, name);
   }
 });
 
