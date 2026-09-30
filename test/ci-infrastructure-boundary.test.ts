@@ -34,7 +34,12 @@ import {
   SANDBOX_CAPABILITIES,
   SANDBOX_CAPABILITY_MASK,
 } from "../dev/product-test/snapshot-owner.ts";
-import { validateNpmAuditResult } from "../scripts/check-npm-audit.ts";
+import {
+  BRACE_EXPANSION_ACCEPTANCE_EXPIRES_AT,
+  BRACE_EXPANSION_ACCEPTANCE_NOT_BEFORE,
+  validateAcceptedNpmDependencyClosure,
+  validateNpmAuditResult,
+} from "../scripts/check-npm-audit.ts";
 import { createCogsPiSession } from "../src/pi/session.ts";
 import { createSshBashToolPort } from "../src/ssh/bash-tool.ts";
 import type { CogsExecPort, SshConnectionManager } from "../src/ssh/connection.ts";
@@ -55,11 +60,56 @@ type WorkflowStep = { name?: unknown; run?: unknown };
 type WorkflowJob = { steps?: unknown };
 type Workflow = { jobs?: unknown };
 
-const cleanAudit = () => ({
+const acceptedAudit = () => ({
   auditReportVersion: 2,
-  vulnerabilities: {},
+  vulnerabilities: {
+    "brace-expansion": {
+      name: "brace-expansion",
+      severity: "high",
+      isDirect: false,
+      via: [
+        {
+          source: 1240103,
+          name: "brace-expansion",
+          dependency: "brace-expansion",
+          title: "brace-expansion: Quadratic-time expansion of the `{a},b}` rewrite causes CPU denial of service",
+          url: "https://github.com/advisories/GHSA-q2hr-2g5m-vwhr",
+          severity: "moderate",
+          cwe: ["CWE-400", "CWE-407"],
+          cvss: { score: 5.3, vectorString: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L" },
+          range: ">=4.0.0 <5.0.12",
+        },
+        {
+          source: 1240107,
+          name: "brace-expansion",
+          dependency: "brace-expansion",
+          title: "brace-expansion: DoS via uncontrolled recursion on nested brace groups causing stack exhaustion",
+          url: "https://github.com/advisories/GHSA-qhr7-859c-m2p7",
+          severity: "high",
+          cwe: ["CWE-400", "CWE-674"],
+          cvss: { score: 7.5, vectorString: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H" },
+          range: ">=4.0.0 <5.0.11",
+        },
+        {
+          source: 1240111,
+          name: "brace-expansion",
+          dependency: "brace-expansion",
+          title: "brace-expansion: DoS via uncontrolled recursion in parseCommaParts causing stack exhaustion",
+          url: "https://github.com/advisories/GHSA-6j4f-fj2g-mc7p",
+          severity: "high",
+          cwe: ["CWE-400", "CWE-674"],
+          cvss: { score: 7.5, vectorString: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H" },
+          range: ">=4.0.0 <5.0.10",
+        },
+      ],
+      effects: [],
+      range: "4.0.0 - 5.0.11",
+      nodes: ["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"],
+      fixAvailable: true,
+    },
+  },
   metadata: {
-    vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 },
+    vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 },
     dependencies: { prod: 243, dev: 15, optional: 64, peer: 0, peerOptional: 0, total: 312 },
   },
 });
@@ -84,33 +134,141 @@ function workflowRuns(path: string): Array<{ job: string; step: string; run: str
   return runs;
 }
 
-test("npm audit requires a well-formed zero-finding report", () => {
-  assert.doesNotThrow(() => validateNpmAuditResult(cleanAudit()));
+test("npm audit admits only the exact unexpired brace-expansion availability disposition", () => {
+  const reviewTime = Date.parse("2026-09-30T12:22:00.000Z");
+  assert.doesNotThrow(() => validateNpmAuditResult(acceptedAudit(), reviewTime));
+  assert.equal(BRACE_EXPANSION_ACCEPTANCE_NOT_BEFORE, "2026-09-30T12:22:00.000Z");
+  assert.equal(BRACE_EXPANSION_ACCEPTANCE_EXPIRES_AT, "2026-10-14T00:00:00.000Z");
 
-  const finding = structuredClone(cleanAudit());
-  Object.assign(finding.vulnerabilities, { undici: { severity: "low" } });
-  assert.throws(() => validateNpmAuditResult(finding));
+  const clean = structuredClone(acceptedAudit());
+  clean.vulnerabilities = {} as typeof clean.vulnerabilities;
+  clean.metadata.vulnerabilities.high = 0;
+  clean.metadata.vulnerabilities.total = 0;
+  assert.throws(() => validateNpmAuditResult(clean, reviewTime));
 
-  const nonzeroCount = structuredClone(cleanAudit());
-  nonzeroCount.metadata.vulnerabilities.moderate = 1;
-  nonzeroCount.metadata.vulnerabilities.total = 1;
-  assert.throws(() => validateNpmAuditResult(nonzeroCount));
+  const additionalFinding = structuredClone(acceptedAudit());
+  Object.assign(additionalFinding.vulnerabilities, { undici: { severity: "low" } });
+  assert.throws(() => validateNpmAuditResult(additionalFinding, reviewTime));
+
+  const changedPath = structuredClone(acceptedAudit());
+  changedPath.vulnerabilities["brace-expansion"].nodes = ["node_modules/brace-expansion"];
+  assert.throws(() => validateNpmAuditResult(changedPath, reviewTime));
+
+  const changedAdvisory = structuredClone(acceptedAudit());
+  const firstAdvisory = changedAdvisory.vulnerabilities["brace-expansion"].via[0];
+  assert.ok(firstAdvisory);
+  firstAdvisory.source = 1;
+  assert.throws(() => validateNpmAuditResult(changedAdvisory, reviewTime));
+
+  const changedSeverity = structuredClone(acceptedAudit());
+  const secondAdvisory = changedSeverity.vulnerabilities["brace-expansion"].via[1];
+  assert.ok(secondAdvisory);
+  secondAdvisory.severity = "critical";
+  assert.throws(() => validateNpmAuditResult(changedSeverity, reviewTime));
+
+  const changedCounts = structuredClone(acceptedAudit());
+  changedCounts.metadata.vulnerabilities.critical = 1;
+  changedCounts.metadata.vulnerabilities.total = 2;
+  assert.throws(() => validateNpmAuditResult(changedCounts, reviewTime));
+
+  assert.throws(() => validateNpmAuditResult(acceptedAudit(), Date.parse(BRACE_EXPANSION_ACCEPTANCE_NOT_BEFORE) - 1));
+  assert.throws(() => validateNpmAuditResult(acceptedAudit(), Date.parse(BRACE_EXPANSION_ACCEPTANCE_EXPIRES_AT)));
 
   const malformedCases: unknown[] = [
     null,
-    { ...cleanAudit(), auditReportVersion: 3 },
-    { ...cleanAudit(), extra: true },
-    { ...cleanAudit(), vulnerabilities: [] },
-    { ...cleanAudit(), metadata: { vulnerabilities: cleanAudit().metadata.vulnerabilities } },
+    { ...acceptedAudit(), auditReportVersion: 3 },
+    { ...acceptedAudit(), extra: true },
+    { ...acceptedAudit(), vulnerabilities: [] },
+    { ...acceptedAudit(), metadata: { vulnerabilities: acceptedAudit().metadata.vulnerabilities } },
     {
-      ...cleanAudit(),
+      ...acceptedAudit(),
       metadata: {
-        ...cleanAudit().metadata,
-        dependencies: { ...cleanAudit().metadata.dependencies, total: "312" },
+        ...acceptedAudit().metadata,
+        dependencies: { ...acceptedAudit().metadata.dependencies, total: "312" },
       },
     },
   ];
-  for (const value of malformedCases) assert.throws(() => validateNpmAuditResult(value));
+  for (const value of malformedCases) assert.throws(() => validateNpmAuditResult(value, reviewTime));
+});
+
+test("Cogs production Pi composition does not admit attacker-controlled model glob patterns", () => {
+  const source = readFileSync(resolve(root, "src/pi/session.ts"), "utf8");
+  for (const forbidden of [
+    "resolveModelScope",
+    "scopedModels",
+    "enabledModels",
+    'from "minimatch"',
+    "from 'minimatch'",
+  ])
+    assert.doesNotMatch(source, new RegExp(forbidden, "u"));
+  assert.match(source, /const model = modelRuntime\.getModel\(modelProvider, modelId\)/u);
+  assert.match(source, /SettingsManager\.inMemory\(\{/u);
+  assert.match(source, /model,\s*thinkingLevel: "off",/u);
+});
+
+test("npm accepted-risk closure binds fixed fast-uri and exact shrinkwrapped Pi bytes", () => {
+  const parse = (path: string): unknown => JSON.parse(readFileSync(resolve(root, path), "utf8"));
+  const closure = {
+    packageJson: parse("package.json"),
+    packageLock: parse("package-lock.json"),
+    piPackageJson: parse("node_modules/@earendil-works/pi-coding-agent/package.json"),
+    piShrinkwrap: parse("node_modules/@earendil-works/pi-coding-agent/npm-shrinkwrap.json"),
+    installedMinimatchPackageJson: parse(
+      "node_modules/@earendil-works/pi-coding-agent/node_modules/minimatch/package.json",
+    ),
+    installedBracePackageJson: parse(
+      "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json",
+    ),
+    installedFastUriPackageJson: parse("node_modules/fast-uri/package.json"),
+  };
+  assert.doesNotThrow(() => validateAcceptedNpmDependencyClosure(closure));
+
+  const changedPi = structuredClone(closure);
+  (changedPi.packageJson as { dependencies: Record<string, string> }).dependencies["@earendil-works/pi-coding-agent"] =
+    "0.86.1";
+  assert.throws(() => validateAcceptedNpmDependencyClosure(changedPi));
+
+  const changedBrace = structuredClone(closure);
+  (changedBrace.installedBracePackageJson as { version: string }).version = "5.0.10";
+  assert.throws(() => validateAcceptedNpmDependencyClosure(changedBrace));
+
+  const changedFastUri = structuredClone(closure);
+  (changedFastUri.installedFastUriPackageJson as { version: string }).version = "3.1.7";
+  assert.throws(() => validateAcceptedNpmDependencyClosure(changedFastUri));
+
+  const changedIntegrity = structuredClone(closure);
+  const changedIntegrityPackages = (
+    changedIntegrity.packageLock as { packages: Record<string, Record<string, unknown>> }
+  ).packages;
+  const changedIntegrityBrace =
+    changedIntegrityPackages["node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion"];
+  assert.ok(changedIntegrityBrace);
+  changedIntegrityBrace.integrity = "sha512-other";
+  assert.throws(() => validateAcceptedNpmDependencyClosure(changedIntegrity));
+
+  const changedResolved = structuredClone(closure);
+  const changedResolvedPackages = (changedResolved.packageLock as { packages: Record<string, Record<string, unknown>> })
+    .packages;
+  const changedResolvedFastUri = changedResolvedPackages["node_modules/fast-uri"];
+  assert.ok(changedResolvedFastUri);
+  changedResolvedFastUri.resolved = "https://example.invalid/fast-uri.tgz";
+  assert.throws(() => validateAcceptedNpmDependencyClosure(changedResolved));
+
+  const changedEdge = structuredClone(closure);
+  const changedEdgePackages = (changedEdge.packageLock as { packages: Record<string, Record<string, unknown>> })
+    .packages;
+  const changedEdgePi = changedEdgePackages["node_modules/@earendil-works/pi-coding-agent"];
+  assert.ok(changedEdgePi);
+  (changedEdgePi.dependencies as Record<string, string>).minimatch = "10.2.5";
+  assert.throws(() => validateAcceptedNpmDependencyClosure(changedEdge));
+
+  const changedShrinkwrap = structuredClone(closure);
+  const shrinkwrapPackages = (changedShrinkwrap.piShrinkwrap as { packages: Record<string, { version: string }> })
+    .packages;
+  const shrinkwrapBrace = shrinkwrapPackages["node_modules/brace-expansion"];
+  assert.ok(shrinkwrapBrace);
+  shrinkwrapBrace.version = "5.0.8";
+  assert.throws(() => validateAcceptedNpmDependencyClosure(changedShrinkwrap));
 });
 
 test("parsed workflow run commands cannot invoke infrastructure validation", () => {

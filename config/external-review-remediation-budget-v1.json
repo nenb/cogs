@@ -1167,6 +1167,7 @@
   },
   "issue359_stage4_local_preparation": {
     "base_revision": "bde10a6274f8b5fd47414e43d6a09220c68ae00c",
+    "terminal_revision": "060831f21c469df0b239d53ea8a19dce2a973988",
     "gross_lines": 4000,
     "gross_bytes": 550000,
     "new_file_high": 0,
@@ -1183,6 +1184,27 @@
       "scripts/stage4-offline-readiness.ts",
       "test/stage2-remediation-budget.test.ts",
       "test/stage4-campaign-model.test.ts"
+    ]
+  },
+  "npm_security_remediation": {
+    "base_revision": "060831f21c469df0b239d53ea8a19dce2a973988",
+    "gross_lines": 4000,
+    "gross_bytes": 550000,
+    "new_file_high": 0,
+    "readiness_regenerations": 0,
+    "paths": [
+      "config/external-review-remediation-budget-v1.json",
+      "docs/operations/runbooks/cve-response.md",
+      "docs/operations/runbooks/index.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/local-validation.json",
+      "docs/security-evidence/stage4-offline-readiness-artifacts/source-inventory.json",
+      "docs/security-evidence/stage4-offline-readiness-package.json",
+      "package-lock.json",
+      "scripts/check-npm-audit.ts",
+      "scripts/check-stage2-retained-lines.py",
+      "scripts/stage4-offline-readiness.ts",
+      "test/ci-infrastructure-boundary.test.ts",
+      "test/stage2-remediation-budget.test.ts"
     ]
   },
   "post_npm_audit_disposition_remediation": {

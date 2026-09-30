@@ -369,28 +369,33 @@ assert 0 < lines <= 340 and 0 < raw <= 1000000
 `);
 });
 
-test("Issue #358 accounting is frozen and Issue #359 gets one separate bounded successor", () => {
+test("Issue #358 and #359 accounting is frozen before one bounded npm security successor", () => {
   runPython(`
 import runpy
 m=runpy.run_path('scripts/check-stage2-retained-lines.py')
 b,_,_,_,_=m['_remediation_budget']()
 p358=b['issue358_stage4_local_preparation']; p359=b['issue359_stage4_local_preparation']
+security=b['npm_security_remediation']
 assert p358['base_revision']=='ea0e814df4a21cc0e307fd5074be4e7377d9bbcf'
 assert p358['terminal_revision']=='bde10a6274f8b5fd47414e43d6a09220c68ae00c'
 assert p359['base_revision']==p358['terminal_revision']
-for p in (p358,p359):
+assert p359['terminal_revision']=='060831f21c469df0b239d53ea8a19dce2a973988'
+assert security['base_revision']==p359['terminal_revision']
+for p in (p358,p359,security):
  assert (p['gross_lines'],p['gross_bytes'],p['new_file_high'],p['readiness_regenerations'])==(4000,550000,0,0)
  assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))
 head=m['_git'](['rev-parse','HEAD']).strip()
 lines358,raw358=m['_issue358_stage4_local_preparation_consumption'](b,head)
 lines359,raw359=m['_issue359_stage4_local_preparation_consumption'](b,head)
+security_lines,security_raw=m['_npm_security_remediation_consumption'](b,head)
 assert (lines358,raw358)==(3832,538810)
-assert 0 < lines359 <= 4000 and 0 < raw359 <= 550000
-real_git=m['_git']; scope=m['_issue359_stage4_local_preparation_consumption'].__globals__
+assert (lines359,raw359)==(263,310190)
+assert 0 < security_lines <= 4000 and 0 < security_raw <= 550000
+real_git=m['_git']; scope=m['_npm_security_remediation_consumption'].__globals__
 scope['_git']=lambda args: '2' if args[:2]==['rev-list','--count'] else real_git(args)
-try: m['_issue359_stage4_local_preparation_consumption'](b,head)
+try: m['_npm_security_remediation_consumption'](b,head)
 except m['LineBudgetError']: pass
-else: raise AssertionError('second Issue #359 descendant accepted')
+else: raise AssertionError('second npm security descendant accepted')
 `);
 });
 

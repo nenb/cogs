@@ -77,9 +77,14 @@ ISSUE358_STAGE4_LOCAL_PREPARATION_GROSS_HIGH = (4_000, 550_000)
 ISSUE358_STAGE4_LOCAL_PREPARATION_NEW_FILE_HIGH = 0
 ISSUE358_STAGE4_LOCAL_PREPARATION_READINESS_REGENERATIONS = 0
 ISSUE359_STAGE4_LOCAL_PREPARATION_BASE_REVISION = ISSUE358_STAGE4_LOCAL_PREPARATION_TERMINAL_REVISION
+ISSUE359_STAGE4_LOCAL_PREPARATION_TERMINAL_REVISION = "060831f21c469df0b239d53ea8a19dce2a973988"
 ISSUE359_STAGE4_LOCAL_PREPARATION_GROSS_HIGH = (4_000, 550_000)
 ISSUE359_STAGE4_LOCAL_PREPARATION_NEW_FILE_HIGH = 0
 ISSUE359_STAGE4_LOCAL_PREPARATION_READINESS_REGENERATIONS = 0
+NPM_SECURITY_REMEDIATION_BASE_REVISION = ISSUE359_STAGE4_LOCAL_PREPARATION_TERMINAL_REVISION
+NPM_SECURITY_REMEDIATION_GROSS_HIGH = (4_000, 550_000)
+NPM_SECURITY_REMEDIATION_NEW_FILE_HIGH = 0
+NPM_SECURITY_REMEDIATION_READINESS_REGENERATIONS = 0
 REMEDIATION_BYTE_HIGHS = {'route': 350000, 'revocation': 220000, 'relay': 1200000, 'lifecycle': 1500000, 'completion': 900000, 'integration': 30830000}
 REMEDIATION_GLOBAL_BYTE_HIGH = 35_000_000
 REMEDIATION_POST_PRE_H_RESERVE = (8_443, 3_800_000)
@@ -483,7 +488,8 @@ def _remediation_budget():
                            "post_authoritative_failure_remediation", "post_segment_two_failure_remediation",
                            "post_admission_window_remediation", "post_evidence_schema_failure_remediation",
                            "post_campaign_admission_miss_remediation", "post_npm_audit_disposition_remediation",
-                           "issue358_stage4_local_preparation", "issue359_stage4_local_preparation", "owners"})
+                           "issue358_stage4_local_preparation", "issue359_stage4_local_preparation",
+                           "npm_security_remediation", "owners"})
     _require(data["version"] == "cogs.external-review-remediation-budget/v1"
              and data["base_revision"] == REMEDIATION_BASE_REVISION
              and data["global_gross_line_high"] == 78_000 and type(data["global_gross_byte_high"]) is int and data["global_gross_byte_high"] == REMEDIATION_GLOBAL_BYTE_HIGH)
@@ -624,9 +630,10 @@ def _remediation_budget():
         and len(issue358["paths"]) == len(set(issue358["paths"])))
     issue359 = data["issue359_stage4_local_preparation"]
     _require(isinstance(issue359, dict) and set(issue359) == {
-        "base_revision", "gross_lines", "gross_bytes", "new_file_high",
+        "base_revision", "terminal_revision", "gross_lines", "gross_bytes", "new_file_high",
         "readiness_regenerations", "paths"}
         and issue359["base_revision"] == ISSUE359_STAGE4_LOCAL_PREPARATION_BASE_REVISION
+        and issue359["terminal_revision"] == ISSUE359_STAGE4_LOCAL_PREPARATION_TERMINAL_REVISION
         and (issue359["gross_lines"], issue359["gross_bytes"])
         == ISSUE359_STAGE4_LOCAL_PREPARATION_GROSS_HIGH
         and issue359["new_file_high"] == ISSUE359_STAGE4_LOCAL_PREPARATION_NEW_FILE_HIGH
@@ -635,12 +642,28 @@ def _remediation_budget():
         and isinstance(issue359["paths"], list)
         and issue359["paths"] == sorted(issue359["paths"])
         and len(issue359["paths"]) == len(set(issue359["paths"])))
+    npm_security = data["npm_security_remediation"]
+    _require(isinstance(npm_security, dict) and set(npm_security) == {
+        "base_revision", "gross_lines", "gross_bytes", "new_file_high",
+        "readiness_regenerations", "paths"}
+        and npm_security["base_revision"] == NPM_SECURITY_REMEDIATION_BASE_REVISION
+        and (npm_security["gross_lines"], npm_security["gross_bytes"])
+        == NPM_SECURITY_REMEDIATION_GROSS_HIGH
+        and npm_security["new_file_high"] == NPM_SECURITY_REMEDIATION_NEW_FILE_HIGH
+        and npm_security["readiness_regenerations"]
+        == NPM_SECURITY_REMEDIATION_READINESS_REGENERATIONS
+        and isinstance(npm_security["paths"], list)
+        and npm_security["paths"] == sorted(npm_security["paths"])
+        and len(npm_security["paths"]) == len(set(npm_security["paths"])))
     issue358_base_names = set(_nul_records(_git([
         "ls-tree", "-r", "--name-only", "-z", ISSUE358_STAGE4_LOCAL_PREPARATION_BASE_REVISION])))
     issue359_base_names = set(_nul_records(_git([
         "ls-tree", "-r", "--name-only", "-z", ISSUE359_STAGE4_LOCAL_PREPARATION_BASE_REVISION])))
+    npm_security_base_names = set(_nul_records(_git([
+        "ls-tree", "-r", "--name-only", "-z", NPM_SECURITY_REMEDIATION_BASE_REVISION])))
     _require(set(issue358["paths"]) <= issue358_base_names)
     _require(set(issue359["paths"]) <= issue359_base_names)
+    _require(set(npm_security["paths"]) <= npm_security_base_names)
     _require(all(set(plan["paths"]) <= set(paths) for plan in (
         post, followup, segment_two, admission, evidence, campaign_miss, npm_disposition)))
     return data, owners, paths, new_file_highs, forecasts
@@ -816,11 +839,19 @@ def _issue358_stage4_local_preparation_consumption(budget, _head):
         ISSUE358_STAGE4_LOCAL_PREPARATION_GROSS_HIGH, False)
 
 
-def _issue359_stage4_local_preparation_consumption(budget, head):
+def _issue359_stage4_local_preparation_consumption(budget, _head):
     plan = budget["issue359_stage4_local_preparation"]
     return _one_successor_consumption(
-        plan, ISSUE359_STAGE4_LOCAL_PREPARATION_BASE_REVISION, head,
-        ISSUE359_STAGE4_LOCAL_PREPARATION_GROSS_HIGH, True)
+        plan, ISSUE359_STAGE4_LOCAL_PREPARATION_BASE_REVISION,
+        ISSUE359_STAGE4_LOCAL_PREPARATION_TERMINAL_REVISION,
+        ISSUE359_STAGE4_LOCAL_PREPARATION_GROSS_HIGH, False)
+
+
+def _npm_security_remediation_consumption(budget, head):
+    plan = budget["npm_security_remediation"]
+    return _one_successor_consumption(
+        plan, NPM_SECURITY_REMEDIATION_BASE_REVISION, head,
+        NPM_SECURITY_REMEDIATION_GROSS_HIGH, True)
 
 
 def _product_test_consumption_segments(budget):
@@ -998,6 +1029,8 @@ def measure():
         remediation_budget, head)
     issue359_lines, issue359_bytes = _issue359_stage4_local_preparation_consumption(
         remediation_budget, head)
+    npm_security_lines, npm_security_bytes = _npm_security_remediation_consumption(
+        remediation_budget, head)
     remediation_bytes = _gross_bytes(remediation_budget)
     remediation_gross = sum(remediation.values())
     remediation_highs = {entry["name"]: entry["gross_line_high"] for entry in remediation_budget["owners"]}
@@ -1130,6 +1163,14 @@ def measure():
             "bytes": ISSUE359_STAGE4_LOCAL_PREPARATION_GROSS_HIGH[1]},
         "issue359_stage4_local_preparation_new_file_high": ISSUE359_STAGE4_LOCAL_PREPARATION_NEW_FILE_HIGH,
         "issue359_stage4_local_preparation_readiness_regenerations": ISSUE359_STAGE4_LOCAL_PREPARATION_READINESS_REGENERATIONS,
+        "npm_security_remediation_base_revision": NPM_SECURITY_REMEDIATION_BASE_REVISION,
+        "npm_security_remediation_gross_added_lines": npm_security_lines,
+        "npm_security_remediation_gross_added_line_bytes": npm_security_bytes,
+        "npm_security_remediation_gross_high": {
+            "lines": NPM_SECURITY_REMEDIATION_GROSS_HIGH[0],
+            "bytes": NPM_SECURITY_REMEDIATION_GROSS_HIGH[1]},
+        "npm_security_remediation_new_file_high": NPM_SECURITY_REMEDIATION_NEW_FILE_HIGH,
+        "npm_security_remediation_readiness_regenerations": NPM_SECURITY_REMEDIATION_READINESS_REGENERATIONS,
         "remediation_base_revision": REMEDIATION_BASE_REVISION,
         "remediation_workstream_gross_added_lines": remediation,
         "remediation_workstream_highs": remediation_highs,
