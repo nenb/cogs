@@ -80,7 +80,7 @@ const pemCert = /^-----BEGIN CERTIFICATE-----\n[\s\S]+\n-----END CERTIFICATE----
 const egressHandle = "users/alice/integrations/stage3-localhost";
 const configPath = fileURLToPath(new URL("../openbao-model-auth/config.hcl", import.meta.url));
 const expectedConfig =
-  'disable_mlock = true\napi_addr = "http://127.0.0.1:8200"\n\nstorage "file" {\n  path = "/openbao/file"\n}\n\nlistener "tcp" {\n  address = "0.0.0.0:8200"\n  tls_disable = 1\n}\n';
+  'disable_mlock = true\napi_addr = "http://127.0.0.1:8200"\n\nstorage "pebbledb" {\n  path = "/openbao/file"\n}\n\nlistener "tcp" {\n  address = "0.0.0.0:8200"\n  tls_disable = 1\n}\n';
 
 type DockerResult = {
   status: number;
