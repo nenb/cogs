@@ -37,7 +37,7 @@ test("descriptor loader simulated open failures are generic", async () => {
     },
     loadFileDescriptorSetFromBuffer: protoLoader.loadFileDescriptorSetFromBuffer,
     loadPackageDefinition: grpc.loadPackageDefinition,
-    packageVersion: () => "1.14.4",
+    packageVersion: () => "1.14.5",
   });
   await assert.rejects(loader, (error) => {
     assert.equal(error instanceof ExtAuthzDescriptorError, true);
@@ -52,7 +52,7 @@ test("descriptor loader simulated open failures are generic", async () => {
       },
       loadFileDescriptorSetFromBuffer: protoLoader.loadFileDescriptorSetFromBuffer,
       loadPackageDefinition: grpc.loadPackageDefinition,
-      packageVersion: () => "1.14.4",
+      packageVersion: () => "1.14.5",
     }),
     (error) => {
       assert.equal(error instanceof ExtAuthzDescriptorError, true);
@@ -106,7 +106,7 @@ test("descriptor loader coalesces singleton success and records exact bounds/opt
           },
         },
       }) as unknown as grpc.GrpcObject,
-    packageVersion: (specifier) => (specifier.includes("proto-loader") ? "0.8.1" : "1.14.4"),
+    packageVersion: (specifier) => (specifier.includes("proto-loader") ? "0.8.1" : "1.14.5"),
   });
   const first = loader();
   const second = loader();
@@ -119,7 +119,7 @@ test("descriptor loader coalesces singleton success and records exact bounds/opt
     [
       {
         exactSize: 11_823,
-        sha256: "a55f0670e871111d688fe41bf9d14325151cbc1844dcd773b6488e1ef5d5b500",
+        sha256: "b719ad676bf3cc717eff3d5fa09eedb484d7181f2ea6660e5991778b5e84e3aa",
       },
       {
         exactSize: 44_227,
@@ -162,7 +162,7 @@ test("descriptor loader rejects malformed manifest, wrong descriptor, and bad se
       readTrustedRegularFile: async (path) => (path.endsWith("manifest.json") ? Buffer.from("{}\n") : descriptor),
       loadFileDescriptorSetFromBuffer: protoLoader.loadFileDescriptorSetFromBuffer,
       loadPackageDefinition: grpc.loadPackageDefinition,
-      packageVersion: () => "1.14.4",
+      packageVersion: () => "1.14.5",
     }),
     ExtAuthzDescriptorError,
   );
@@ -171,7 +171,7 @@ test("descriptor loader rejects malformed manifest, wrong descriptor, and bad se
       readTrustedRegularFile: async (path) => (path.endsWith("manifest.json") ? manifest : Buffer.from("bad")),
       loadFileDescriptorSetFromBuffer: protoLoader.loadFileDescriptorSetFromBuffer,
       loadPackageDefinition: grpc.loadPackageDefinition,
-      packageVersion: (specifier) => (specifier.includes("proto-loader") ? "0.8.1" : "1.14.4"),
+      packageVersion: (specifier) => (specifier.includes("proto-loader") ? "0.8.1" : "1.14.5"),
     }),
     ExtAuthzDescriptorError,
   );
@@ -183,7 +183,7 @@ test("descriptor loader rejects malformed manifest, wrong descriptor, and bad se
         ({
           envoy: { service: { auth: { v3: { Authorization: { service: { Check: { path: "/bad" } } } } } } },
         }) as unknown as grpc.GrpcObject,
-      packageVersion: (specifier) => (specifier.includes("proto-loader") ? "0.8.1" : "1.14.4"),
+      packageVersion: (specifier) => (specifier.includes("proto-loader") ? "0.8.1" : "1.14.5"),
     }),
     ExtAuthzDescriptorError,
   );

@@ -59,7 +59,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "e8f20d3ab107010615aac8f83a3bae1a44f64bc2abb06573b342d7b6668eb9b5";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "40e59412330272cad07c502274bce516ccd60541e3b7edbbe097c346ee734afd";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
@@ -238,11 +238,11 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
     },
     static_candidate_freeze: {
       envoy: {
-        version: "1.38.3",
-        index_digest: "sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
-        linux_amd64_manifest_digest: "sha256:5f3e2f88bbeabefcdbc871f976529334aba158a3ffb17be021904f9d4c81f1c8",
-        binary_sha256: "affffb8d08a14fdc375b1f7dd8d0f3004eacdf51ce07f5636d7e168a01c6b373",
-        source_commit: "0ebfcfe5b0484b89ca85b761da9e05ce75dbda8d",
+        version: "1.38.4",
+        index_digest: "sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7",
+        linux_amd64_manifest_digest: "sha256:390d046622816ec719fbe012e2020641f3e661ccdb6fa174221c186e9082916a",
+        binary_sha256: "c994c452de131f59c9ec9f4a2fffcc65039f250a38b6279870bb95dac21db0fa",
+        source_commit: "ef2d997c1b022cf8b849a1d3521fbf234d79ca26",
         publisher_signature_verified: false,
         state: "exact-static-digest-signature-unavailable-not-runtime-observed",
       },
@@ -269,7 +269,7 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
         name: "cogs",
         version: "0.0.1",
         delivery: "notes-only-zero-submitted-manifests",
-        inventory_sha256: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
+        inventory_sha256: "1973af955fdb9a57490ef18ab5d06a9618a0e3db968916c1e19ea73700e85c0d",
       },
       schemas: {
         scope: "all-stage4-stage5-and-production-runtime-image-contract-schemas",

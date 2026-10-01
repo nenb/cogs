@@ -260,7 +260,7 @@ test("real curl verifies current CA through authenticated relay; unrelated/stale
 const sourceRevision = "a".repeat(40);
 const fakeBin = Buffer.alloc(1024 * 1024, 1);
 const fakeBinHash = `sha256:${createHash("sha256").update(fakeBin).digest("hex")}`;
-const envoyVersion = (path: string) => `\n${path}  version: ${"a".repeat(40)}/1.38.3/Clean/RELEASE/BoringSSL\n\n`;
+const envoyVersion = (path: string) => `\n${path}  version: ${"a".repeat(40)}/1.38.4/Clean/RELEASE/BoringSSL\n\n`;
 function launch(stateId: string, port = 31337) {
   const integ: Record<string, unknown> = {
     version: "cogs.integration/v1alpha1",
@@ -437,7 +437,10 @@ test("prepareEnvoyBinary extracts exact pinned image into owned runtime dir and 
         const args = raw.slice(1);
         if (args[0] === "ps") return { status: 0, stdout: "" };
         if (args[0] === "image")
-          return { status: 0, stdout: `${JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")])}\n` };
+          return {
+            status: 0,
+            stdout: `${JSON.stringify([ENVOY_IMAGE.replace("docker.io/envoyproxy/envoy:distroless-v1.38.4@", "envoyproxy/envoy@")])}\n`,
+          };
         if (args[0] === "create") return { status: 0, stdout: `${id}\n` };
         if (args[0] === "cp") {
           await writeFile(String(args[2]), Buffer.alloc(1024 * 1024, 1));
@@ -506,7 +509,13 @@ test("extraction failures retain durable intent/exact custody rather than erasin
             stdout: fault === "absence-present" || container ? `${id}\n` : "",
           };
         }
-        if (command === "image") return { status: 0, stdout: JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")]) };
+        if (command === "image")
+          return {
+            status: 0,
+            stdout: JSON.stringify([
+              ENVOY_IMAGE.replace("docker.io/envoyproxy/envoy:distroless-v1.38.4@", "envoyproxy/envoy@"),
+            ]),
+          };
         if (command === "create") {
           // Observe the fsynced intent before the actual acquisition boundary.
           const intent = JSON.parse((await readFile(custody, "utf8")).trim());
@@ -638,7 +647,13 @@ test("cancelled extraction joins late create/inspect/removal work and never rele
           if (failLate) throw new Error("late observation failed");
         }
         if (command === "ps") return { status: 0, stdout: container ? `${id}\n` : "" };
-        if (command === "image") return { status: 0, stdout: JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")]) };
+        if (command === "image")
+          return {
+            status: 0,
+            stdout: JSON.stringify([
+              ENVOY_IMAGE.replace("docker.io/envoyproxy/envoy:distroless-v1.38.4@", "envoyproxy/envoy@"),
+            ]),
+          };
         if (command === "create") {
           container = true;
           return { status: 0, stdout: `${id}\n` };
@@ -1635,7 +1650,10 @@ test("prepare envoy cooperative deadline after extraction cleans owned runtime",
         const args = raw.slice(1);
         if (args[0] === "ps") return { status: 0, stdout: "" };
         if (args[0] === "image")
-          return { status: 0, stdout: `${JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")])}\n` };
+          return {
+            status: 0,
+            stdout: `${JSON.stringify([ENVOY_IMAGE.replace("docker.io/envoyproxy/envoy:distroless-v1.38.4@", "envoyproxy/envoy@")])}\n`,
+          };
         if (args[0] === "create") return { status: 0, stdout: `${id}\n` };
         if (args[0] === "cp") {
           await writeFile(String(args[2]), fakeBin);
@@ -1824,7 +1842,10 @@ test("envoy runVersion and relay startup receive cooperative cancellation", asyn
               const args = raw.slice(1);
               if (args[0] === "ps") return { status: 0, stdout: "" };
               if (args[0] === "image")
-                return { status: 0, stdout: `${JSON.stringify([ENVOY_IMAGE.replace(":v1.38.3@", "@")])}\n` };
+                return {
+                  status: 0,
+                  stdout: `${JSON.stringify([ENVOY_IMAGE.replace("docker.io/envoyproxy/envoy:distroless-v1.38.4@", "envoyproxy/envoy@")])}\n`,
+                };
               if (args[0] === "create") return { status: 0, stdout: `${"d".repeat(64)}\n` };
               if (args[0] === "cp") {
                 await writeFile(String(args[2]), fakeBin);

@@ -53,7 +53,7 @@ OpenBao is **not** an Envoy SDS provider for this scope. This ADR does not appro
 
 Issue #66 will use a bounded hybrid descriptor-set strategy for Envoy v3 `ext_authz`:
 
-- Promote the existing exact `@grpc/grpc-js@1.14.4` package to production dependency classification.
+- Promote exact `@grpc/grpc-js@1.14.5` to production dependency classification (raised from 1.14.4 by the 2026-09-30 security amendment below).
 - Add/promote the exact `@grpc/proto-loader@0.8.1` package to production dependency classification.
 - Rely only on versions and transitive dependencies pinned by the repository lockfile; any version change, new package, or dependency substitution requires a reviewed amendment or superseding ADR.
 - Use official `protoc 33.1` as build/verification tooling only, aligned with Envoy v1.38.3's BCR `protobuf@33.1` pin. It is not a production npm dependency and is not present at runtime.
@@ -120,7 +120,17 @@ This ADR does not approve:
 - application gRPC, SigV4/HMAC signing, upstream mTLS, database protocols, SSH egress, WebSockets, arbitrary TCP/TLS, nested CONNECT, UDP, QUIC/HTTP/3, guest DNS/DoH, or native Node/npm support beyond separately measured launcher/proxy-agent decisions;
 - subscription OAuth enablement or any worker-visible OAuth refresh-token path;
 - session export/history, skills, Git checkpoints, or broader policy/observability work except the minimum egress metadata and completion surfaces needed for issue #66;
-- adding production dependencies beyond exact `@grpc/grpc-js@1.14.4` and exact `@grpc/proto-loader@0.8.1`, changing those versions, changing the vendored proto source set or descriptor artifact contract, adding runtime text-proto loading, or adding generated binding artifacts under `src/` without a reviewed amendment or superseding ADR.
+- adding production dependencies beyond exact `@grpc/grpc-js@1.14.5` and exact `@grpc/proto-loader@0.8.1`, changing those versions, changing the vendored proto source set or descriptor artifact contract, adding runtime text-proto loading, or adding generated binding artifacts under `src/` without a reviewed amendment or superseding ADR.
+
+## 2026-09-30 security amendment
+
+The release-image prerequisite review upgrades only `@grpc/grpc-js` from exact 1.14.4 to exact 1.14.5. The fixed patch release remediates `GHSA-m9gg-hp2v-232j` and `GHSA-f596-whhp-79r4`; npm reports both against 1.14.4 and neither against 1.14.5. The descriptor source set, descriptor bytes, loader method/options, service shape, `@grpc/proto-loader@0.8.1`, and all fail-closed behavior remain unchanged. Package, lock, manifest, production runtime check, regeneration check, and hostile tests bind 1.14.5 exactly. This amendment grants no cloud, campaign, production, or release authority by itself.
+
+## 2026-10-01 Envoy security amendment
+
+The release-image prerequisite review advances the selected runtime from Envoy 1.38.3 to vendor-fixed 1.38.4. Envoy 1.38.4 fixes the thirteen security advisories listed in the signed-off upstream release record, including the `ext_authz` findings `CVE-2026-73547` and `CVE-2026-50572`; retaining 1.38.3 is therefore rejected. The selected official distroless Linux/amd64 OCI index is `sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7`, its amd64 manifest is `sha256:390d046622816ec719fbe012e2020641f3e661ccdb6fa174221c186e9082916a`, source commit is `ef2d997c1b022cf8b849a1d3521fbf234d79ca26`, and copied binary SHA-256 is `c994c452de131f59c9ec9f4a2fffcc65039f250a38b6279870bb95dac21db0fa`.
+
+All 1,242 regular files in the upstream `api/` tree are byte-identical between tags v1.38.3 and v1.38.4. The existing authenticated v1.38.3 descriptor source closure and descriptor bytes therefore remain unchanged and continue to represent the exact API consumed by the v1.38.4 runtime; no historical descriptor contract or evidence is rewritten. CI scans and inventories the exact selected upstream distroless digest with unfixed findings included, proves its Envoy bytes have the expected hash, and proves those bytes equal the binary copied into the separately scanned `base-nossl` worker. The selected proxy contains no Ubuntu OpenSSL packages and receives no local image mutation. No OpenSSL or Envoy exception is accepted. This amendment grants no cloud, campaign, production, or release authority by itself.
 
 ## Consequences
 

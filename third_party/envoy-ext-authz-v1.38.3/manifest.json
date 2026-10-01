@@ -47,7 +47,7 @@
     "linux_x86_64_sha256": "f3340e28a83d1c637d8bafdeed92b9f7db6a384c26bca880a6e5217b40a4328b"
   },
   "loader": {
-    "grpc_js_version": "1.14.4",
+    "grpc_js_version": "1.14.5",
     "proto_loader_version": "0.8.1",
     "method": "loadFileDescriptorSetFromBuffer",
     "options": {

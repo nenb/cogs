@@ -129,7 +129,7 @@ test("static candidate freeze binds current dependencies and cannot promote reti
   assert.equal(freeze.envoy.publisher_signature_verified, false);
   assert.equal(
     freeze.envoy.linux_amd64_manifest_digest,
-    "sha256:5f3e2f88bbeabefcdbc871f976529334aba158a3ffb17be021904f9d4c81f1c8",
+    "sha256:390d046622816ec719fbe012e2020641f3e661ccdb6fa174221c186e9082916a",
   );
   assert.equal(freeze.openbao.publisher_signature_verified, true);
   assert.equal(
@@ -144,7 +144,7 @@ test("static candidate freeze binds current dependencies and cannot promote reti
     freeze.skills.shared_oci_manifest_digest,
     "sha256:726176e9bdb7524fbe935a0235fcbe5d509bf44592b9571421fc9fd8551ff1c1",
   );
-  assert.equal(freeze.chart.inventory_sha256, "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617");
+  assert.equal(freeze.chart.inventory_sha256, "1973af955fdb9a57490ef18ab5d06a9618a0e3db968916c1e19ea73700e85c0d");
   assert.equal(freeze.schemas.scope, "all-stage4-stage5-and-production-runtime-image-contract-schemas");
   assert.equal(
     freeze.schemas.inventory_sha256,

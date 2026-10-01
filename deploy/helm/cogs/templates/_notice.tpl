@@ -82,7 +82,7 @@ dev.cogs/production-ready: "false"
 {{- if or (not (kindIs "string" $v.images.worker)) (not (regexMatch $digestPattern $v.images.worker)) -}}
 {{- fail "stage4Preparation.images.worker must be digest pinned" -}}
 {{- end -}}
-{{- if ne $v.images.proxy "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb" -}}
+{{- if ne $v.images.proxy "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7" -}}
 {{- fail "stage4Preparation.images.proxy must equal the ADR 0011 Envoy pin" -}}
 {{- end -}}
 {{- if or (not (kindIs "string" $v.images.sandbox)) (not (regexMatch $digestPattern $v.images.sandbox)) -}}

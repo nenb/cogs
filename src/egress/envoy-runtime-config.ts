@@ -42,7 +42,7 @@ type Header = Readonly<{ name: string; value: string }>;
 /** Renderer-owned v1, not a tuning API. Watermarks are not hard RSS/body-byte limits.
  * Requires one Envoy worker and an externally enforced shared worker/child 2 GiB cgroup.
  * Fixed-heap pressure only sheds; it neither bounds RSS nor establishes/checks the cgroup.
- * No cgroup monitor: v1.38.3 reads fixed mount-root paths, not process membership.
+ * No cgroup monitor: v1.38.4 reads fixed mount-root paths, not process membership.
  */
 export const cogsEnvoyBoundedV1 = deepFreeze({
   name: "cogs-egress-bounded-v1",
@@ -898,7 +898,7 @@ function credentialHeader(auth: CopiedAuth, credential: CogsEnvoyCredentialValue
     return Object.freeze({ name: "authorization", value: `Basic ${basicSecret(credential.base64)}` });
   throw new Error("wrong credential");
 }
-// v1.38.3 defaults this guard OFF. Legacy metadata translation runs before %%
+// v1.38.4 defaults this guard OFF. Legacy metadata translation runs before %%
 // decoding and would rewrite even escaped DYNAMIC_METADATA/PER_REQUEST_STATE text.
 export const cogsEnvoyLiteralHeaderRuntime = deepFreeze({
   layers: [
@@ -908,7 +908,7 @@ export const cogsEnvoyLiteralHeaderRuntime = deepFreeze({
     },
   ],
 });
-/** v1.38.3 (0ebfcfe5): HeaderParser consumes value(), not raw_value().
+/** v1.38.4 (ef2d997c): HeaderParser consumes value(), not raw_value().
  * SubstitutionFormatParser::parse consumes %% as one literal %, before commands.
  * Encode the complete prefix+value exactly once; never interpolate secret bytes.
  */

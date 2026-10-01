@@ -657,7 +657,7 @@
       ],
       "properties": {
         "version": {
-          "const": "1.38.3"
+          "const": "1.38.4"
         },
         "index_digest": {
           "$ref": "#/$defs/digest"

@@ -210,6 +210,8 @@ function offlineReadinessPackageSample(): JsonObject {
 }
 
 function legacyOfflineReadinessPackage(value: Record<string, any>): void {
+  value.pins.images.proxy.reference =
+    "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb";
   delete value.stage2_issue42;
   delete value.issue_359_scope;
   delete value.claims.candidate_artifact_closure_complete;
@@ -492,6 +494,15 @@ function authenticatedRuntimeArtifactSample(): JsonObject {
 }
 
 function legacyAuthenticatedContainerd(value: Record<string, any>): void {
+  value.static_candidate_freeze.envoy = {
+    binary_sha256: "affffb8d08a14fdc375b1f7dd8d0f3004eacdf51ce07f5636d7e168a01c6b373",
+    index_digest: "sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
+    linux_amd64_manifest_digest: "sha256:5f3e2f88bbeabefcdbc871f976529334aba158a3ffb17be021904f9d4c81f1c8",
+    publisher_signature_verified: false,
+    source_commit: "0ebfcfe5b0484b89ca85b761da9e05ce75dbda8d",
+    state: "exact-static-digest-signature-unavailable-not-runtime-observed",
+    version: "1.38.3",
+  };
   value.containerd = value.historical_stage2_containerd;
   delete value.containerd.selected_runtime;
   delete value.containerd.interpretation;

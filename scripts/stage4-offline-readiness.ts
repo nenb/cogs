@@ -332,26 +332,27 @@ export const STAGE2_ISSUE42_CLOSURE_RECORD = Object.freeze({
 
 const EXPECTED_IMAGE_REFERENCES = Object.freeze({
   worker: RELEASE_IMAGE_REFERENCES.worker,
-  proxy: "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb",
+  proxy:
+    "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7",
   sandbox: RELEASE_IMAGE_REFERENCES.sandbox,
 });
 
 /* stage4-readiness-anchor-start */
 export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
-  chartInventory: "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617",
-  imageLock: "665646976cca0da15f07af60479cccaf1152919c56a508924adb3e28144fe7a8",
+  chartInventory: "1973af955fdb9a57490ef18ab5d06a9618a0e3db968916c1e19ea73700e85c0d",
+  imageLock: "f9472e001b6ca0e74e3147bd6335932432bf3eb7769e25567af53c1d9c39976a",
   releaseImageAssertion: "ffbfd017d6a2c4512beb5b9452a6cbc69ebb20a90c97716f2f35003a78154332",
   releaseImageReview: "37e61f58921444fc839db7ed4ef332182e6b95c03153fc42b5b793be141317b4",
   nicContract: "9b61b547884b6baa081974242171885f92c7d756224bc181fe6e78c965c1fa9a",
-  render: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
-  repeatedRender: "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0",
+  render: "ae67d476354720b774b7ec6f70d38e7e9d19f653143dec62f294f68cbbdffbd6",
+  repeatedRender: "ae67d476354720b774b7ec6f70d38e7e9d19f653143dec62f294f68cbbdffbd6",
   runtimePins: "5af6274efe3f97887af4e255c5a4fb693bef82b659ec26021e307d0443b3aed4",
-  values: "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a",
-  authenticatedRuntimeArtifacts: "b02f8939deed156c9afe41c9611f52486f9250d681bd6521b23ce83a659856a0",
-  localValidationNormalized: "037cdacc54f22537f0c365774eb55eae7a4f7b841417271c82277ffc8ab933d3",
-  renderReceipt: "491c7963c00873ee6429cb3917c2ae1316e83b5905257b1abc8c60a4464541cf",
-  schemaInventory: "e8f20d3ab107010615aac8f83a3bae1a44f64bc2abb06573b342d7b6668eb9b5",
-  sourceInventoryNormalized: "360d7752edfc323bb4802355f3363a6835db5f80d5c81eba18f6937bd7b72f67",
+  values: "0852c734e970cd583ca925521ec45c6c0775e80ef72836394db7ca732ee20883",
+  authenticatedRuntimeArtifacts: "0b0b816be9c46f8d2c20a9efddf81d44054b359fc9fe18789eb3dd8ccf95cab1",
+  localValidationNormalized: "77ca0ecc54e99daedcc963a0af1d1085f0ed95c9f3809023d1bc6c7de1c740a2",
+  renderReceipt: "2530ea902dc7064d16740f6d55b50bbe00407803cfa972bde2b7a3783af15c2d",
+  schemaInventory: "40e59412330272cad07c502274bce516ccd60541e3b7edbbe097c346ee734afd",
+  sourceInventoryNormalized: "05c07276b738d87a14986e385e92eaf16a71542d9aa365fe64d2671a41df4bc7",
 });
 /* stage4-readiness-anchor-end */
 

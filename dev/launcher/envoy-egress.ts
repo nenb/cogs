@@ -51,8 +51,9 @@ import { commandDescriptor, runCommand } from "./runner.ts";
 import type { LauncherState } from "./state.ts";
 import { readManifest } from "./state.ts";
 
-const ENVOY_IMAGE = "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb";
-const ENVOY_IMAGE_DIGEST = "sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb";
+const ENVOY_IMAGE =
+  "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7";
+const ENVOY_IMAGE_DIGEST = "sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7";
 const ENVOY_LABEL_KEY = "cogs.dev.launcher.envoy";
 const EGRESS_TMPFS_ROOT = "/run/cogs/egress";
 const USER_ID = "alice";
@@ -294,7 +295,7 @@ export async function prepareEnvoyBinary(
       const versionOutput = await (capturedSeams.runVersion ?? runEnvoyVersion)(finalBinaryPath, prepareOptions);
       localWorkUncertain = false;
       const versionMatch = versionOutput.match(
-        /^\n(.+\/envoy) {2}version: [a-f0-9]{40}\/1\.38\.3\/Clean\/RELEASE\/BoringSSL\n\n$/u,
+        /^\n(.+\/envoy) {2}version: [a-f0-9]{40}\/1\.38\.4\/Clean\/RELEASE\/BoringSSL\n\n$/u,
       );
       if (versionMatch?.[1] !== finalBinaryPath) fail();
 

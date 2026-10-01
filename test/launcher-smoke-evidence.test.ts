@@ -458,7 +458,11 @@ test("launcher preparation excludes retired OpenBao and remains outside active w
   assert.deepEqual(LAUNCHER_IMAGE_ENV, { HOME: "/tmp" });
   assert.deepEqual(LAUNCHER_REQUIRED_IMAGES, [ENVOY_IMAGE]);
   assert.ok(Object.isFrozen(LAUNCHER_REQUIRED_IMAGES));
-  const inspect = JSON.stringify([{ RepoDigests: [ENVOY_IMAGE.replace(":v1.38.3@", "@")] }]);
+  const inspect = JSON.stringify([
+    {
+      RepoDigests: [ENVOY_IMAGE.replace("docker.io/envoyproxy/envoy:distroless-v1.38.4@", "envoyproxy/envoy@")],
+    },
+  ]);
   assert.throws(() => verifyImageInspect(ENVOY_IMAGE, JSON.stringify([{ RepoDigests: [] }])));
   verifyImageInspect(ENVOY_IMAGE, inspect);
   const calls: unknown[][] = [];

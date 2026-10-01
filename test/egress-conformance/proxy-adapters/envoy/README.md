@@ -4,8 +4,8 @@ This directory contains the Stage 1 Envoy feasibility adapter. It is test infras
 
 ## Candidate identity
 
-- Envoy `1.38.3`
-- OCI index `envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb`
+- Envoy `1.38.4`
+- OCI index `docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7`
 
 The adapter records both values, validates the image-reported version, and runs the image by digest. CI scans and inventories the same digest.
 

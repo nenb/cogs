@@ -16,7 +16,8 @@ const chart = resolve(root, "deploy/helm/cogs");
 const fixture = resolve(root, "test/fixtures/helm/stage4-notes-source-shapes-valid.yaml");
 const release = "stage4";
 const namespace = "static-preparation";
-const envoyPin = "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb";
+const envoyPin =
+  "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7";
 const retiredDiscoveryCapability = "cogs.dev/static-preparation-render-only/v1";
 const notesBegin = "# COGS NOTES-ONLY STATIC SOURCE SHAPES BEGIN:";
 const notesEnd = "# COGS NOTES-ONLY STATIC SOURCE SHAPES END:";
@@ -786,7 +787,8 @@ test("enabled values fail closed for missing, unsafe, or extensible inputs", () 
     {
       name: "wrong Envoy pin",
       key: "proxy",
-      mutate: (v) => (v.stage4Preparation.images.proxy = `envoyproxy/envoy:v1.38.3@sha256:${"0".repeat(64)}`),
+      mutate: (v) =>
+        (v.stage4Preparation.images.proxy = `docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:${"0".repeat(64)}`),
     },
     {
       name: "workspace class",

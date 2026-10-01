@@ -55,9 +55,9 @@ data:
   payload: {{ include "cogs.stage4.notes.payload" . | b64enc | quote }}
 `;
 const RECEIPT_VERSION = "cogs.stage4-offline-render-preparation-receipt/v3";
-const EXPECTED_CHART_INVENTORY_SHA256 = "a3801a32d9f1a59864bd027aebf44554b087911c7d4a4486e7bcda697ff68617";
-const EXPECTED_VALUES_SHA256 = "c689236c57e1eab668f8bf504e148245cc23a652b529d1aaab20ef8d4e0fdc7a";
-const EXPECTED_RENDER_SHA256 = "399d9b86a43777a57542c70c93f6ef595224e455d6969d2bfbd154e6d05d8fa0";
+const EXPECTED_CHART_INVENTORY_SHA256 = "1973af955fdb9a57490ef18ab5d06a9618a0e3db968916c1e19ea73700e85c0d";
+const EXPECTED_VALUES_SHA256 = "0852c734e970cd583ca925521ec45c6c0775e80ef72836394db7ca732ee20883";
+const EXPECTED_RENDER_SHA256 = "ae67d476354720b774b7ec6f70d38e7e9d19f653143dec62f294f68cbbdffbd6";
 const RELEASE = "stage4";
 const NAMESPACE = "static-preparation";
 const SHA256 = /^[0-9a-f]{64}$/u;

@@ -19,9 +19,10 @@ const buildConfig = JSON.parse(readFileSync(join(root, "tsconfig.build.json"), "
 
 const nodeImage =
   "docker.io/library/node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e";
-const envoyImage = "envoyproxy/envoy:v1.38.3@sha256:5f7c43e1147412fdb3af578c651c67478a3df818eae89d2261e707e06c209cdb";
+const envoyImage =
+  "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7";
 const finalImage =
-  "gcr.io/distroless/nodejs22-debian13:nonroot@sha256:4e4fb0ce55fd73901600796ef079a9490369d2515d7da31633a91608c82ca13b";
+  "gcr.io/distroless/base-nossl-debian13:nonroot@sha256:8c563c1fb5e120606f0d85733049775faed6192e2bd2223ef283a5393eec22b9";
 
 function filesBelow(path: string): string[] {
   const output: string[] = [];
@@ -59,11 +60,16 @@ test("worker uses exact pinned linux/amd64 Node, Envoy, and compatible distroles
     new RegExp(`^FROM --platform=linux/amd64 ${finalImage.replaceAll("/", "\\/")} AS worker$`, "mu"),
   );
   assert.match(dockerfile, /COPY --from=node-runtime[^\n]*\/usr\/local\/bin\/node \/nodejs\/bin\/node/u);
+  assert.match(
+    dockerfile,
+    /COPY --from=node-runtime[^\n]*libstdc\+\+\.so\.6[^\n]*libstdc\+\+\.so\.6\.0\.30[^\n]*libgcc_s\.so\.1/u,
+  );
   assert.match(dockerfile, /COPY --from=envoy-runtime[^\n]*\/usr\/local\/bin\/envoy \/usr\/local\/bin\/envoy/u);
   assert.match(dockerfile, /process\.version !== 'v22\.22\.2'/u);
-  assert.match(dockerfile, /affffb8d08a14fdc375b1f7dd8d0f3004eacdf51ce07f5636d7e168a01c6b373/u);
+  assert.match(dockerfile, /c994c452de131f59c9ec9f4a2fffcc65039f250a38b6279870bb95dac21db0fa/u);
   assert.match(dockerfile, /spawnSync\('\/usr\/local\/bin\/envoy', \['--version'\]/u);
-  assert.ok(dockerfile.includes("1\\\\.38\\\\.3"));
+  assert.ok(dockerfile.includes("1\\\\.38\\\\.4"));
+  assert.doesNotMatch(dockerfile, /snapshot\.ubuntu\.com|apt-get|\blibssl3=|\bopenssl=/u);
 });
 
 test("worker final stage is nonroot, read-only-root compatible, and starts the fixed emitted entry", () => {
