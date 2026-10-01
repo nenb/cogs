@@ -1249,7 +1249,7 @@
     ]
   },
   "stage4_release_image_refresh": {
-    "base_revision": "6eaa72063e8d1a1706281aba5ced57b5f5e2ecd7",
+    "base_revision": "d44be6be24acc07ffcac19d889fbc10015d23ea8",
     "gross_lines": 4000,
     "gross_bytes": 550000,
     "new_file_high": 0,
@@ -1257,6 +1257,7 @@
     "paths": [
       ".github/workflows/ci.yml",
       ".github/workflows/release-images.yml",
+      ".gitleaksignore",
       "config/external-review-remediation-budget-v1.json",
       "config/release-image-set-pins-v1.json",
       "deploy/helm/cogs/templates/_notice.tpl",
