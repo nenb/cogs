@@ -230,7 +230,7 @@ function legacyOfflineReadinessPackage(value: Record<string, any>): void {
           ? "PROPOSED_ACCOUNT_BINDING_ABSENT"
           : blocker,
     );
-  value.blockers.unshift("ISSUE_42_OPEN");
+  value.blockers.unshift("ISSUE_42_OPEN", "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT");
   value.campaign_proposal.access = "proposed-ssm-only-no-public-ssh-unexecuted";
   delete value.campaign_proposal.managed_addons;
   delete value.campaign_proposal.state_custody;
@@ -463,7 +463,6 @@ function offlineReadinessVerdictSample(): JsonObject {
   const value = offlineReadinessVerdictV4Sample() as Record<string, any>;
   value.version = "cogs.stage4-offline-readiness-verdict/v5";
   value.blockers = [
-    "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
     "RELEASE_IMAGE_SET_ABSENT",
     "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
     "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
@@ -503,6 +502,18 @@ function legacyAuthenticatedContainerd(value: Record<string, any>): void {
     state: "exact-static-digest-signature-unavailable-not-runtime-observed",
     version: "1.38.3",
   };
+  value.static_candidate_freeze.openbao = {
+    version: "2.6.1",
+    index_digest: "sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0",
+    linux_amd64_manifest_digest: "sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0",
+    binary_sha256: "736b8ecf354fda6b2af62e4ae064f12fe6c52d7db8425b9c6de22f286a5485ec",
+    certificate_identity: "https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.6.1",
+    certificate_oidc_issuer: "https://token.actions.githubusercontent.com",
+    publisher_signature_verified: true,
+    retired_at: "2026-08-14T20:14:04Z",
+    retirement_reason: "fixed-high-go-stdlib-no-fixed-upstream-image",
+    state: "exact-static-signed-retired-fixed-high-findings",
+  };
   value.containerd = value.historical_stage2_containerd;
   delete value.containerd.selected_runtime;
   delete value.containerd.interpretation;
@@ -515,6 +526,9 @@ function legacyAuthenticatedContainerd(value: Record<string, any>): void {
     .map((blocker: string) =>
       blocker === "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT" ? "OPENBAO_FIXED_RELEASE_IMAGE_ABSENT" : blocker,
     );
+  if (!value.blockers.includes("OPENBAO_FIXED_RELEASE_IMAGE_ABSENT")) {
+    value.blockers.unshift("OPENBAO_FIXED_RELEASE_IMAGE_ABSENT");
+  }
 }
 
 function authenticatedRuntimeArtifactV3Sample(): JsonObject {

@@ -286,7 +286,7 @@ test("launcher evidence helpers reject non-tmpfs and constrain report filename",
   assert.throws(() => validateReportPath("insecure-container", "/tmp/launcher-insecure-container.json"));
 });
 
-test("supported legacy and retired OpenBao entries refuse before target effects, including failure paths", async () => {
+test("disabled legacy launcher entries refuse before target effects, including failure paths", async () => {
   const dir = await mkdtemp(join(tmpdir(), "cogs-retired-smoke-"));
   try {
     const effects = join(dir, "effects");
@@ -352,17 +352,11 @@ test("supported legacy and retired OpenBao entries refuse before target effects,
         }),
       );
     const before = await snapshot();
-    for (const script of [
-      "dev/openbao-model-auth/ci-smoke.sh",
-      "test/egress-conformance/stage3-real-runtime/ci-smoke.sh",
-      "dev/insecure-sandbox/ci-smoke.sh",
-      "scripts/run-launcher-smoke-evidence.ts",
-    ]) {
-      const cli = script.endsWith(".ts"),
-        legacy = script.includes("insecure-sandbox") || cli;
+    for (const script of ["dev/insecure-sandbox/ci-smoke.sh", "scripts/run-launcher-smoke-evidence.ts"]) {
+      const cli = script.endsWith(".ts");
       const source = await readFile(script, "utf8");
       const gate = "legacy launcher/insecure execution is disabled by ADR0335";
-      if (legacy && !cli) {
+      if (!cli) {
         const prefix = `#!/usr/bin/env bash\n# Refusal is not cleanup or evidence; leave all uncertain legacy state untouched.\nprintf '%s\\n' '${gate}' >&2\nreturn 2 2>/dev/null || exit 2\n`;
         const check = (text: string) => assert(text.startsWith(prefix));
         check(source);
@@ -430,11 +424,9 @@ result.source=first+'\\n'+result.source;
               result.error === undefined || (result.error as NodeJS.ErrnoException).code === "EPIPE",
               result.error,
             );
-            if (legacy) assert.equal(result.stderr, mutated ? "FORBIDDEN EFFECT\n" : `${gate}\n`);
-            else assert.match(result.stderr, /OpenBao 2\.6\.1 is retired; no admitted replacement/u);
+            assert.equal(result.stderr, mutated ? "FORBIDDEN EFFECT\n" : `${gate}\n`);
             assert.deepEqual(await snapshot(), before, "refusal must precede command/report effects");
           }
-      if (!legacy) assert.ok(source.includes(OPENBAO_IMAGE), "retain historical pin bytes");
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -453,22 +445,24 @@ test("sensitive export cleanup treats post-acquisition removal as uncertain", as
   }
 });
 
-test("launcher preparation excludes retired OpenBao and remains outside active workflows", async (t) => {
+test("launcher preparation authenticates exact Envoy and admitted OpenBao pins", async (t) => {
   assert.equal(LAUNCHER_DOCKER, "/usr/bin/docker");
   assert.deepEqual(LAUNCHER_IMAGE_ENV, { HOME: "/tmp" });
-  assert.deepEqual(LAUNCHER_REQUIRED_IMAGES, [ENVOY_IMAGE]);
+  assert.deepEqual(LAUNCHER_REQUIRED_IMAGES, [ENVOY_IMAGE, OPENBAO_IMAGE]);
   assert.ok(Object.isFrozen(LAUNCHER_REQUIRED_IMAGES));
-  const inspect = JSON.stringify([
+  const envoyInspect = JSON.stringify([
     {
       RepoDigests: [ENVOY_IMAGE.replace("docker.io/envoyproxy/envoy:distroless-v1.38.4@", "envoyproxy/envoy@")],
     },
   ]);
+  const openBaoInspect = JSON.stringify([{ RepoDigests: [OPENBAO_IMAGE.replace(":2.7.0@", "@")] }]);
   assert.throws(() => verifyImageInspect(ENVOY_IMAGE, JSON.stringify([{ RepoDigests: [] }])));
-  verifyImageInspect(ENVOY_IMAGE, inspect);
+  verifyImageInspect(ENVOY_IMAGE, envoyInspect);
+  verifyImageInspect(OPENBAO_IMAGE, openBaoInspect);
   const calls: unknown[][] = [];
   const exec = t.mock.method(childProcess, "execFileSync", (...args: unknown[]) => {
     calls.push(args);
-    return inspect;
+    return JSON.stringify(args).includes(OPENBAO_IMAGE) ? openBaoInspect : envoyInspect;
   });
   syncBuiltinESMExports();
   try {
@@ -478,9 +472,10 @@ test("launcher preparation excludes retired OpenBao and remains outside active w
       [
         [LAUNCHER_DOCKER, ["pull", ENVOY_IMAGE]],
         [LAUNCHER_DOCKER, ["image", "inspect", ENVOY_IMAGE]],
+        [LAUNCHER_DOCKER, ["pull", OPENBAO_IMAGE]],
+        [LAUNCHER_DOCKER, ["image", "inspect", OPENBAO_IMAGE]],
       ],
     );
-    assert.ok(!JSON.stringify(calls).includes(OPENBAO_IMAGE));
   } finally {
     exec.mock.restore();
     syncBuiltinESMExports();

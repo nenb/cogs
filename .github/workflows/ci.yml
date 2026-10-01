@@ -28,7 +28,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.event_name == 'workflow_dispatch' && inputs.reviewed_sha || '' }}
           persist-credentials: false
-          # Binding line-budget tests need history through the accepted ADR baseline.
           fetch-depth: 0
 
       - name: Verify exact requested source
@@ -65,7 +64,6 @@ jobs:
         run: npm run typecheck
 
       - { name: Build production worker import closure, run: "npm run build" }
-
       - name: Unit, hostile-canary, fake-model, and JSONL tests
         env:
           PI_OFFLINE: "1"
@@ -527,6 +525,7 @@ jobs:
             INTEGRATION_UPLOAD="$INTEGRATION_UPLOAD" INTEGRATION_CLEANUP="$INTEGRATION_CLEANUP" \
             /usr/bin/python3 -I -B scripts/native-qualification/common.py --require-final-results
 
+  openbao-functional: { name: OpenBao 2.7.0 protected functional paths, needs: [native-qualification-eligibility], if: "${{ needs.native-qualification-eligibility.result == 'success' }}", runs-on: ubuntu-24.04, timeout-minutes: 20, steps: [{ name: Check out exact reviewed source, uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0, with: { ref: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}", persist-credentials: false } }, { uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e, with: { node-version-file: .nvmrc, cache: npm } }, { run: npm ci --ignore-scripts }, { name: Authenticate launcher inputs and execute functional-only OpenBao paths, env: { COGS_SOURCE_REVISION: "${{ needs.native-qualification-eligibility.outputs.reviewed_sha }}" }, run: "npx --no-install tsx scripts/prepare-launcher-images.ts\ndev/openbao-model-auth/ci-smoke.sh \"$RUNNER_TEMP/openbao-functional/model-auth\"\nCOGS_STAGE3_REAL_RUNTIME_PROFILE=insecure-container test/egress-conformance/stage3-real-runtime/ci-smoke.sh \"$RUNNER_TEMP/openbao-functional/stage3\"" }, { name: Upload functional-only reports, uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "openbao-functional-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/openbao-functional", if-no-files-found: error, retention-days: 30 } }] }
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-24.04
@@ -547,8 +546,6 @@ jobs:
     name: Images, vulnerabilities, and SBOMs
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    env:
-      ENVOY_IMAGE: "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -557,13 +554,11 @@ jobs:
 
       - { name: Build production worker release candidate, run: "docker build --platform linux/amd64 --pull=false --tag cogs-worker:ci --file images/worker/Dockerfile ." }
 
-      - run: test "$(docker image inspect --format '{{.Architecture}}' cogs-worker:ci)" = amd64 && test "$(docker run --rm --entrypoint /nodejs/bin/node cogs-worker:ci --version)" = v22.22.2 && docker run --rm --entrypoint /usr/local/bin/envoy cogs-worker:ci --version | grep -F '/1.38.4/' && docker run --rm --entrypoint /nodejs/bin/node cogs-worker:ci --input-type=module --eval "await import('/opt/cogs/dist/src/main.js')"
-
       - { name: Build production sandbox guest image, run: "docker build --pull=false --tag cogs-sandbox:ci --file images/sandbox/Dockerfile ." }
 
       - { name: Build insecure-container test driver, run: "docker build --pull=false --tag cogs-insecure-sandbox:ci --file dev/insecure-sandbox/Dockerfile ." }
 
-      - { name: Verify selected proxy bytes and materialize exact worker disposition, run: "source_id=$(docker create --platform linux/amd64 \"$ENVOY_IMAGE\") && worker_id=$(docker create cogs-worker:ci) && trap 'docker rm -f \"$source_id\" \"$worker_id\" >/dev/null 2>&1 || :' EXIT && docker cp \"$source_id:/usr/local/bin/envoy\" \"$RUNNER_TEMP/envoy-source\" && docker cp \"$worker_id:/usr/local/bin/envoy\" \"$RUNNER_TEMP/envoy-worker\" && test \"$(sha256sum \"$RUNNER_TEMP/envoy-source\" | cut -d' ' -f1)\" = c994c452de131f59c9ec9f4a2fffcc65039f250a38b6279870bb95dac21db0fa && cmp --silent \"$RUNNER_TEMP/envoy-source\" \"$RUNNER_TEMP/envoy-worker\" && docker rm \"$source_id\" \"$worker_id\" >/dev/null && trap - EXIT && now=$(date -u +%s) && test \"$now\" -ge \"$(date -u -d '2026-09-30T12:22:00.000Z' +%s)\" && test \"$now\" -lt \"$(date -u -d '2026-10-14T00:00:00.000Z' +%s)\" && umask 077 && jq -cn '{vulnerabilities:[{id:\"CVE-2026-102276\",paths:[\"opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json\"],statement:\"Exact Pi 0.86.0 nested brace-expansion 5.0.9 availability-risk disposition.\",expired_at:\"2026-10-14T00:00:00Z\"},{id:\"CVE-2026-102278\",paths:[\"opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json\"],statement:\"Exact Pi 0.86.0 nested brace-expansion 5.0.9 availability-risk disposition.\",expired_at:\"2026-10-14T00:00:00Z\"}]}' > .cogs-worker-trivyignore.yaml && test \"$(stat -c '%a:%h:%F' .cogs-worker-trivyignore.yaml)\" = \"600:1:regular file\"" }
+      - { name: Verify selected proxy bytes and materialize exact worker disposition, run: "test \"$(docker image inspect --format '{{.Architecture}}' cogs-worker:ci)\" = amd64 && test \"$(docker run --rm --entrypoint /nodejs/bin/node cogs-worker:ci --version)\" = v22.22.2 && docker run --rm --entrypoint /usr/local/bin/envoy cogs-worker:ci --version | grep -F '/1.38.4/' && docker run --rm --entrypoint /nodejs/bin/node cogs-worker:ci --input-type=module --eval \"await import('/opt/cogs/dist/src/main.js')\" && source_id=$(docker create --platform linux/amd64 \"docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7\") && worker_id=$(docker create cogs-worker:ci) && trap 'docker rm -f \"$source_id\" \"$worker_id\" >/dev/null 2>&1 || :' EXIT && docker cp \"$source_id:/usr/local/bin/envoy\" \"$RUNNER_TEMP/envoy-source\" && docker cp \"$worker_id:/usr/local/bin/envoy\" \"$RUNNER_TEMP/envoy-worker\" && test \"$(sha256sum \"$RUNNER_TEMP/envoy-source\" | cut -d' ' -f1)\" = c994c452de131f59c9ec9f4a2fffcc65039f250a38b6279870bb95dac21db0fa && cmp --silent \"$RUNNER_TEMP/envoy-source\" \"$RUNNER_TEMP/envoy-worker\" && docker rm \"$source_id\" \"$worker_id\" >/dev/null && trap - EXIT && now=$(date -u +%s) && test \"$now\" -ge \"$(date -u -d '2026-09-30T12:22:00.000Z' +%s)\" && test \"$now\" -lt \"$(date -u -d '2026-10-14T00:00:00.000Z' +%s)\" && umask 077 && jq -cn '{vulnerabilities:[{id:\"CVE-2026-102276\",paths:[\"opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json\"],statement:\"Exact Pi 0.86.0 nested brace-expansion 5.0.9 availability-risk disposition.\",expired_at:\"2026-10-14T00:00:00Z\"},{id:\"CVE-2026-102278\",paths:[\"opt/cogs/node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json\"],statement:\"Exact Pi 0.86.0 nested brace-expansion 5.0.9 availability-risk disposition.\",expired_at:\"2026-10-14T00:00:00Z\"}]}' > .cogs-worker-trivyignore.yaml && test \"$(stat -c '%a:%h:%F' .cogs-worker-trivyignore.yaml)\" = \"600:1:regular file\"" }
 
       - name: Scan worker image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -593,14 +588,8 @@ jobs:
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
-      - name: Scan exact pinned Envoy distroless candidate
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.ENVOY_IMAGE }}
-          format: table
-          exit-code: "1"
-          ignore-unfixed: false
-          severity: HIGH,CRITICAL
+      - { name: Scan exact pinned Envoy distroless candidate, uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25, with: { image-ref: "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7", format: table, exit-code: "1", ignore-unfixed: false, severity: "HIGH,CRITICAL" } }
+      - { name: Scan exact admitted OpenBao candidate, uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25, with: { image-ref: "quay.io/openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315", format: table, exit-code: "1", ignore-unfixed: false, severity: "HIGH,CRITICAL" } }
 
       - name: Generate worker SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
@@ -623,12 +612,8 @@ jobs:
           format: spdx-json
           output-file: insecure-container.spdx.json
 
-      - name: Generate exact Envoy candidate SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          image: ${{ env.ENVOY_IMAGE }}
-          format: spdx-json
-          output-file: envoy-candidate.spdx.json
+      - { name: Generate exact Envoy candidate SBOM, uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610, with: { image: "docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7", format: spdx-json, output-file: envoy-candidate.spdx.json } }
+      - { name: Generate exact OpenBao candidate SBOM, uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610, with: { image: "quay.io/openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315", format: spdx-json, output-file: openbao-2.7.0.spdx.json } }
 
       - name: Upload SBOMs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

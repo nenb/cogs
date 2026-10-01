@@ -19,7 +19,6 @@ const Ajv2020 = require("ajv/dist/2020.js") as new (options?: Options) => AjvCor
 const packageSchema = require("../schemas/stage4-offline-readiness-package-v5.json") as object;
 
 export const STAGE4_READINESS_BLOCKERS = Object.freeze([
-  "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
   "RELEASE_IMAGE_SET_ABSENT",
   "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
   "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
@@ -348,11 +347,11 @@ export const STAGE4_READINESS_EXPECTED_ARTIFACTS = Object.freeze({
   repeatedRender: "ae67d476354720b774b7ec6f70d38e7e9d19f653143dec62f294f68cbbdffbd6",
   runtimePins: "5af6274efe3f97887af4e255c5a4fb693bef82b659ec26021e307d0443b3aed4",
   values: "0852c734e970cd583ca925521ec45c6c0775e80ef72836394db7ca732ee20883",
-  authenticatedRuntimeArtifacts: "0b0b816be9c46f8d2c20a9efddf81d44054b359fc9fe18789eb3dd8ccf95cab1",
-  localValidationNormalized: "77ca0ecc54e99daedcc963a0af1d1085f0ed95c9f3809023d1bc6c7de1c740a2",
+  authenticatedRuntimeArtifacts: "88ae6e174dd70141bfbf9a41bc82a546963745d992c531a724eed39f5f52f8ef",
+  localValidationNormalized: "723e5103a2f5ac0d1340e45e383e9a2c7a565f0e0d8e7fc5efdf332d491433c0",
   renderReceipt: "2530ea902dc7064d16740f6d55b50bbe00407803cfa972bde2b7a3783af15c2d",
-  schemaInventory: "40e59412330272cad07c502274bce516ccd60541e3b7edbbe097c346ee734afd",
-  sourceInventoryNormalized: "05c07276b738d87a14986e385e92eaf16a71542d9aa365fe64d2671a41df4bc7",
+  schemaInventory: "80924b7c77524a86a513def1d54b7c9176c6ee0a6ee9d85645412c86969abe89",
+  sourceInventoryNormalized: "8e961e496b8533b8d73abea10be485239ed97b79e04824244b4775758b1133a9",
 });
 /* stage4-readiness-anchor-end */
 

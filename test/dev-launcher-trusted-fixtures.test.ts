@@ -128,7 +128,7 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
     if (args[0] === "image")
       return {
         status: 0,
-        stdout: `${JSON.stringify({ Id: `sha256:${"b".repeat(64)}`, RepoDigests: [OPENBAO_IMAGE.replace(":2.6.1@", "@")], Os: "linux", Architecture: "amd64", Config: { Volumes: { "/openbao/file": {} } } })}\n`,
+        stdout: `${JSON.stringify({ Id: `sha256:${"b".repeat(64)}`, RepoDigests: [OPENBAO_IMAGE.replace(":2.7.0@", "@")], Os: "linux", Architecture: "amd64", Config: { Volumes: { "/openbao/file": {} } } })}\n`,
       };
     if (args[0] === "create") {
       assert.equal(args[args.indexOf("--pull") + 1], "never");
@@ -189,7 +189,7 @@ function openBaoSeams(events: string[] = [], badInspect = false, badClose = fals
         })}\n`,
       };
     }
-    if (args[0] === "exec") return { status: 0, stdout: "OpenBao v2.6.1\n" };
+    if (args[0] === "exec") return { status: 0, stdout: "OpenBao v2.7.0\n" };
     if (args[0] === "rm") return { status: 0, stdout: "" };
     if (args[0] === "ps") return { status: 0, stdout: events.includes("inventory-busy") ? `${id}\n` : "" };
     return { status: 1, stdout: "" };

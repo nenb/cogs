@@ -68,10 +68,7 @@ const mitmproxySuite = readFileSync(
   "utf8",
 );
 assert.match(ENVOY_IMAGE, /^docker\.io\/envoyproxy\/envoy:distroless-v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
-assert.ok(
-  ciWorkflow.includes(`ENVOY_IMAGE: ${ENVOY_IMAGE}`) || ciWorkflow.includes(`ENVOY_IMAGE: "${ENVOY_IMAGE}"`),
-  "CI must scan and inventory the exact Envoy candidate pin",
-);
+assert.equal(ciWorkflow.split(ENVOY_IMAGE).length - 1, 3, "CI must use the exact Envoy candidate three times");
 assert.ok(
   workerDockerfile.includes(`FROM --platform=linux/amd64 ${nodeWorkerImage} AS node-runtime`),
   "worker must source exact Node 22.22.2 from the pinned Linux/amd64 stage",
@@ -87,12 +84,12 @@ assert.doesNotMatch(
 );
 assert.match(
   ciWorkflow,
-  /name: Scan exact pinned Envoy distroless candidate[\s\S]*?image-ref: \$\{\{ env\.ENVOY_IMAGE \}\}[\s\S]*?ignore-unfixed: false/u,
+  /name: Scan exact pinned Envoy distroless candidate[^\n]*image-ref: "docker\.io\/envoyproxy\/envoy:distroless-v1\.38\.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"[^\n]*ignore-unfixed: false/u,
   "CI must scan the exact selected Envoy candidate without suppressing unfixed findings",
 );
 assert.match(
   ciWorkflow,
-  /name: Generate exact Envoy candidate SBOM[\s\S]*?image: \$\{\{ env\.ENVOY_IMAGE \}\}/u,
+  /name: Generate exact Envoy candidate SBOM[^\n]*image: "docker\.io\/envoyproxy\/envoy:distroless-v1\.38\.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"/u,
   "CI must inventory the exact selected Envoy candidate",
 );
 assert.match(
@@ -116,12 +113,12 @@ assert.doesNotMatch(workerDockerfile, /stage0-scaffold|production-ready="true"/u
 assert.match(MITMPROXY_IMAGE, /^mitmproxy\/mitmproxy:\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
 assert.equal(
   OPENBAO_IMAGE,
-  "quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0",
-  "retired OpenBao fixture history must retain its exact rejected digest",
+  "quay.io/openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315",
+  "OpenBao functional paths must consume the exact admitted upstream index",
 );
 assert.ok(
   openBaoSmoke.includes(`OPENBAO_IMAGE="${OPENBAO_IMAGE}"`),
-  "retired OpenBao smoke must retain its exact historical pin",
+  "OpenBao smoke must retain the exact admitted pin without caller override",
 );
 assert.equal((openBaoSmoke.match(/--publish/g) ?? []).length, 1, "OpenBao smoke must publish exactly one port");
 assert.ok(openBaoSmoke.includes('--publish "127.0.0.1::8200"'), "OpenBao REST API must be host-loopback-only");
@@ -309,19 +306,30 @@ assert.match(
 assert.ok(ciWorkflow.includes("2026-10-14T00:00:00.000Z"));
 assert.ok(!ciWorkflow.includes("CVE-2026-75804"), "fixed OpenSSL findings must not be ignored");
 assert.ok(!ciWorkflow.includes("CVE-2026-84782"), "fixed OpenSSL findings must not be ignored");
-assert.ok(!ciWorkflow.includes("OPENBAO_IMAGE"), "retired OpenBao must not be scanned as an active CI image");
+assert.equal(ciWorkflow.split(OPENBAO_IMAGE).length - 1, 2, "CI must bind the admitted OpenBao index exactly twice");
+assert.match(
+  ciWorkflow,
+  /name: Scan exact admitted OpenBao candidate[^\n]*image-ref: "quay\.io\/openbao\/openbao:2\.7\.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315"[^\n]*ignore-unfixed: false/u,
+  "CI must scan the exact OpenBao candidate without suppressing unfixed findings",
+);
+assert.match(
+  ciWorkflow,
+  /name: Generate exact OpenBao candidate SBOM[^\n]*image: "quay\.io\/openbao\/openbao:2\.7\.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315"[^\n]*output-file: openbao-2\.7\.0\.spdx\.json/u,
+  "CI must inventory the exact admitted OpenBao candidate",
+);
 assert.ok(
   !ciWorkflow.includes("trivyignores: .trivyignore-openbao"),
-  "retired OpenBao vulnerability ignore must not remain active in CI",
+  "OpenBao vulnerability suppressions must not be active in CI",
 );
 assert.equal(
   existsSync(resolve(root, ".trivyignore-openbao")),
   false,
-  "retired OpenBao vulnerability ignore file must be removed",
+  "OpenBao vulnerability ignore file must remain absent",
 );
-assert.ok(
-  !ciWorkflow.includes("openbao-model-auth.spdx.json"),
-  "retired OpenBao must not receive an active selected-image SBOM job",
+assert.match(
+  ciWorkflow,
+  /name: OpenBao 2\.7\.0 protected functional paths[\s\S]*?prepare-launcher-images\.ts[\s\S]*?openbao-model-auth\/ci-smoke\.sh[\s\S]*?stage3-real-runtime\/ci-smoke\.sh/u,
+  "CI must authenticate launcher inputs and run both restored functional paths",
 );
 assert.ok(!ciWorkflow.includes("MITMPROXY_IMAGE"), "rejected mitmproxy must not be scanned as an active CI image");
 assert.ok(
@@ -376,5 +384,5 @@ for (const [name, version, filename, size] of gitToolPins) {
 assert.match(kvmGitTools, /readonly COGS_GIT_PACKAGE_COUNT=4/, "Git tools package set must remain fixed");
 
 console.log(
-  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions, exact worker Node/Envoy composition, production sandbox labels/snapshots, selected Envoy scanning, and inactive OpenBao/mitmproxy retirement.`,
+  `Verified external base-image digest pinning for ${dockerfiles.length} image definitions, exact worker Node/Envoy composition, production sandbox labels/snapshots, selected Envoy/OpenBao scanning, functional OpenBao paths, and inactive mitmproxy retirement.`,
 );

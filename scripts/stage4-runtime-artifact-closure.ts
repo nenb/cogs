@@ -10,7 +10,6 @@ const evidenceSchema = require("../schemas/stage4-authenticated-runtime-artifact
 
 export const STAGE4_RUNTIME_ARTIFACT_MAX_BYTES = 64 * 1024;
 export const STAGE4_RUNTIME_ARTIFACT_BLOCKERS = Object.freeze([
-  "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
   "RELEASE_IMAGE_SET_ABSENT",
   "EKS_AMI_ID_AND_RUNNING_KERNEL_AWS_UNRESOLVED",
   "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
@@ -59,7 +58,7 @@ require("ajv-formats")(ajv);
 const validateEvidence = ajv.compile(evidenceSchema) as ValidateFunction;
 
 /* stage4-runtime-schema-inventory-anchor-start */
-const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "40e59412330272cad07c502274bce516ccd60541e3b7edbbe097c346ee734afd";
+const STAGE4_RUNTIME_SCHEMA_INVENTORY_SHA256 = "80924b7c77524a86a513def1d54b7c9176c6ee0a6ee9d85645412c86969abe89";
 /* stage4-runtime-schema-inventory-anchor-end */
 
 function compareCodePoints(left: string, right: string): number {
@@ -247,17 +246,41 @@ export function buildStage4RuntimeArtifactEvidence(): JsonObject {
         state: "exact-static-digest-signature-unavailable-not-runtime-observed",
       },
       openbao: {
-        version: "2.6.1",
-        index_digest: "sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0",
-        linux_amd64_manifest_digest: "sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0",
-        binary_sha256: "736b8ecf354fda6b2af62e4ae064f12fe6c52d7db8425b9c6de22f286a5485ec",
+        version: "2.7.0",
+        image: "quay.io/openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315",
+        index_digest: "sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315",
+        linux_amd64_manifest_digest: "sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4",
+        binary_sha256: "9403c2b121e13fe79b3182051320d2096d10519b597ee587e322dab5e359c51e",
+        source_commit: "ca305a02daa68b203325daa1b25c18d7a252d4b3",
         certificate_identity:
-          "https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.6.1",
+          "https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.7.0",
         certificate_oidc_issuer: "https://token.actions.githubusercontent.com",
         publisher_signature_verified: true,
-        retired_at: "2026-08-14T20:14:04Z",
-        retirement_reason: "fixed-high-go-stdlib-no-fixed-upstream-image",
-        state: "exact-static-signed-retired-fixed-high-findings",
+        signed_subject: "index",
+        direct_child_signature_claimed: false,
+        transparency_log_verified: true,
+        verified_signature_records: 4,
+        provenance_readback_sha256: "1153e37ee798e3432f0a1e23078873272fdcc403511939bb0097e1627b1d7a88",
+        independent_review_sha256: "d9acfcbb2d9d4a44ab4893f4621a5b6db5bbd99969d59d03b414cc455a2cee88",
+        vulnerability_scan: {
+          ignore_unfixed: false,
+          suppressions: false,
+          total: 1,
+          unknown: 1,
+          high: 0,
+          critical: 0,
+          report_sha256: "c2286a589fa923d5791f5aebc9a4568c7b4dc03bf0539b83bfdf8e8f4a8424bb",
+        },
+        independent_sbom: {
+          format: "SPDX JSON",
+          packages: 321,
+          sha256: "14a79d1da7b1c26852c2c62e683ec3c9fb88ee0e87c8f6ba28a444f1b45f24b5",
+        },
+        local_pebbledb_functional_review: {
+          qualification_sha256: "55f1a632f910d5a6f9941c54a8b0e4a0618db09e4628d75fd3e98da9fb078038",
+          production_admission_claimed: false,
+        },
+        state: "exact-static-upstream-authenticated-admitted-not-runtime-observed",
       },
       skills: {
         policy: "no-bundled-release-skills",

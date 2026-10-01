@@ -2,14 +2,11 @@
 set -Eeuo pipefail
 umask 077
 
-# ADR0313: preserve the historical recipe below, but deny every profile before
-# setup, Envoy/OpenBao pulls, KVM, trust-store changes, or evidence writes.
-printf '%s\n' 'OpenBao 2.6.1 is retired; no admitted replacement' >&2
-exit 2
-
+# Functional-only insecure-container evidence consumes one immutable upstream
+# OpenBao identity. The historical KVM acquisition denial remains in harness.ts.
 ENVOY_IMAGE="docker.io/envoyproxy/envoy:distroless-v1.38.4@sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"
 ENVOY_DIGEST="sha256:b28fbee81528c5b6e8857412e5e0f48ea5baa0199cf73ab611aa7f88a808eba7"
-OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"
+OPENBAO_IMAGE="quay.io/openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 REPORT_DIR="${1:-${REPO_ROOT}/docs/security-evidence/generated/stage3-real-runtime}"
@@ -189,7 +186,7 @@ OPENBAO_PORT="$(bounded 10s docker inspect --format '{{(index (index .NetworkSet
 [[ "${OPENBAO_PORT}" =~ ^[0-9]+$ ]]
 [ "$(bounded 10s docker inspect --format '{{(index (index .NetworkSettings.Ports "8200/tcp") 0).HostIp}}' "${OPENBAO_CONTAINER}")" = "127.0.0.1" ]
 OPENBAO_RUNTIME_VERSION="$(bounded 10s docker exec "${OPENBAO_CONTAINER}" bao version)"
-[[ "${OPENBAO_RUNTIME_VERSION}" =~ ^OpenBao[[:space:]]+v2\.6\.1([[:space:],]|$) ]]
+[[ "${OPENBAO_RUNTIME_VERSION}" =~ ^OpenBao[[:space:]]+v2\.7\.0([[:space:],]|$) ]]
 ready=0
 for _ in $(seq 1 60); do
   if COGS_OPENBAO_ADDR="http://127.0.0.1:${OPENBAO_PORT}" bounded 3s node -e 'fetch(`${process.env.COGS_OPENBAO_ADDR}/v1/sys/health`, { redirect: "error" }).then(()=>process.exit(0),()=>process.exit(1))' >/dev/null 2>&1; then
