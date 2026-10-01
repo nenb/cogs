@@ -68,7 +68,7 @@ const mitmproxySuite = readFileSync(
   "utf8",
 );
 assert.match(ENVOY_IMAGE, /^docker\.io\/envoyproxy\/envoy:distroless-v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/);
-assert.equal(ciWorkflow.split(ENVOY_IMAGE).length - 1, 3, "CI must use the exact Envoy candidate three times");
+assert.equal(ciWorkflow.split(ENVOY_IMAGE).length - 1, 4, "CI must use the exact Envoy candidate four times");
 assert.ok(
   workerDockerfile.includes(`FROM --platform=linux/amd64 ${nodeWorkerImage} AS node-runtime`),
   "worker must source exact Node 22.22.2 from the pinned Linux/amd64 stage",
@@ -129,8 +129,8 @@ assert.doesNotMatch(
 );
 assert.equal(
   openBaoConfig,
-  'disable_mlock = true\napi_addr = "http://127.0.0.1:8200"\n\nstorage "file" {\n  path = "/openbao/file"\n}\n\nlistener "tcp" {\n  address = "0.0.0.0:8200"\n  tls_disable = 1\n}\n',
-  "OpenBao advisory disposition requires the exact local file-storage configuration",
+  'disable_mlock = true\napi_addr = "http://127.0.0.1:8200"\n\nstorage "pebbledb" {\n  path = "/openbao/file"\n}\n\nlistener "tcp" {\n  address = "0.0.0.0:8200"\n  tls_disable = 1\n}\n',
+  "OpenBao admission requires the exact local PebbleDB configuration",
 );
 assert.doesNotMatch(
   openBaoConfig,
@@ -306,7 +306,11 @@ assert.match(
 assert.ok(ciWorkflow.includes("2026-10-14T00:00:00.000Z"));
 assert.ok(!ciWorkflow.includes("CVE-2026-75804"), "fixed OpenSSL findings must not be ignored");
 assert.ok(!ciWorkflow.includes("CVE-2026-84782"), "fixed OpenSSL findings must not be ignored");
-assert.equal(ciWorkflow.split(OPENBAO_IMAGE).length - 1, 2, "CI must bind the admitted OpenBao index exactly twice");
+assert.equal(
+  ciWorkflow.split(OPENBAO_IMAGE).length - 1,
+  3,
+  "CI must bind the admitted OpenBao index exactly three times",
+);
 assert.match(
   ciWorkflow,
   /name: Scan exact admitted OpenBao candidate[^\n]*image-ref: "quay\.io\/openbao\/openbao:2\.7\.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315"[^\n]*ignore-unfixed: false/u,
