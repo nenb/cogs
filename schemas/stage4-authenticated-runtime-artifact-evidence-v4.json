@@ -408,13 +408,10 @@
     },
     "blockers": {
       "type": "array",
-      "minItems": 6,
-      "maxItems": 6,
+      "minItems": 5,
+      "maxItems": 5,
       "uniqueItems": true,
       "prefixItems": [
-        {
-          "const": "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT"
-        },
         {
           "const": "RELEASE_IMAGE_SET_ABSENT"
         },
@@ -684,47 +681,85 @@
       "additionalProperties": false,
       "required": [
         "version",
+        "image",
         "index_digest",
         "linux_amd64_manifest_digest",
         "binary_sha256",
+        "source_commit",
         "certificate_identity",
         "certificate_oidc_issuer",
         "publisher_signature_verified",
-        "retired_at",
-        "retirement_reason",
+        "signed_subject",
+        "direct_child_signature_claimed",
+        "transparency_log_verified",
+        "verified_signature_records",
+        "provenance_readback_sha256",
+        "independent_review_sha256",
+        "vulnerability_scan",
+        "independent_sbom",
+        "local_pebbledb_functional_review",
         "state"
       ],
       "properties": {
-        "version": {
-          "const": "2.6.1"
+        "version": { "const": "2.7.0" },
+        "image": {
+          "const": "quay.io/openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315"
         },
         "index_digest": {
-          "$ref": "#/$defs/digest"
+          "const": "sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315"
         },
         "linux_amd64_manifest_digest": {
-          "$ref": "#/$defs/digest"
+          "const": "sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4"
         },
         "binary_sha256": {
-          "$ref": "#/$defs/sha256"
+          "const": "9403c2b121e13fe79b3182051320d2096d10519b597ee587e322dab5e359c51e"
+        },
+        "source_commit": {
+          "const": "ca305a02daa68b203325daa1b25c18d7a252d4b3"
         },
         "certificate_identity": {
-          "type": "string",
-          "format": "uri"
+          "const": "https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.7.0"
         },
         "certificate_oidc_issuer": {
           "const": "https://token.actions.githubusercontent.com"
         },
-        "publisher_signature_verified": {
-          "const": true
+        "publisher_signature_verified": { "const": true },
+        "signed_subject": { "const": "index" },
+        "direct_child_signature_claimed": { "const": false },
+        "transparency_log_verified": { "const": true },
+        "verified_signature_records": { "const": 4 },
+        "provenance_readback_sha256": {
+          "const": "1153e37ee798e3432f0a1e23078873272fdcc403511939bb0097e1627b1d7a88"
         },
-        "retired_at": {
-          "const": "2026-08-14T20:14:04Z"
+        "independent_review_sha256": {
+          "const": "d9acfcbb2d9d4a44ab4893f4621a5b6db5bbd99969d59d03b414cc455a2cee88"
         },
-        "retirement_reason": {
-          "const": "fixed-high-go-stdlib-no-fixed-upstream-image"
+        "vulnerability_scan": {
+          "const": {
+            "ignore_unfixed": false,
+            "suppressions": false,
+            "total": 1,
+            "unknown": 1,
+            "high": 0,
+            "critical": 0,
+            "report_sha256": "c2286a589fa923d5791f5aebc9a4568c7b4dc03bf0539b83bfdf8e8f4a8424bb"
+          }
+        },
+        "independent_sbom": {
+          "const": {
+            "format": "SPDX JSON",
+            "packages": 321,
+            "sha256": "14a79d1da7b1c26852c2c62e683ec3c9fb88ee0e87c8f6ba28a444f1b45f24b5"
+          }
+        },
+        "local_pebbledb_functional_review": {
+          "const": {
+            "qualification_sha256": "55f1a632f910d5a6f9941c54a8b0e4a0618db09e4628d75fd3e98da9fb078038",
+            "production_admission_claimed": false
+          }
         },
         "state": {
-          "const": "exact-static-signed-retired-fixed-high-findings"
+          "const": "exact-static-upstream-authenticated-admitted-not-runtime-observed"
         }
       }
     },

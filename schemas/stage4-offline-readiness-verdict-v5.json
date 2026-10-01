@@ -102,11 +102,10 @@
     },
     "blockers": {
       "type": "array",
-      "maxItems": 11,
+      "maxItems": 10,
       "uniqueItems": true,
       "items": {
         "enum": [
-          "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
           "RELEASE_IMAGE_SET_ABSENT",
           "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
           "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",
@@ -164,7 +163,6 @@
             },
             "blockers": {
               "const": [
-                "OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT",
                 "RELEASE_IMAGE_SET_ABSENT",
                 "EKS_AMI_IMAGE_RELEASE_KERNEL_UNRESOLVED",
                 "CONTAINERD_AL2023_PACKAGE_UNAUTHENTICATED_UNOBSERVED",

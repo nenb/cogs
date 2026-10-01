@@ -387,7 +387,7 @@ assert p360['base_revision']==security['terminal_revision']
 assert p360['terminal_revision']=='4a8846616249470f0ba25a12f44034e701f32761'
 assert p361['base_revision']==p360['terminal_revision']
 assert p361['terminal_revision']=='174ee0b541832ea8d9b6a4719ad8569587665b6a'
-assert refresh['base_revision']==p361['terminal_revision']
+assert refresh['base_revision']=='853919c9e3cbc11e8a263fc778bb52dec2fab20f'
 for p in (p358,p359,security,p360,p361,refresh):
  assert (p['gross_lines'],p['gross_bytes'],p['new_file_high'],p['readiness_regenerations'])==(4000,550000,0,0)
  assert p['paths']==sorted(p['paths']) and len(p['paths'])==len(set(p['paths']))

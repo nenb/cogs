@@ -2,12 +2,9 @@
 set -Eeuo pipefail
 umask 077
 
-# ADR0313: preserve the historical recipe below, but deny before setup or pulls.
-# There is no environment/argument override and no admitted replacement identity.
-printf '%s\n' 'OpenBao 2.6.1 is retired; no admitted replacement' >&2
-exit 2
-
-OPENBAO_IMAGE="quay.io/openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0"
+# This functional-only path admits one immutable upstream identity. There is no
+# environment or argument override for the image subject.
+OPENBAO_IMAGE="quay.io/openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315"
 REPORT_DIR="${1:-docs/security-evidence/generated/openbao-model-auth}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
@@ -116,7 +113,7 @@ if [ "${BINDING}" != "127.0.0.1" ]; then
   exit 1
 fi
 OPENBAO_RUNTIME_VERSION="$({ "${TIMEOUT}" 10s docker exec "${CONTAINER}" bao version; } 2>/dev/null)"
-if ! [[ "${OPENBAO_RUNTIME_VERSION}" =~ ^OpenBao[[:space:]]+v2\.6\.1([[:space:],]|$) ]]; then
+if ! [[ "${OPENBAO_RUNTIME_VERSION}" =~ ^OpenBao[[:space:]]+v2\.7\.0([[:space:],]|$) ]]; then
   echo "OpenBao smoke runtime version mismatch" >&2
   exit 1
 fi

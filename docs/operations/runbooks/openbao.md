@@ -24,9 +24,10 @@ This guide contains no OpenBao command, token, endpoint credential, or secret va
 
 | Local fact | Exact authority and applicability |
 |---|---|
-| OpenBao `2.6.1` at the recorded exact digest is retired after fixed HIGH Go standard-library findings; historical smoke and code are non-authorizing review material only. | [Authority: OpenBao retirement record](../../security-evidence/openbao-2.6.1-retirement.md) |
-| `OPENBAO_POST_ISSUE_359_FIXED_RELEASE_IMAGE_ABSENT` blocks current campaign readiness; active model-auth/runtime/launcher smoke cannot resume independently of a clean authenticated replacement image. | [Authority: Stage 3 model-auth retirement](../stage-3-model-auth.md) |
-| The old scoped vulnerability dispositions were removed rather than renewed or expanded. | [Authority: OpenBao retirement record](../../security-evidence/openbao-2.6.1-retirement.md) and [planned CVE procedure](cve-response.md#response-flow) |
+| OpenBao `2.6.1` remains retired after fixed HIGH Go standard-library findings; its historical evidence authorizes nothing. | [Authority: OpenBao retirement record](../../security-evidence/openbao-2.6.1-retirement.md) |
+| OpenBao `2.7.0` is admitted only as the exact upstream-signed index and Linux/amd64 member recorded by the repository; Cogs does not republish it or claim a direct child signature. | [Authority: OpenBao successor record](../../security-evidence/openbao-2.6.1-retirement.md#admitted-upstream-successor-openbao-270) |
+| Independent review and current CI require zero HIGH/CRITICAL, `ignore-unfixed=false`, no suppression, exact SBOM identity, and functional paths against the same compiled-in pin. | [Authority: Stage 3 model-auth status](../stage-3-model-auth.md) |
+| Admission and functional evidence do not establish EKS/Kata runtime observation, production readiness, cloud execution, Stage 4 exit, or release eligibility. | [Authority: Stage 4 readiness](../stage-4-offline-readiness.md) |
 
 ## Future cloud evidence
 

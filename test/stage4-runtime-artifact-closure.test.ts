@@ -124,21 +124,31 @@ test("public EKS candidate is exact while all AWS-resolved fields remain absent"
   assert.equal(candidate.provider_truth_observed, false);
 });
 
-test("static candidate freeze binds current dependencies and cannot promote retired OpenBao or runtime truth", () => {
+test("static candidate freeze binds admitted OpenBao without promoting runtime truth", () => {
   const freeze = object().static_candidate_freeze;
   assert.equal(freeze.envoy.publisher_signature_verified, false);
   assert.equal(
     freeze.envoy.linux_amd64_manifest_digest,
     "sha256:390d046622816ec719fbe012e2020641f3e661ccdb6fa174221c186e9082916a",
   );
+  assert.equal(freeze.openbao.version, "2.7.0");
+  assert.equal(
+    freeze.openbao.image,
+    "quay.io/openbao/openbao:2.7.0@sha256:71156a1c6623a5fa3f5e61b0c6a8ead0faf0df29a778339188443551995d1315",
+  );
   assert.equal(freeze.openbao.publisher_signature_verified, true);
   assert.equal(
     freeze.openbao.certificate_identity,
-    "https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.6.1",
+    "https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.7.0",
   );
-  assert.equal(freeze.openbao.retired_at, "2026-08-14T20:14:04Z");
-  assert.equal(freeze.openbao.retirement_reason, "fixed-high-go-stdlib-no-fixed-upstream-image");
-  assert.equal(freeze.openbao.state, "exact-static-signed-retired-fixed-high-findings");
+  assert.equal(freeze.openbao.signed_subject, "index");
+  assert.equal(freeze.openbao.direct_child_signature_claimed, false);
+  assert.equal(freeze.openbao.vulnerability_scan.ignore_unfixed, false);
+  assert.equal(freeze.openbao.vulnerability_scan.high, 0);
+  assert.equal(freeze.openbao.vulnerability_scan.critical, 0);
+  assert.equal(freeze.openbao.independent_sbom.packages, 321);
+  assert.equal(freeze.openbao.local_pebbledb_functional_review.production_admission_claimed, false);
+  assert.equal(freeze.openbao.state, "exact-static-upstream-authenticated-admitted-not-runtime-observed");
   assert.equal(freeze.skills.policy, "no-bundled-release-skills");
   assert.equal(
     freeze.skills.shared_oci_manifest_digest,
@@ -220,6 +230,8 @@ test("hostile artifact, provenance, QEMU, EKS, freeze, and claim drift fail clos
     (value) => (value.eks_node_image_candidate.ami_id = "ami-0123456789abcdef0"),
     (value) => (value.eks_node_image_candidate.running_kernel_release = "claimed"),
     (value) => (value.static_candidate_freeze.envoy.publisher_signature_verified = true),
+    (value) => (value.static_candidate_freeze.openbao.direct_child_signature_claimed = true),
+    (value) => (value.static_candidate_freeze.openbao.vulnerability_scan.high = 1),
     (value) => (value.static_candidate_freeze.skills.policy = "ambient-skills"),
     (value) =>
       (value.static_candidate_freeze.release_images.worker = value.static_candidate_freeze.release_images.sandbox),
